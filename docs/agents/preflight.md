@@ -13,7 +13,7 @@
 | pnpm | **12.4.2**，经 `corepack enable pnpm` 激活（`pnpm -v` 可直接用） |
 | npm registry | 可达（约 1.7s 往返，境外源，装包偏慢要有耐心） |
 | sqlite3 CLI | 3.51.0 可用（部署票的 `.backup` 热备用它） |
-| Playwright 浏览器 | 缓存内已有 **chromium-1217**，对应 **`@playwright/test@1.58.0`**。装这个版本可**免下载浏览器**；装更高版本会触发下载，浪费大量时间 |
+| Playwright 浏览器 | **固定 `@playwright/test@1.58.0`**。本机浏览器缓存里现在有 **chromium-1208**，正是 1.58.0 需要的版本，装它**免下载**。（先前 preflight 误写「chromium-1217 ↔ 1.58.0」，实际 1217 对应 1.59.x；#13 实施时已按 1.58.0 下载 1208 并替换缓存。**别再改版本**，改版本会触发重新下载。） |
 
 ## 2. LLM 端点（本机代理，OpenAI 兼容）
 
