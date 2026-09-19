@@ -1,6 +1,6 @@
-import { zValidator } from '@hono/zod-validator';
 import type { Hono } from 'hono';
 import { z } from 'zod';
+import { zodValidator } from './validation.js';
 import type { AppDeps } from '../app.js';
 
 /**
@@ -12,7 +12,7 @@ const healthQuerySchema = z.object({
 });
 
 export function registerHealthRoutes(api: Hono, deps: AppDeps): void {
-  api.get('/health', zValidator('query', healthQuerySchema), (c) => {
+  api.get('/health', zodValidator('query', healthQuerySchema), (c) => {
     const { tools } = c.req.valid('query');
     return c.json({
       ok: true,

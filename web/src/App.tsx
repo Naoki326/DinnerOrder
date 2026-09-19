@@ -2,8 +2,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createBrowserRouter } from 'react-router';
 import { AppShell } from './AppShell';
 import { routerBasename } from './config';
+import { IdentityProvider } from './identity';
+import { FamilyView } from './routes/FamilyView';
 import { HomeView } from './routes/HomeView';
-import { FamilyView, GroceryView, NotFoundView, ReviewView } from './routes/Placeholders';
+import { GroceryView, NotFoundView, ReviewView } from './routes/Placeholders';
 
 /**
  * Router 在 library 模式下按 basename 挂载（ADR-0003）：挂在 /dinner/ 时
@@ -68,7 +70,9 @@ const queryClient = new QueryClient({
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <IdentityProvider>
+        <RouterProvider router={router} />
+      </IdentityProvider>
     </QueryClientProvider>
   );
 }

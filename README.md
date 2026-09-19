@@ -55,20 +55,40 @@ server/                 @dinnerorder/server —— Hono + better-sqlite3 + 领�
   src/db/               openDatabase + 迁移执行器（编号 .sql，事务化，失败回滚）
   src/llm/              MCP 形状的 LLM seam：types / fake（测试用）/ unconfigured（生产占位）
   src/testing/harness.ts 集成测试 harness（内存库 + 可控时钟 + fake LLM + 直打 HTTP）
-  migrations/           编号 .sql（当前为空——骨架票不发明领域表）
+  src/domain/            领域逻辑（食材字典、家人画像）
+  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行）
 web/                    @dinnerorder/web —— React 18 + Vite + Router 7 + TanStack Query
-e2e/                    Playwright 冒烟
+  src/identity.tsx      当前身份（设备本地：localStorage；家人画像在服务端）
+e2e/                    Playwright 冒烟 + 家人与当前身份
 ```
 
-## 两条不可绕过的架构线
+## API（M1 增量，无登录 · 家庭 Wi-Fi 即门禁）
+
+| 路由 | 作用 |
+| --- | --- |
+| `GET /api/health` | 冒烟：时钟/LLM/basePath 的注入证明 |
+| `GET /api/ingredients?q=` | 食材字典（规范名 + 别名；`q` 两者都匹配） |
+| `GET /api/members` · `GET /api/members/:id` | 家人画像（大人/小孩、性别、出生年月、忌口、爱吃） |
+| `PATCH /api/members/:id` | 改画像：`birthMonth` / `avoid[]` / `loves[]`，传了的块整体替换 |
+
+**错误响应形状统一为 `{error: '<代码>'}`**（可能附指认字段，如 `unknown_ingredient` 带 `ingredientId`）。
+入参校验失败是 `{error:'invalid_request', issues:[{path,message}]}`，**不是** `@hono/zod-validator` 的缺省形状；
+新路由请用 `server/src/api/validation.ts` 的 `zodValidator`，别再直接用 `zValidator`。
+
+## 三条不可绕过的架构线
 
 1. **BASE_PATH 运行时可配**（[ADR-0003](docs/adr/0003-runtime-configurable-base-path-for-nginx.md)）：
    前端资产全部相对引用（`base: './'`），路径真相由服务端 `BASE_PATH` 注入页面
    （`window.__APP_CONFIG__.basePath`），Router `basename`、API 前缀、manifest `start_url`/`scope`
    都从它推导。**同一份构建产物**挂 `/` 或 `/dinner/` 都不用重打包。
 2. **单进程前后端一体**（[ADR-0002](docs/adr/0002-ts-monorepo-react-hono-sqlite-single-process.md)）：
-   生产一个 Node 进程同时服务 `/api/*` 与 `web/dist`，launchd 一个 plist 拉起
-   （部署见 spec §7；`/api` 未匹配时返回 JSON 404，绝不落到 SPA fallback）。
+   生产一个 Node 进程同时服务 `/api/*` 与 `web/dist`，launchd 一个 plist 拉起   （部署见 spec §7；`/api` 未匹配时返回 JSON 404，绝不落到 SPA fallback）。
+
+3. **共享类型由 server 导出**（ADR-0002、总纲 §6）：HTTP 的线上形状只在
+   `server/src/wire-types.ts` 定义一处；web 侧一律
+   `import type { MemberProfile } from '@dinnerorder/server/types'`，**不手抄**同形状接口。
+   前端只用 `import type`（编译后 import 被抹掉，产物不会真去加载 server 的 Node 代码）。
+   新增接口时先把形状加进 `wire-types.ts`，再让两端分别引用它。
 
 ## 写测试
 

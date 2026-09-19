@@ -9,14 +9,3 @@
   font-size: 18px;
   font-weight: 700;
 }
-
-.identityChip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--card);
-  border-radius: 99px;
-  padding: 6px 12px;
-  box-shadow: 0 1px 4px rgba(60, 50, 30, 0.1);
-  font-size: 13px;
-}

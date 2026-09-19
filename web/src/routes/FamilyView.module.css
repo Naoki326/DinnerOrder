@@ -1,0 +1,126 @@
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+.memberCard {
+  background: var(--card);
+  border-radius: var(--r);
+  box-shadow: 0 1px 4px rgba(60, 50, 30, 0.07);
+  padding: 14px;
+  margin: 10px 12px;
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.avatar {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.switchButton {
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.blockLabel {
+  color: var(--sub);
+  font-size: 12px;
+  margin: 10px 0 6px;
+}
+
+.entries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 99px;
+  padding: 3px 6px 3px 10px;
+  font-size: 12px;
+}
+
+.avoid {
+  background: #fff4e6;
+  color: var(--warn);
+}
+
+.loves {
+  background: #ebfbee;
+  color: var(--ok);
+}
+
+.remove {
+  color: inherit;
+  opacity: 0.7;
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.addRow {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.suggestion {
+  background: var(--chip);
+  border-radius: 99px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--sub);
+}
+
+.birthRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.birthRow .input {
+  flex: 0 0 160px;
+}
+
+.error {
+  color: var(--hun);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.saved {
+  color: var(--ok);
+  font-size: 12px;
+}
+
+.hint {
+  margin: 12px;
+}

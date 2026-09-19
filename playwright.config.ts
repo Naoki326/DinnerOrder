@@ -30,7 +30,10 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], viewport: E2E.viewport } }],
   webServer: [
     {
-      command: 'node server/dist/index.js',
+      // 先删掉上一轮留下的库：E2E 会改画像（增删忌口/改出生年月），
+      // 带脏库启动会让断言看着种子、实际是上次的残留。两个实例各删各的库，互不影响。
+      // `*.db*` 一并覆盖 -wal/-shm（WAL 侧文件不删，新库会看到旧日记）。
+      command: 'rm -f data/e2e-root.db* && node server/dist/index.js',
       url: `${ROOT_URL}/api/health`,
       reuseExistingServer: false,
       timeout: 60_000,
@@ -43,7 +46,7 @@ export default defineConfig({
       },
     },
     {
-      command: 'node server/dist/index.js',
+      command: 'rm -f data/e2e-sub.db* && node server/dist/index.js',
       url: `http://127.0.0.1:${E2E.subPath.port}${E2E.subPath.basePath}/api/health`,
       reuseExistingServer: false,
       timeout: 60_000,

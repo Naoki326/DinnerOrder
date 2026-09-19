@@ -22,11 +22,14 @@ describe('harness 隔离性', () => {
       expect(inA.n).toBe(1);
       expect(() => b.db.prepare('SELECT COUNT(*) AS n FROM only_in_a').get()).toThrow(/no such table/);
 
-      const tablesInB = b.db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
-        .all()
-        .map((row) => (row as { name: string }).name);
-      expect(tablesInB).toEqual(['schema_migrations']);
+      // a 往迁移建出来的领域表里插一行，b 里不能看见（缺省迁移目录两边都跑，数据不共享）
+      a.db
+        .prepare(
+          "INSERT INTO members (id, name, emoji, kind, gender, sort_order, created_at, updated_at) VALUES ('probe_a', '探针', '🧪', 'adult', 'female', 99, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
+        )
+        .run();
+      const membersInB = b.db.prepare('SELECT id FROM members ORDER BY id').all() as { id: string }[];
+      expect(membersInB.map((row) => row.id)).not.toContain('probe_a');
     } finally {
       a.close();
       b.close();
@@ -63,10 +66,28 @@ describe('harness 隔离性', () => {
     }
   });
 
-  it('缺省迁移目录为空时，harness 库里没有任何领域表', () => {
+  it('缺省迁移目录（仓库内 server/migrations）在每个 harness 里都跑一遍，种子随库就位', () => {
     const a = createTestHarness();
     try {
-      expect(a.db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 0 });
+      // 迁移记录：至少跑过 M1-02 的家人与食材字典；后续票会加更多版本，不写死全集
+      const versions = (a.db.prepare('SELECT version, name FROM schema_migrations').all() as {
+        version: string;
+        name: string;
+      }[]).map((row) => row.version);
+      expect(versions).toContain('001');
+
+      // 家人种子：真实家人四条（#15 不会动它，固定断言）
+      expect(a.db.prepare('SELECT name FROM members ORDER BY sort_order').all()).toEqual([
+        { name: '妈妈' },
+        { name: '爸爸' },
+        { name: '大宝' },
+        { name: '小宝' },
+      ]);
+      // 常用食材种子也跟着落进每个新库（具体条数会随 #15 扩充，这里只验它非空且是规范名）
+      expect(a.db.prepare("SELECT name FROM ingredients WHERE id IN ('tomato', 'shellfish')").all()).toEqual([
+        { name: '贝类' },
+        { name: '番茄' },
+      ]);
     } finally {
       a.close();
     }
@@ -197,9 +218,14 @@ describe('zod 校验通道', () => {
     expect(body.llm.tools).toEqual([]);
   });
 
-  it('非法参数返回 400（校验失败不进入 handler）', async () => {
+  it('非法参数返回 400，且错误体是仓库统一形状（校验失败不进入 handler）', async () => {
     harness = createTestHarness();
-    const { status } = await harness.json('/api/health?tools=yes');
+    const { status, body } = await harness.json<{ error: string; issues: { path: string; message: string }[] }>(
+      '/api/health?tools=yes',
+    );
     expect(status).toBe(400);
+    // 形状与 /api/nope 的 {error:'not_found'} 一致，前端只需一条错误分支就能读
+    expect(body.error).toBe('invalid_request');
+    expect(body.issues.length).toBeGreaterThan(0);
   });
 });

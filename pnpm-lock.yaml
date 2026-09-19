@@ -231,6 +231,9 @@ importers:
         specifier: 7.18.4
         version: 7.18.4(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
     devDependencies:
+      '@dinnerorder/server':
+        specifier: workspace:*
+        version: link:../server
       '@types/react':
         specifier: 18.3.31
         version: 18.3.31

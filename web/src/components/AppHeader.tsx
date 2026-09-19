@@ -1,3 +1,4 @@
+import { IdentitySwitcher } from './IdentitySwitcher';
 import styles from './AppHeader.module.css';
 
 /**
@@ -12,19 +13,15 @@ function todayLabel(now: Date): string {
   return `${now.getMonth() + 1} 月 ${now.getDate()} 日 · 周${weekdays[now.getDay()]}`;
 }
 
-export function AppHeader({ identityName = '妈妈', identityEmoji = '👩' }: { identityName?: string; identityEmoji?: string }) {
+/** 头部：标题 + 日期 + 常驻身份切换器（总纲 §2.4，无登录） */
+export function AppHeader() {
   return (
     <header className={styles.header}>
       <div>
         <div className={styles.title}>家餐桌</div>
         <div className="sub">{todayLabel(new Date())}</div>
       </div>
-      {/* 无登录、常驻身份切换器：切换与家人的真实数据由后续工单接通，这里只落位置 */}
-      <button type="button" className={styles.identityChip} data-testid="identity-chip">
-        <span aria-hidden="true">{identityEmoji}</span>
-        <span>{identityName}</span>
-        <span className="sub">▾</span>
-      </button>
+      <IdentitySwitcher />
     </header>
   );
 }

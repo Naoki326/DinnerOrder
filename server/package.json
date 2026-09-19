@@ -24,5 +24,13 @@
     "tsx": "4.23.13",
     "typescript": "5.9.3",
     "vitest": "3.2.7"
-  }
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./types": {
+      "types": "./src/wire-types.ts"
+    },
+    "./app": "./dist/app.js"
+  },
+  "types": "./src/wire-types.ts"
 }

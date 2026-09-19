@@ -1,12 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
+import type { HealthResponse } from '@dinnerorder/server/types';
 import { apiUrl } from '../config';
 
-export interface HealthResponse {
-  ok: boolean;
-  serverTime: string;
-  basePath: string;
-  llm: { tools: { name: string; description: string }[] };
-}
+// 线上形状来自 server（ADR-0002「共享类型由 server 导出」）
+export type { HealthResponse };
 
 async function fetchHealth(signal: AbortSignal): Promise<HealthResponse> {
   const response = await fetch(apiUrl('/health'), { signal, headers: { accept: 'application/json' } });
