@@ -9,6 +9,7 @@ import {
   listMembers,
   MemberNotFoundError,
   UnknownIngredientError,
+  UnknownRecipeError,
   updateMember,
 } from '../domain/members.js';
 
@@ -17,8 +18,14 @@ import {
  * 手机上的编辑改完点保存，客户端发的是当前完整清单，不做逐条增删的半程接口
  * （那种接口一多，半份状态就有地方藏）。
  *
- * 爱吃的**菜粒度**（`recipeIds`）等 #15 建菜谱表后加进来：本票不发明一个没人能填的字段。
+ * 爱吃是**混合粒度**（总纲 §2.9）：`{kind:'ingredient'|'recipe', id}`。
+ * 用带 kind 的对象而不是裸 id：两张表主键各自独立，光给字符串无法判断该当食材还是当菜。
  */
+const loveSchema = z.object({
+  kind: z.enum(['ingredient', 'recipe']),
+  id: z.string().min(1),
+});
+
 const patchSchema = z.object({
   birthMonth: z
     .string()
@@ -28,7 +35,7 @@ const patchSchema = z.object({
     .nullable()
     .optional(),
   avoid: z.array(z.string().min(1)).optional(),
-  loves: z.array(z.string().min(1)).optional(),
+  loves: z.array(loveSchema).optional(),
 });
 
 export function registerMemberRoutes(api: Hono, deps: AppDeps): void {
@@ -53,6 +60,9 @@ export function registerMemberRoutes(api: Hono, deps: AppDeps): void {
       }
       if (error instanceof UnknownIngredientError) {
         return c.json({ error: 'unknown_ingredient', ingredientId: error.ingredientId }, 400);
+      }
+      if (error instanceof UnknownRecipeError) {
+        return c.json({ error: 'unknown_recipe', recipeId: error.recipeId }, 400);
       }
       throw error;
     }

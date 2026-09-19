@@ -39,8 +39,27 @@ describe('renderIndexHtml', () => {
   });
 
   it('注入值里的 </script> 被转义', () => {
-    const html = renderIndexHtml(`<script>${APP_CONFIG_MARKER}</script>`, '</script><b>');
+    const html = renderIndexHtml(`<head><script>${APP_CONFIG_MARKER}</script></head>`, '</script><b>');
     expect(html).not.toContain('</script><b>');
+  });
+
+  it('注入 <base href>：深链（带额外路径段）下相对资产才不会解析到错位置', () => {
+    const html = renderIndexHtml(
+      `<html><head><script>${APP_CONFIG_MARKER}</script><script src="./assets/app.js"></script></head></html>`,
+      '/dinner',
+    );
+    // 拔掉 base 后，/dinner/slot/x 页会把 './assets/app.js' 解析成 /dinner/slot/assets/app.js（404 白屏）
+    expect(html).toContain('<base href="/dinner/" />');
+    expect(renderIndexHtml(`<head>${APP_CONFIG_MARKER}</head>`, '/')).toContain('<base href="/" />');
+  });
+
+  it('产物里已有 base 时不重复注入（两份 base 的生效规则会让人误以为改动没生效）', () => {
+    const html = renderIndexHtml(`<head><base href="./" />${APP_CONFIG_MARKER}</head>`, '/');
+    expect(html.match(/<base/gi)?.length).toBe(1);
+  });
+
+  it('没有 <head> 时直接报错（否则深链会静默白屏）', () => {
+    expect(() => renderIndexHtml(`<div>${APP_CONFIG_MARKER}</div>`, '/')).toThrow(/head/);
   });
 });
 
@@ -104,7 +123,27 @@ describe('单进程一体：API + 静态产物在同一个 app 上', () => {
     harness = createTestHarness({ webDistDir: createWebDist() });
     const response = await harness.request('/买菜');
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain('window.__APP_CONFIG__');
+    const html = await response.text();
+    expect(html).toContain('window.__APP_CONFIG__');
+    // 深链必须带 <base href>：否则 './assets/app.js' 会从 /买菜/ 解析（404 白屏）
+    expect(html).toContain('<base href="/" />');
+  });
+
+  it('定餐编辑器这类多段深链：assets 请求路径与根路径完全相同', async () => {
+    harness = createTestHarness({ webDistDir: createWebDist() });
+    // 浏览器按 <base href="/"> 把 './assets/app.js' 解析成 /assets/app.js —— 与首页一致
+    const deepLink = await harness.request('/slot/2025-06-01:dinner');
+    expect(deepLink.status).toBe(200);
+    expect(await deepLink.text()).toContain('<base href="/" />');
+    expect((await harness.request('/assets/app.js')).status).toBe(200);
+
+    // 子路径下的同一件事：/dinner/slot/x 的资产走 /dinner/assets/...
+    harness.close();
+    harness = createTestHarness({ basePath: '/dinner', webDistDir: createWebDist() });
+    expect(await (await harness.request('/dinner/slot/2025-06-01:dinner')).text()).toContain(
+      '<base href="/dinner/" />',
+    );
+    expect((await harness.request('/dinner/assets/app.js')).status).toBe(200);
   });
 
   it('缺失的构建资源返回 404 而不是 HTML（否则浏览器报的是误导性的 MIME 错）', async () => {

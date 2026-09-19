@@ -33,7 +33,29 @@ export function renderIndexHtml(source: string, basePath: string): string {
     throw new Error(`index.html 缺少注入标记 ${APP_CONFIG_MARKER}：前端产物与服务端约定不一致`);
   }
   // 注入 JSON 时转义 `<`，防止值里出现 `</script>` 提前闭合脚本标签
-  return source.replace(APP_CONFIG_MARKER, renderAppConfigScript(basePath));
+  const injected = source.replace(APP_CONFIG_MARKER, renderAppConfigScript(basePath));
+  return injectBaseHref(injected, basePath);
+}
+
+/**
+ * 把 `<base href>` 插进 head：这是**深链**能正常加载资源的前提。
+ *
+ * 资产是相对引用（`./assets/x.js`，ADR-0003），相对谁解析由**当前页面的 URL 决定**：
+ * 挂在 `/` 时 `/slot/2025-06-01:dinner` 会把 `./assets/x.js` 解析成
+ * `/slot/assets/x.js` —— 深链一刷新就白屏（浏览器拿不到 JS/CSS，页面连报错的机会都没有）。
+ * `<base href="${basePath}/">` 把「相对谁」固定到挂载点，资产引用保持相对、无需重打包。
+ */
+function injectBaseHref(html: string, basePath: string): string {
+  const raw = basePath === '/' ? '/' : `${basePath}/`;
+  // 属性值转义：basePath 是启动配置，但这个字符串最终落进 HTML 属性，转义是零成本的自保
+  const href = raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const tag = `<base href="${href}" />`;
+  // 产物里不该已经有 base：两份 base 的生效规则（取第一个）会让改动看起来「没生效」
+  if (/<base\s/i.test(html)) return html;
+  if (!/<head[\s>]/i.test(html)) {
+    throw new Error('index.html 里找不到 <head>，没法注入 <base href>（深链会加载不到相对资产）');
+  }
+  return html.replace(/<head([\s>])/i, `<head$1${tag}`);
 }
 
 /** PWA manifest 的 start_url / scope 同样从 BASE_PATH 推导（挂在子路径时可安到主屏仍指向正确位置） */

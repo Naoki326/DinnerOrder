@@ -124,3 +124,13 @@
 .hint {
   margin: 12px;
 }
+
+/* 爱吃条目上的「菜」标记：家人一眼看得出这是「一道菜」而不是「一种食材」 */
+.recipeTag {
+  margin-left: 4px;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 99px;
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--sub);
+}

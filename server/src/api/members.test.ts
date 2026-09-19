@@ -50,11 +50,20 @@ describe('家人', () => {
     const xiaobao = await getMember('xiaobao');
     expect(xiaobao.avoid.map((entry) => entry.name)).toEqual(['贝类', '虾']);
     expect(xiaobao.avoid.map((entry) => entry.ingredientId)).toEqual(['shellfish', 'shrimp']);
-    expect(xiaobao.loves.map((entry) => entry.name)).toEqual(['玉米', '猪排骨', '鸡翅']);
+    // 爱吃是混合粒度（总纲 §2.9）：食材粒度在前（#14 的种子），菜粒度在后（#15 随菜谱表补录）
+    expect(xiaobao.loves.map((entry) => entry.name)).toEqual(['玉米', '猪排骨', '鸡翅', '玉米胡萝卜排骨汤']);
+    expect(xiaobao.loves.map((entry) => entry.kind)).toEqual([
+      'ingredient',
+      'ingredient',
+      'ingredient',
+      'recipe',
+    ]);
 
     // 妈妈忌口（硬过滤的种子数据，原型一致）
     const mom = await getMember('mom');
     expect(mom.avoid.map((entry) => entry.name)).toEqual(['动物内脏']);
+    // 妈妈爱吃清蒸鲈鱼：菜粒度条目带菜名（原型 PEOPLE 里的菜名，001 说好随菜谱表一起录）
+    expect(mom.loves).toContainEqual({ kind: 'recipe', id: 'qingzhengluyu', name: '清蒸鲈鱼' });
   });
 
   it('不存在的家人返回 404 而不是空画像', async () => {
@@ -74,11 +83,16 @@ describe('画像编辑', () => {
   interface PatchOptions {
     birthMonth?: string | null;
     avoid?: string[];
-    loves?: string[];
+    loves?: { kind: 'ingredient' | 'recipe'; id: string }[];
   }
 
   async function patchMember(id: string, patch: PatchOptions) {
-    return await harness.json<{ member?: MemberJson; error?: string; ingredientId?: string }>(`/api/members/${id}`, {
+    return await harness.json<{
+      member?: MemberJson;
+      error?: string;
+      ingredientId?: string;
+      recipeId?: string;
+    }>(`/api/members/${id}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(patch),
@@ -102,18 +116,53 @@ describe('画像编辑', () => {
     expect(afterRemove.avoid.map((entry) => entry.name)).toEqual(['辣椒']);
   });
 
-  it('爱吃可增可删，粒度是食材（条目带规范名）', async () => {
+  it('爱吃可增可删，食材与菜两种粒度都能存（#15 接通菜粒度）', async () => {
     harness = createTestHarness();
 
-    const { status, body } = await patchMember('dad', { loves: ['pork_ribs', 'chicken_legs'] });
+    const { status, body } = await patchMember('dad', {
+      loves: [
+        { kind: 'ingredient', id: 'pork_ribs' },
+        { kind: 'recipe', id: 'hongshaopaigu' },
+        { kind: 'ingredient', id: 'chicken_legs' },
+      ],
+    });
     expect(status).toBe(200);
     expect(body.member?.loves).toEqual([
-      { ingredientId: 'pork_ribs', name: '猪排骨' },
-      { ingredientId: 'chicken_legs', name: '鸡腿' },
+      { kind: 'ingredient', id: 'pork_ribs', name: '猪排骨' },
+      { kind: 'recipe', id: 'hongshaopaigu', name: '红烧排骨' },
+      { kind: 'ingredient', id: 'chicken_legs', name: '鸡腿' },
     ]);
 
+    // 两种粒度各自独立清理：传空清单就都清掉
     await patchMember('dad', { loves: [] });
     expect((await getMember('dad')).loves).toEqual([]);
+  });
+
+  it('爱吃指向不存在的菜被拒绝（与食材同口径，不留悬空条目）', async () => {
+    harness = createTestHarness();
+    const before = await getMember('dad');
+
+    const { status, body } = await patchMember('dad', { loves: [{ kind: 'recipe', id: '不存在的菜' }] });
+    expect(status).toBe(400);
+    expect(body.error).toBe('unknown_recipe');
+    expect(body.recipeId).toBe('不存在的菜');
+    expect(await getMember('dad')).toEqual(before);
+  });
+
+  it('同一目标填两次只留一条（食材与菜的各留一条）', async () => {
+    harness = createTestHarness();
+
+    await patchMember('dad', {
+      loves: [
+        { kind: 'ingredient', id: 'tofu' },
+        { kind: 'ingredient', id: 'tofu' },
+        { kind: 'recipe', id: 'mapodoufu' },
+      ],
+    });
+    expect((await getMember('dad')).loves).toEqual([
+      { kind: 'ingredient', id: 'tofu', name: '豆腐' },
+      { kind: 'recipe', id: 'mapodoufu', name: '麻婆豆腐' },
+    ]);
   });
 
   it('出生年月可改（小孩按新值分带，#16 份量引擎要用）', async () => {

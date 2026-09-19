@@ -46,6 +46,8 @@ describe('001 迁移的引用完整性', () => {
     // 两个都填 / 都不填：语义不明，拒绝
     expect(() => insert('corn', 'hongshaopaigu')).toThrow(/CHECK/);
     expect(() => insert(null, null)).toThrow(/CHECK/);
+    // 002 给 recipe_id 补了外键：菜粒度条目不能指向不存在的菜
+    expect(() => insert(null, '还没做的菜')).toThrow(/FOREIGN KEY/);
   });
 
   it('删掉家人时画像条目跟着走（不留指向空处的忌口）', () => {

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useIngredients, type Ingredient } from '../api/ingredients';
-import { useUpdateMember, type Member, type ProfileEntry, type ProfilePatch } from '../api/members';
+import { useRecipes, type Recipe } from '../api/recipes';
+import { useUpdateMember, type LoveEntry, type LoveTarget, type Member, type ProfilePatch } from '../api/members';
 import { useIdentity } from '../identity';
 import { memberSubtitle } from '../components/memberLabel';
 import styles from './FamilyView.module.css';
@@ -10,8 +11,7 @@ import styles from './FamilyView.module.css';
  *
  * 两处交互按「建模不对称」来：
  *   * 忌口是**硬过滤**——条目只能指向食材字典（推荐期命中即排除，含隐性忌口展开）；
- *   * 爱吃是**软加分**——条目可以是食材也可以是具体菜；菜粒度等 #15 的菜谱表接通，
- *     本票先在界面上说明，不发明一个存不进库的入口。
+ *   * 爱吃是**软加分**——条目可以是食材也可以是具体菜（#15 接通了菜粒度的存取）。
  * 改动即时落库（手机上改完即生效），不做「保存」按钮那种容易忘按的中间态。
  */
 export function FamilyView() {
@@ -25,7 +25,7 @@ export function FamilyView() {
           <span className="sub">无登录 · 点右上角头像换当前身份</span>
         </div>
         <div className="sub" style={{ marginTop: 6 }}>
-          忌口从推荐里排除（硬过滤）；爱吃给推荐加分（软加分）。条目都指向食材字典。
+          忌口从推荐里排除（硬过滤）；爱吃给推荐加分（软加分）——爱吃可以是食材，也可以是具体某道菜。
         </div>
       </div>
 
@@ -57,7 +57,8 @@ function MemberCard({ member, isCurrent }: { member: Member; isCurrent: boolean 
     );
   };
 
-  const entryIds = (entries: ProfileEntry[]): string[] => entries.map((entry) => entry.ingredientId);
+  const avoidIds = member.avoid.map((entry) => entry.ingredientId);
+  const loves = member.loves;
 
   return (
     <div className={styles.memberCard} data-testid={`member-${member.id}`}>
@@ -91,22 +92,47 @@ function MemberCard({ member, isCurrent }: { member: Member; isCurrent: boolean 
         </button>
       </div>
 
-      <EntryBlock
+      <div className={styles.blockLabel}>忌口（硬排除）</div>
+      <div className={styles.entries} data-testid={`${member.id}-avoid-entries`}>
+        {member.avoid.length === 0 ? <span className="sub">无</span> : null}
+        {member.avoid.map((entry) => (
+          <EntryChip
+            key={entry.ingredientId}
+            testId={`${member.id}-avoid-entry-${entry.ingredientId}`}
+            removeTestId={`${member.id}-avoid-remove-${entry.ingredientId}`}
+            variant="avoid"
+            name={entry.name}
+            onRemove={() => save({ avoid: avoidIds.filter((id) => id !== entry.ingredientId) })}
+          />
+        ))}
+      </div>
+      <IngredientPicker
         memberId={member.id}
-        label="忌口（硬排除）"
         variant="avoid"
-        entries={member.avoid}
-        onRemove={(ingredientId) => save({ avoid: entryIds(member.avoid).filter((id) => id !== ingredientId) })}
-        onAdd={(ingredientId) => save({ avoid: [...entryIds(member.avoid), ingredientId] })}
+        label="忌口（硬排除）"
+        existing={new Set(avoidIds)}
+        onAdd={(ingredientId) => save({ avoid: [...avoidIds, ingredientId] })}
       />
 
-      <EntryBlock
+      <div className={styles.blockLabel}>爱吃（软加分 · 食材或某道菜）</div>
+      <div className={styles.entries} data-testid={`${member.id}-loves-entries`}>
+        {loves.length === 0 ? <span className="sub">无</span> : null}
+        {loves.map((entry) => (
+          <EntryChip
+            key={`${entry.kind}:${entry.id}`}
+            testId={`${member.id}-loves-entry-${entry.id}`}
+            removeTestId={`${member.id}-loves-remove-${entry.id}`}
+            variant="loves"
+            name={entry.name}
+            kind={entry.kind}
+            onRemove={() => save({ loves: loves.filter((item) => !(item.kind === entry.kind && item.id === entry.id)) })}
+          />
+        ))}
+      </div>
+      <LovesPicker
         memberId={member.id}
-        label="爱吃（软加分）"
-        variant="loves"
-        entries={member.loves}
-        onRemove={(ingredientId) => save({ loves: entryIds(member.loves).filter((id) => id !== ingredientId) })}
-        onAdd={(ingredientId) => save({ loves: [...entryIds(member.loves), ingredientId] })}
+        existing={new Set(loves.map((entry) => `${entry.kind}:${entry.id}`))}
+        onAdd={(target) => save({ loves: [...loves.map(toTarget), target] })}
       />
 
       <div className={styles.blockLabel}>出生年月{member.kind === 'child' ? '（小孩必填 · 份量按年龄分带折算）' : '（选填）'}</div>
@@ -122,26 +148,53 @@ function MemberCard({ member, isCurrent }: { member: Member; isCurrent: boolean 
   );
 }
 
-type EntryVariant = 'avoid' | 'loves';
+/** 把带名字的爱吃条目退回成编辑入参（名字由服务端现读字典/菜谱库，不接受客户端自报） */
+function toTarget(entry: LoveEntry): LoveTarget {
+  return { kind: entry.kind, id: entry.id };
+}
 
-function EntryBlock({
-  memberId,
-  label,
+function EntryChip({
+  testId,
+  removeTestId,
   variant,
-  entries,
-  onAdd,
+  name,
+  kind,
   onRemove,
 }: {
+  testId: string;
+  removeTestId: string;
+  variant: 'avoid' | 'loves';
+  name: string;
+  /** 爱吃的条目粒度：菜的话给个标记，家人一眼看得出这是「一道菜」而不是「一种食材」 */
+  kind?: 'ingredient' | 'recipe';
+  onRemove(): void;
+}) {
+  return (
+    <span className={`${styles.entry} ${styles[variant]}`} data-testid={testId}>
+      {variant === 'avoid' ? '🚫' : '❤'} {name}
+      {kind === 'recipe' ? <span className={styles.recipeTag}>菜</span> : null}
+      <button type="button" className={styles.remove} aria-label={`删掉 ${name}`} data-testid={removeTestId} onClick={onRemove}>
+        ✕
+      </button>
+    </span>
+  );
+}
+
+/** 忌口挑食材：只指向字典（硬过滤的基数），搜规范名或别名 */
+function IngredientPicker({
+  memberId,
+  variant,
+  label,
+  existing,
+  onAdd,
+}: {
   memberId: string;
+  variant: string;
   label: string;
-  variant: EntryVariant;
-  entries: ProfileEntry[];
+  existing: Set<string>;
   onAdd(ingredientId: string): void;
-  onRemove(ingredientId: string): void;
 }) {
   const [query, setQuery] = useState('');
-  // 已在本清单里的食材不再作为可选项（清单是集合）
-  const existing = new Set(entries.map((entry) => entry.ingredientId));
   const suggestions = (useIngredients(query).data ?? []).filter((item) => !existing.has(item.id));
   const visible = suggestions.slice(0, 6);
   const testIdPrefix = `${memberId}-${variant}`;
@@ -152,26 +205,7 @@ function EntryBlock({
   };
 
   return (
-    <div>
-      <div className={styles.blockLabel}>{label}</div>
-      <div className={styles.entries} data-testid={`${testIdPrefix}-entries`}>
-        {entries.length === 0 ? <span className="sub">无</span> : null}
-        {entries.map((entry) => (
-          <span key={entry.ingredientId} className={`${styles.entry} ${styles[variant]}`} data-testid={`${testIdPrefix}-entry-${entry.ingredientId}`}>
-            {variant === 'avoid' ? '🚫' : '❤'} {entry.name}
-            <button
-              type="button"
-              className={styles.remove}
-              aria-label={`删掉 ${entry.name}`}
-              data-testid={`${testIdPrefix}-remove-${entry.ingredientId}`}
-              onClick={() => onRemove(entry.ingredientId)}
-            >
-              ✕
-            </button>
-          </span>
-        ))}
-      </div>
-
+    <>
       <div className={styles.addRow}>
         <input
           className={styles.input}
@@ -217,7 +251,107 @@ function EntryBlock({
           ))}
         </div>
       ) : null}
-    </div>
+    </>
+  );
+}
+
+/**
+ * 爱吃挑条目：**食材或某道菜**（总纲 §2.9 的混合粒度）。
+ * 一个输入框同时搜两边：家人说「红烧肉」说的是菜，说「土豆」说的是食材，让界面去分辨而不是让家人先选类别。
+ */
+function LovesPicker({
+  memberId,
+  existing,
+  onAdd,
+}: {
+  memberId: string;
+  existing: Set<string>;
+  onAdd(target: LoveTarget): void;
+}) {
+  const [query, setQuery] = useState('');
+  const testIdPrefix = `${memberId}-loves`;
+
+  const ingredients = useIngredients(query).data ?? [];
+  const recipesQuery = useRecipes('all');
+  const keyword = query.trim();
+  const recipes = (recipesQuery.data ?? []).filter(
+    (recipe) =>
+      keyword !== '' &&
+      !existing.has(`recipe:${recipe.id}`) &&
+      (recipe.name.includes(keyword) || recipe.aliases.some((alias) => alias.includes(keyword))),
+  );
+
+  const options: { key: string; id: string; name: string; kind: 'ingredient' | 'recipe'; note?: string }[] = [
+    ...ingredients
+      .filter((item) => !existing.has(`ingredient:${item.id}`))
+      .map((item) => ({
+        key: `ingredient:${item.id}`,
+        id: item.id,
+        name: item.name,
+        kind: 'ingredient' as const,
+        note: item.aliases[0],
+      })),
+    ...recipes.map((recipe: Recipe) => ({
+      key: `recipe:${recipe.id}`,
+      id: recipe.id,
+      name: recipe.name,
+      kind: 'recipe' as const,
+      note: '家常菜',
+    })),
+  ].slice(0, 6);
+
+  const add = (option: (typeof options)[number]): void => {
+    onAdd({ kind: option.kind, id: option.id });
+    setQuery('');
+  };
+
+  return (
+    <>
+      <div className={styles.addRow}>
+        <input
+          className={styles.input}
+          type="text"
+          value={query}
+          placeholder="搜食材或菜名（如 土豆 / 红烧排骨）"
+          aria-label={`给${memberId}的爱吃加一条`}
+          data-testid={`${testIdPrefix}-input`}
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            const first = options[0];
+            if (event.key === 'Enter' && first) add(first);
+          }}
+        />
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={query.trim() === '' || options.length === 0}
+          data-testid={`${testIdPrefix}-add`}
+          onClick={() => {
+            const first = options[0];
+            if (first) add(first);
+          }}
+        >
+          加
+        </button>
+      </div>
+
+      {query.trim() !== '' && options.length > 0 ? (
+        <div className={styles.suggestions}>
+          {options.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              className={styles.suggestion}
+              data-testid={`${testIdPrefix}-suggestion-${option.id}`}
+              onClick={() => add(option)}
+            >
+              {option.name}
+              {option.note ? `（${option.note}）` : ''}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </>
   );
 }
 

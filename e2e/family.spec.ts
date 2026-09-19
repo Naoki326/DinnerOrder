@@ -8,7 +8,11 @@ import { E2E, ROOT_URL } from './test-env';
  * 画像测试会改库，所以开工前先把要动的那几块改回种子态：同一轮里多个测试共享一个 webServer
  * （库在 webServer 启动时删过重建），先复原再断言就不依赖测试执行顺序。
  */
-const SEED_DAD_LOVES = ['potato', 'beef_brisket'];
+const SEED_DAD_LOVES = [
+  { kind: 'ingredient', id: 'potato' },
+  { kind: 'ingredient', id: 'beef_brisket' },
+  { kind: 'recipe', id: 'tudouniuniu' },
+];
 
 test('切换当前身份即时生效、本设备持久、不跨设备共享（无登录无口令）', async ({ page, browser }) => {
   await page.goto(`${ROOT_URL}/`);
@@ -56,7 +60,6 @@ test('家人页编辑画像：忌口/爱吃条目可增删、出生年月可改'
   await expect(page.getByTestId('family-view')).toBeVisible();
 
   const avoidEntries = page.getByTestId('dad-avoid-entries');
-  const lovesEntries = page.getByTestId('dad-loves-entries');
 
   // --- 忌口增：搜别名「西红柿」也能选中规范名「番茄」（字典的别名归一） ---
   await expect(avoidEntries.getByText('无')).toBeVisible();
@@ -84,7 +87,9 @@ test('家人页编辑画像：忌口/爱吃条目可增删、出生年月可改'
   // --- 爱吃删：种子里的土豆还在，新加的排骨删掉 ---
   await page.getByTestId('dad-loves-remove-pork_ribs').click();
   await expect(page.getByTestId('dad-loves-entry-pork_ribs')).toBeHidden();
-  await expect(lovesEntries.getByText('土豆')).toBeVisible();
+  // 用 testid 而不是 getByText：爱吃现在是**混合粒度**（食材 + 具体菜，#15 接通），
+  // getByText('土豆') 会同时命中「土豆」食材与「土豆炖牛腩」这道菜（子串匹配 → strict 冲突）
+  await expect(page.getByTestId('dad-loves-entry-potato')).toBeVisible();
 
   // --- 出生年月可改（#16 份量引擎按它现算年龄分带） ---
   const birth = page.getByTestId('member-birth-dabao');
@@ -106,6 +111,9 @@ test('画像条目落在食材字典上，且不吃手机宽度', async ({ page 
   await expect(page.getByTestId('xiaobao-avoid-entry-shellfish')).toContainText('贝类');
   await expect(page.getByTestId('xiaobao-avoid-entry-shrimp')).toContainText('虾');
   await expect(page.getByTestId('xiaobao-loves-entry-corn')).toBeVisible();
+
+  // 爱吃是混合粒度（总纲 §2.9）：小宝还爱吃「玉米胡萝卜排骨汤」这道菜本身（#15 随菜谱表补录）
+  await expect(page.getByTestId('xiaobao-loves-entry-yumihuluobogutang')).toContainText('玉米胡萝卜排骨汤');
 
   // 小孩卡片显示按出生年月现算的年龄；大人显示「大人」（都带性别）
   await expect(page.getByTestId('member-subtitle-xiaobao')).toContainText('岁');

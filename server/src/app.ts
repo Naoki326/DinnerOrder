@@ -6,6 +6,8 @@ import type { LlmClient } from './llm/types.js';
 import { registerHealthRoutes } from './api/health.js';
 import { registerIngredientRoutes } from './api/ingredients.js';
 import { registerMemberRoutes } from './api/members.js';
+import { registerRecipeRoutes } from './api/recipes.js';
+import { registerSlotRoutes } from './api/slots.js';
 import { createIndexHandler, createManifestHandler, createStaticMiddleware } from './static.js';
 
 /** 路径末段看起来是文件（带扩展名）——SPA fallback 不该给它返回 HTML */
@@ -43,6 +45,8 @@ export function createApp(options: AppOptions): Hono {
   registerHealthRoutes(api, options);
   registerIngredientRoutes(api, options);
   registerMemberRoutes(api, options);
+  registerRecipeRoutes(api, options);
+  registerSlotRoutes(api, options);
   app.route(joinBase(basePath, '/api'), api);
   // API 未匹配 → JSON 404（不能落到前端的 SPA fallback，否则前端会拿 HTML 去 parse）
   app.all(joinBase(basePath, '/api/*'), (c) => c.json({ error: 'not_found', path: c.req.path }, 404));

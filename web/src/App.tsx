@@ -6,6 +6,7 @@ import { IdentityProvider } from './identity';
 import { FamilyView } from './routes/FamilyView';
 import { HomeView } from './routes/HomeView';
 import { GroceryView, NotFoundView, ReviewView } from './routes/Placeholders';
+import { SlotView } from './routes/SlotView';
 
 /**
  * Router 在 library 模式下按 basename 挂载（ADR-0003）：挂在 /dinner/ 时
@@ -18,6 +19,15 @@ const router = createBrowserRouter(
       element: (
         <AppShell>
           <HomeView />
+        </AppShell>
+      ),
+    },
+    {
+      // 定餐编辑器：详情页而不是弹层——手机上深链能直接分享/回退，也少一层「弹层没关干净」的状态
+      path: '/slot/:slotId',
+      element: (
+        <AppShell>
+          <SlotView />
         </AppShell>
       ),
     },
