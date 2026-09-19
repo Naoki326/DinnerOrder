@@ -135,3 +135,20 @@
 - **`PortionInput` 与 `SlotBooking` 形状重复**（来源：#16 审查）。两者同形状（`PortionInput` 少一个 `source?`），`portion.ts` 处还强转一次。判断：都在 `server` 包内、由类型检查兜住，提取共享类型收益小、改动面大于收益。**若后续票要动这两个形状，一并合并。**
 - **`portionError` 与 `bookingError` 的映射重复**（来源：#16 审查）。五项相同，作者注释已承认是有意的（错误体字段随路由而变：`recipeId` / `memberId` / `id`）。**保留。**
 - **`uplift` 占位**（来源：#16 审查，判定「轻度 Speculative Generality，可接受」）。理由：留一个位置让 #22 只改一处。**保留至 #22。**
+
+---
+
+## 环境记录：pi-web 需要重启才能加载新的模型能力配置
+
+**症状**：附图时 harness 提示「model does not support images」，图片被静默丢弃（会话 jsonl 里那条 user 消息只剩文本，`content` 数组无 image 项）。
+
+**根因（已核实）**：`pi-web` 进程（PID 20683）启动于 **9-12 20:57**，已连续运行约 7 天；它在启动时读取 `~/.pi/agent/models.json` 并把模型能力缓存进内存。该文件在 **9-19 20:06** 才被改成 `input: ["text","image"]`（此前是 `["text"]`，见备份 `models.json.bak-codebuddy2`）。**运行中的进程仍用旧能力**，故内核按「不支持图片」处理并丢弃附件。
+
+**能力实测（与提示相反，实测为准）**：
+- 配置声明：`codebuddy2/deepseek-v4.1-flash` 的 `input = ["text","image"]`
+- 端点实测：向 `127.0.0.1:8004` 发 64×64 纯红 PNG（`image_url` + data URI）→ HTTP 200，模型答「红色」→ **确实支持图片**
+- 注意：第一次用 1×1 像素图测试被拒（`invalid_image_data`），那是**退化图**问题，与能力无关
+
+**修复**：重启 pi-web 进程即可（新进程读新配置）。会话本身存在 jsonl 里，不会因重启丢失。
+
+**教训**：harness 的「model does not support images」提示来自**运行中进程的内存状态**，可能是过期配置——**别直接采信，用 `ps` 查进程启动时间 vs `models.json` 修改时间来交叉验证**。
