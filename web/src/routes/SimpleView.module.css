@@ -117,6 +117,20 @@
   margin-top: 4px;
 }
 
+/* 「已定成吃剩的」那一声说明（#22）：与 A 大卡的 hero-leftover 同一条信息，
+   在这一屏换成大字——长辈小孩看得清“这顿没另买菜”。 */
+.leftover {
+  background: var(--accent-soft);
+  color: var(--ink);
+  border-radius: var(--r);
+  padding: 14px 16px;
+  margin: 12px 0;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .secSmall {
   margin-top: 8px;
   padding: 8px 14px;

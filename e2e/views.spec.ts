@@ -8,7 +8,7 @@ import { E2E, ROOT_URL } from './test-env';
  *  * 原型底部的黑色胶囊「变体切换条」是**评审工具**，不得进产品；
  *  * B（掌勺者紧凑流）与 C（长辈小孩极简）两套视图落地；
  *  * 三套视图**数据模型与操作语义一致**：同一个「定一餐」在任一套视图里走过去，
- *    服务端得到逐字段相同的结果（呈现不同而已）；
+ *    服务端得到逐字段相同的结果（呈现不同而已；「吃剩的」同理，见下方第二条对照用例）；
  *  * E2E 闭环：先切视图、再走完同一条定餐流程。
  *
  * 时间基准是真实时钟（webServer 不注入假时钟），餐槽 id 一律现取不写死；
@@ -17,16 +17,23 @@ import { E2E, ROOT_URL } from './test-env';
 interface SlotJson {
   id: string;
   date: string;
+  meal: 'lunch' | 'dinner';
   status: 'undecided' | 'decided';
   menu: {
     dishes: { recipeId: string; name: string; keepLeftover: boolean }[];
     diners: { memberId: string; name: string }[];
+    leftoverSlotId: string | null;
   } | null;
+  /** 晚餐「吃剩的」的来源（服务端推导：同日午餐已定且标了留量） */
+  leftoverSource: { slotId: string; dishes: { recipeId: string; name: string }[] } | null;
+  /** 本餐份量（服务端现算；留量那一餐的逐菜上浮读数在里面） */
+  portion: { uplift: number; dishes: { recipeId: string; uplift: number }[] } | null;
 }
 
 interface HistoryJson {
   type: string;
   source: string;
+  leftoverSlotId: string | null;
   llm: { model: string; promptVersion: string; degraded: boolean } | null;
   diners: { memberId: string }[];
 }
@@ -114,8 +121,14 @@ interface BookingSnapshot {
   status: string;
   dishes: { recipeId: string; keepLeftover: boolean }[];
   diners: string[];
+  /** 菜单上的「吃剩的」引用（#22）：普通菜单 / 推荐那一套都是 null */
+  leftoverOf: string | null;
+  /** 本餐逐菜的上浮系数（服务端现算；这一餐读的是被引用那一餐多做的那一份） */
+  uplift: number[];
   lastEvent: string;
   lastSource: string;
+  /** 末条留痕的「吃剩的」引用（事件流要能回答「为什么这顿没新采购」） */
+  lastLeftoverOf: string | null;
   /** 留痕里的 LLM 元数据：只取**语义**字段。`latencyMs` 刻意不进对照——它是真实耗时，
    *  同一条路重跑也会 0ms/1ms 地跳，拿它比会把「语义一致」变成随机红。 */
   lastLlm: { model: string; promptVersion: string; degraded: boolean } | null;
@@ -130,8 +143,11 @@ async function bookingSnapshot(page: Page, slotId: string): Promise<BookingSnaps
     status: slot.status,
     dishes: (slot.menu?.dishes ?? []).map((dish) => ({ recipeId: dish.recipeId, keepLeftover: dish.keepLeftover })),
     diners: (slot.menu?.diners ?? []).map((diner) => diner.memberId),
+    leftoverOf: slot.menu?.leftoverSlotId ?? null,
+    uplift: (slot.portion?.dishes ?? []).map((dish) => dish.uplift),
     lastEvent: last?.type ?? '',
     lastSource: last?.source ?? '',
+    lastLeftoverOf: last?.leftoverSlotId ?? null,
     lastLlm: last?.llm
       ? { model: last.llm.model, promptVersion: last.llm.promptVersion, degraded: last.llm.degraded }
       : null,
@@ -140,6 +156,58 @@ async function bookingSnapshot(page: Page, slotId: string): Promise<BookingSnaps
 
 /** 全家人（种子的 sort_order）：「不传名单 = 全员」的那一份（总纲 §3、§4） */
 const ALL_MEMBERS = ['mom', 'dad', 'dabao', 'xiaobao'] as const;
+
+/** 窗口内的餐槽（日期×餐次顺序） */
+async function listSlots(page: Page, days: number): Promise<SlotJson[]> {
+  const response = await page.request.get(`${ROOT_URL}/api/slots?days=${days}`);
+  expect(response.ok(), `餐槽列表没要回来：HTTP ${response.status()}`).toBe(true);
+  return ((await response.json()) as { slots: SlotJson[] }).slots;
+}
+
+/**
+ * 留量（S4）的前置布置：把「同日午餐 + 晚餐」摆成三套视图都能走到的场景。
+ *
+ * 留量**需要前置**（同日午餐已定且至少一道菜标了留量），所以不能塞进上面那条「定一餐」用例：
+ * 那一条的主题是「推荐 → 接受」，多一个前置会把两件事混成一团。这也是本文件第二条对照用例
+ * （A/B/C 各走一趟留量 → 服务端逐字段一致）的由来。
+ */
+async function bookLeftoverLunch(page: Page): Promise<{ lunch: string; dinner: string }> {
+  const slots = await listSlots(page, 3);
+  // 窗口里最近的午餐 + 同日晩餐（今天午餐过了截止时刻时，那就是明天的这一对）
+  const lunch = slots.find((slot) => slot.meal === 'lunch');
+  expect(lunch, '窗口内至少要有一张午餐').toBeTruthy();
+  const dinner = slots.find((slot) => slot.meal === 'dinner' && slot.date === lunch!.date);
+  expect(dinner, `${lunch!.date} 的晚餐也要在窗口里（吃剩的是当日晚餐）`).toBeTruthy();
+
+  // 目标午餐必须是「最近未定餐槽」：A 的大卡与 C 的主屏都取那一张（三套视图才能各走各的入口）。
+  // 排在它前面的都已经在清场里退回未定了，先定掉它们当垫场。
+  for (const slot of slots) {
+    if (slot.id === lunch!.id) break;
+    const response = await page.request.put(`${ROOT_URL}/api/slots/${slot.id}`, {
+      data: { diners: [...ALL_MEMBERS], dishes: [{ recipeId: 'fanqiechaodan' }] },
+    });
+    expect(response.ok(), `给 ${slot.id} 定一餐当垫场失败：HTTP ${response.status()}`).toBe(true);
+  }
+
+  // 午餐：排骨标留量 + 一道没标的不标（上浮是单道级的）——「吃剩的」由服务端从这个快照推导
+  const booked = await page.request.put(`${ROOT_URL}/api/slots/${lunch!.id}`, {
+    data: {
+      diners: [...ALL_MEMBERS],
+      dishes: [{ recipeId: 'hongshaopaigu', keepLeftover: true }, { recipeId: 'suanrongcaixin' }],
+    },
+  });
+  expect(booked.ok(), `午餐没定上：HTTP ${booked.status()}`).toBe(true);
+  return { lunch: lunch!.id, dinner: dinner!.id };
+}
+
+/** 单餐快照：用餐者名单里标了留量的那几道（服务端现推导） */
+async function keptDishes(page: Page, slotId: string): Promise<DishSnapshot> {
+  const response = await page.request.get(`${ROOT_URL}/api/slots/${slotId}`);
+  const { slot } = (await response.json()) as { slot: SlotJson };
+  return (slot.menu?.dishes ?? [])
+    .filter((dish) => dish.keepLeftover)
+    .map((dish) => ({ recipeId: dish.recipeId, keepLeftover: dish.keepLeftover }));
+}
 
 type DishSnapshot = { recipeId: string; keepLeftover: boolean }[];
 
@@ -171,6 +239,19 @@ async function expectDecided(page: Page, slotId: string): Promise<void> {
       { timeout: 15_000 },
     )
     .toBe('decided');
+}
+
+/**
+ * 一餐逐菜的上浮系数（服务端现算，`portion.dishes[].uplift`）。
+ *
+ * 它是「留量上浮真的生效了」的读数：午餐那几道标了留量的菜按家规系数算，没标的恒 1；
+ * 「吃剩的」那一餐自己没有采购，读的是被引用那一餐多做的那一份——两边算出来是同一个数。
+ * 界面不自己乘（#22 台账：不标未兑现的倍数），所以这个读数就是三条路要比的那一份。
+ */
+async function upliftsOf(page: Page, slotId: string): Promise<number[]> {
+  const response = await page.request.get(`${ROOT_URL}/api/slots/${slotId}`);
+  const { slot } = (await response.json()) as { slot: SlotJson };
+  return (slot.portion?.dishes ?? []).map((dish) => dish.uplift);
 }
 
 /**
@@ -253,6 +334,202 @@ test('三套视图操作语义一致：同一个「定一餐」在 A/B/C 各走�
   // 三条路逐字段等价（三份实现：A 大卡面板 / B 编辑器换整套 / C 向导）
   expect(snapshots.B).toEqual(snapshots.A);
   expect(snapshots.C).toEqual(snapshots.A);
+});
+
+/**
+ * AC3 的第二条判别性对照：同一个「吃剩的」（S4、总纲 §2.6）在 A/B/C 各走自己的实现，
+ * 服务端逐字段一致。
+ *
+ * 为什么另写一条而不是塞进上面那条「定一餐」：留量需要**不同前置**——同日午餐得先定下、
+ * 且至少一道菜标了留量（菜从那一餐现推导，本餐没有自己的菜品快照）。把两件事塞进一条会把
+ * 「推荐 → 接受」那个主题搅浑。但判别力同构：三条路各走各的入口，对照基准是**独立打 API
+ * 的服务端现算结果**（`keptDishes` + `upliftsOf`），不是「B/C 抄 A」：
+ *   * A：大卡上的 `book-leftover-button`（`HomeView` 的 `HeroCard`）；
+ *   * B：行内「定」→ 编辑器 → `leftover-entry` 里的 `book-leftover`（`SlotView`）；
+ *   * C：极简主屏上的 `simple-leftover` 大按钮（`SimpleView`，本票补的入口）。
+ *
+ * 快照里含现推导的菜品（含 `keepLeftover`）、菜单上的引用（`leftoverOf`）、**逐菜上浮读数**与
+ * 末条留痕：任一条路少提交一件东西（比如 C 漏了 `leftoverOf`、B 把名单改成非全员）
+ * 或漏了服务端下发的条件（比如 C 自己拼“晚餐 + 同日午餐已定”），下面的断言就会红。
+ *
+ * ⚠️ 前置要把「同日午餐已定」摆好（`bookLeftoverLunch`）：A 的大卡与 C 的主屏都只展示
+ * **最近未定的那一餐**，午餐已定后它们才指向同一张晚餐——三条路才走得通、也才可比。
+ */
+test('三套视图操作语义一致：「吃剩的」在 A/B/C 各走自己的实现，服务端逐字段一致（S9、S4）', async ({ page }) => {
+  const snapshots: Record<'A' | 'B' | 'C', BookingSnapshot | undefined> = { A: undefined, B: undefined, C: undefined };
+  // 三条路提交的必须是**同一份**服务端现推导的结果：午餐留量菜（排骨）+ 全员名单
+  let expected: { dishes: DishSnapshot; diners: string[]; leftoverOf: string; uplift: number[] } | undefined;
+  const { rules } = (await (await page.request.get(`${ROOT_URL}/api/family-rules`)).json()) as {
+    rules: { leftoverUplift: number };
+  };
+
+  for (const mode of ['A', 'B', 'C'] as const) {
+    await clearDecidedSlots(page);
+    await page.goto(`${ROOT_URL}/`);
+    await switchView(page, mode);
+    // 前置：把同一张午餐定下（排骨标留量、素菜不标）——晚餐就是这一餐的引用方
+    const { lunch, dinner } = await bookLeftoverLunch(page);
+    // 前置是刚打 API 写进去的，页面的查询缓存还是切视图前那一份：重拉一次再断言界面
+    await page.reload();
+
+    // 基准：**独立打 API** 的服务端现算结果——本餐要吃的就是午餐标了留量的那几道（服务端推导）。
+    // 上浮读数这里不读（此刻晚餐还没引用，上浮尚未生效）：它是「这一餐的每道菜 × 家规系数」
+    // —— 拿家规的配置值算出期望，而不是拿某条 UI 路的读数去对齐。
+    const base: NonNullable<typeof expected> = {
+      dishes: await keptDishes(page, lunch),
+      diners: [...ALL_MEMBERS],
+      leftoverOf: lunch,
+      uplift: [],
+    };
+    expect(base.dishes.map((dish) => dish.recipeId), '午餐要有留量菜可推（吃剩的基准）').toEqual(['hongshaopaigu']);
+    base.uplift = base.dishes.map(() => rules.leftoverUplift);
+    expected ??= base;
+    // 三条路的前置必须逐字段相同（不然下面的对照比的不是同一件事）
+    expect(base, `${mode} 的留量前置`).toEqual(expected);
+
+    if (mode === 'A') {
+      // A 的独有路：大卡上的留量按钮（午餐已定，这张大卡就是晚餐）
+      await expect(page.getByTestId('home-view')).toBeVisible();
+      await expect(page.getByTestId('empty-slot')).toHaveAttribute('data-slot-id', dinner);
+      await page.getByTestId('book-leftover-button').click();
+    } else if (mode === 'B') {
+      // B 的独有路：行内「定」进编辑器，在 `leftover-entry` 里预定
+      await expect(page.getByTestId('compact-view')).toBeVisible();
+      await page.getByTestId(`compact-book-${dinner}`).click();
+      await expect(page).toHaveURL(`${ROOT_URL}/slot/${dinner}`);
+      await expect(page.getByTestId('leftover-entry')).toBeVisible({ timeout: 15_000 });
+      await page.getByTestId('book-leftover').click();
+    } else {
+      // C 的独有路：极简主屏上的大按钮（本票补的入口）
+      await expect(page.getByTestId('simple-view')).toBeVisible();
+      const button = page.getByTestId('simple-leftover');
+      await expect(button).toBeVisible();
+      // C 没有候选面板可展开：按钮上直接写着要吃的菜（与 A 同口径，服务端下发的那一份）
+      await expect(button).toContainText('红烧排骨');
+      await button.click();
+    }
+
+    await expectDecided(page, dinner);
+
+    // 上浮真的生效了（不是纸面字段）：引用一旦成立，**午餐**那道留量菜与晚餐读的是同一个系数
+    // （「有效引用」后才生效，所以只能在这时断言）
+    expect(
+      (await upliftsOf(page, lunch)).filter((value) => value > 1),
+      `${mode} 走完后午餐的留量菜按家规系数上浮`,
+    ).toEqual([rules.leftoverUplift]);
+
+    // 定完视图没有被留量流程改掉（三套视图连主界面的摆法都不同）
+    const viewForMode = { A: 'home-view', B: 'compact-view', C: 'simple-view' }[mode];
+    await page.goto(`${ROOT_URL}/`);
+    await expect(page.getByTestId(viewForMode)).toBeVisible();
+    snapshots[mode] = await bookingSnapshot(page, dinner);
+  }
+
+  // 逐字段对照：每条路都要落成「引用同一个午餐 + 现推导来的菜 + 全员名单 + 一条 decide 留痕」
+  for (const mode of ['A', 'B', 'C'] as const) {
+    const snapshot = snapshots[mode]!;
+    expect(snapshot.status, `${mode} 的餐槽状态`).toBe('decided');
+    expect(snapshot.dishes, `${mode} 的菜品（现推导的留量菜）`).toEqual(expected!.dishes);
+    expect(snapshot.diners, `${mode} 的用餐者名单`).toEqual(expected!.diners);
+    expect(snapshot.leftoverOf, `${mode} 菜单上的「吃剩的」引用`).toBe(expected!.leftoverOf);
+    expect(snapshot.uplift, `${mode} 该餐位的上浮读数`).toEqual(expected!.uplift);
+    expect(snapshot.lastEvent, `${mode} 的末条留痕类型`).toBe('decide');
+    expect(snapshot.lastSource, `${mode} 的末条留痕来源`).toBe('manual');
+    expect(snapshot.lastLeftoverOf, `${mode} 留痕里的「吃剩的」引用`).toBe(expected!.leftoverOf);
+    expect(snapshot.lastLlm, `${mode} 不该有 LLM 元数据（留量不是推荐）`).toBeNull();
+  }
+  // 三条路逐字段等价（三份实现：A 大卡按钮 / B 编辑器入口 / C 主屏大按钮）
+  expect(snapshots.B).toEqual(snapshots.A);
+  expect(snapshots.C).toEqual(snapshots.A);
+});
+
+/**
+ * C 视图里「吃剩的」的可见性与取消（S4、S9）：定完之后要看得出这一餐吃的是剩的，
+ * 并且能退回未定——与 A 的 `hero-leftover` / `cancel-leftover-button` 同一语义，
+ * 只是换成这一屏的大字与大按钮。
+ *
+ * 这一条只管 C 自己的呈现与入口（上面那条管三视图的语义一致）；两条不重复：
+ * 上面那条即使 C 只留一个能点的按钮（不显示说明、不能取消）也会绿。
+ */
+test('C 长辈小孩极简：吃剩的那一餐看得见、不吃能取消（S4、S9）', async ({ page }) => {
+  await clearDecidedSlots(page);
+  await page.goto(`${ROOT_URL}/`);
+  await switchView(page, 'C');
+  const { lunch, dinner } = await bookLeftoverLunch(page);
+  await page.reload();
+
+  // 未定的大按钮：菜名写在按钮上（服务端下发的那一份），本餐还没有自己的菜单快照
+  const button = page.getByTestId('simple-leftover');
+  await expect(button).toBeVisible();
+  await expect(button).toContainText('红烧排骨');
+  await button.click();
+
+  // 定完：这一屏换成大字说明（看得出“这餐吃的是剩的、不另采购”），晚餐落成引用形态
+  await expect(page.getByTestId('simple-leftover-note')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('simple-leftover-note')).toContainText('吃中午剩的');
+  await expect(page.getByTestId('simple-leftover-done')).toBeVisible();
+  await expectDecided(page, dinner);
+  const saved = await bookingSnapshot(page, dinner);
+  expect(saved.leftoverOf).toBe(lunch);
+  expect(saved.dishes.map((dish) => dish.recipeId)).toEqual(['hongshaopaigu']);
+
+  // 手机宽度：大按钮不吃宽度（C 给长辈小孩用，390 是 E2E 的固定视口）
+  const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+  expect(scrollWidth).toBeLessThanOrEqual(390);
+
+  // 取消（同一条 DELETE /slots/:id）：晚餐回到未定，大按钮回来——取消不是封禁
+  await page.getByTestId('simple-cancel-leftover').click();
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(`${ROOT_URL}/api/slots/${dinner}`);
+        const { slot } = (await response.json()) as { slot: SlotJson };
+        return slot.status;
+      },
+      { timeout: 15_000 },
+    )
+    .toBe('undecided');
+  // 取消的是晚餐自己，午餐的留量来源还在 → 大按钮回来，还能再定一次
+  await expect(page.getByTestId('simple-leftover')).toBeVisible();
+
+  // 再定一次，验「👍 好」收掉这一步：回到「一屏一事」的下一件事，不会又弹回来
+  await page.getByTestId('simple-leftover').click();
+  await expect(page.getByTestId('simple-leftover-note')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('simple-leftover-done').click();
+  await expect(page.getByTestId('simple-leftover-note')).toBeHidden();
+  await expect(page.getByTestId('simple-recommend')).toBeVisible();
+  // 库里的晚餐仍是已定的那顿留量餐（收掉的只是屏幕上的这一句说明）
+  expect((await bookingSnapshot(page, dinner)).leftoverOf).toBe(lunch);
+});
+
+/**
+ * 「入口可用与否由服务端下发」这条纪律在 C 上也成立：午餐没标留量时，C 不给大按钮。
+ *
+ * 反例会让「前端自己拼晚餐 + 同日午餐已定」的实现看起来像对的（那两种实现都“大概能用”），
+ * 所以这一条是上面那条的阴性对照：无来源（服务端下发 null）时 C 不得凭空给出入口。
+ * 与 `s4-leftover.spec.ts` 里 A 的那条同构，只是换成 C 的入口——三套视图共享同一条服务端判定。
+ */
+test('C 长辈小孩极简：午餐没标留量时没有「吃剩的」大按钮（没有可吃剩的）', async ({ page }) => {
+  await clearDecidedSlots(page);
+  await page.goto(`${ROOT_URL}/`);
+  await switchView(page, 'C');
+  const { lunch } = await bookLeftoverLunch(page);
+  // 把午餐改成一道都没标留量：服务端下发的 leftoverSource 变成 null
+  const rewritten = await page.request.put(`${ROOT_URL}/api/slots/${lunch}`, {
+    data: { diners: [...ALL_MEMBERS], dishes: [{ recipeId: 'fanqiechaodan' }] },
+  });
+  expect(rewritten.ok(), `改午餐失败：HTTP ${rewritten.status()}`).toBe(true);
+  expect(
+    ((await (await page.request.get(`${ROOT_URL}/api/slots/${lunch}`)).json()) as { slot: SlotJson }).slot
+      .leftoverSource,
+    '午餐没有留量菜时服务端不该下发来源',
+  ).toBeNull();
+
+  await page.reload();
+  await expect(page.getByTestId('simple-view')).toBeVisible();
+  // 晚餐还是未定的（大按钮本来会出现在这一屏），但来源没了就不给入口——要挑菜走「自己挑菜」
+  await expect(page.getByTestId('simple-leftover')).toBeHidden();
+  await expect(page.getByTestId('simple-manual')).toBeVisible();
 });
 
 test('B 掌勺者紧凑流：按天时间轴、行内展开看到份量与留量、可直接取消（S9）', async ({ page }) => {

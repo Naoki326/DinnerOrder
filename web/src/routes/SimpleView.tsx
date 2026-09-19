@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { useIdentity } from '../identity';
-import { useSlots, type SlotWithPortion } from '../api/meals';
+import { useBookLeftover, useCancelSlot, useSlots, type SlotWithPortion } from '../api/meals';
 import {
   useAcceptRecommendation,
   useRecommendation,
@@ -26,16 +26,51 @@ import styles from './SimpleView.module.css';
  *   * 「就这么吃」走同一条 `PUT /slots/:id`（source='recommendation'，带 LLM 元数据进留痕）。
  *
  * 也留一条「自己挑菜」进**同一个**定餐编辑器（`/slot/:id`）：三套视图共用一套操作，
- * 才不会出现「C 里不能改用餐者」这种语义缺口。留量（🌙）与回顾是后续工单的事，这里不放空按钮。
+ * 才不会出现「C 里不能改用餐者」这种语义缺口。
+ *
+ * 「吃剩的」（#22、总纲 §2.10 的三视图语义一致）：与 A 的大卡同一语义、同一条 `useBookLeftover`，
+ * 只是换成这一屏的形态——未定时一个大按钮；已定成「吃剩的」时一句大字说明（等于 A 的 `hero-leftover`）。
+ * 入口可用性由服务端下发（`slot.leftoverSource`），这一屏不自己拼「晚餐 + 同日午餐已定」的判断：
+ * 它连今天午餐定没定都不一定看得见（过了截止时刻的餐槽不在列表里）。
+ * 取消：这一屏没有别的取消路径（已定的餐本来就不在这一屏出现），所以「不吃剩的了」跟着那句说明一起给
+ * ——与 A 的 `cancel-leftover-button` 同一语义、同一个位置，不是为对称另造的常驻入口。
+ * 「回顾」不用在这里补：三视图共用底部 `TabBar` 的 `/review`。
  */
 export function SimpleView() {
   const slotsQuery = useSlots(3);
+  const { members } = useIdentity();
+  const bookLeftover = useBookLeftover();
+  const cancel = useCancelSlot();
   const [wizard, setWizard] = useState(false);
+  // 刚在本屏定下的那一餐（回声）：定完它就从「未定」变成「已定」，而这一屏只显示未定的餐——
+  // 不留住它，家人按完大按钮就看不到自己做了什么（A 有下面的餐卡列表，C 没有，只能自己回声）。
+  const [booked, setBooked] = useState<SlotWithPortion | null>(null);
+  // 说明被收掉过（「👍 好」或取消）：不能再由「这几天全定完」那一路弹回来，否则是个关不掉的框。
+  const [dismissed, setDismissed] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
 
   const slots = slotsQuery.data?.slots ?? [];
   const today = slotsQuery.data?.today;
   // 一屏一事：只关心最近那一件**还没定**的事（已定的餐不在这里出现——想看就去 B 的日程）
   const next = slots.find((slot) => slot.status === 'undecided');
+
+  const isLeftover = (slot: SlotWithPortion): boolean => slot.menu !== null && slot.menu.leftoverSlotId !== null;
+  const resumed = booked === null ? undefined : slots.find((slot) => slot.id === booked.id);
+  const echo = booked === null ? undefined : keepEcho(booked, resumed);
+
+  /**
+   * 「已定成吃剩的」的那一餐（等于 A 大卡的 `hero-leftover`）什么时候上屏：
+   *   * 刚在本屏定下的那一餐（回声）—— C 没有列表能报信，不回一声家人不知道成没成；
+   *   * 或这几天**全定完**（没有未定的餐了）且窗口里第一张就是「吃剩的」那一餐（这需要今天午餐
+   *     已过截止 —— 否则 `slots[0]` 永远是午餐、不可能是留量）—— 与 A 同一取法（A 全定完时卡
+   *     也是 `list[0]`），刷新/换台手机进来也看得见。
+   * 与 A 同一取舍：还有未定的餐时不让说明抢屏（那一屏只问「这一顿定不定」，A 的大卡也优先给未定的
+   * 那一餐）。回收掉的说明不会自己弹回来（`dismissed`）。
+   */
+  const first = slots[0];
+  const leftoverSlot =
+    echo ??
+    (!dismissed && next === undefined && first !== undefined && isLeftover(first) ? first : undefined);
 
   if (slotsQuery.isPending) {
     return (
@@ -63,9 +98,76 @@ export function SimpleView() {
     );
   }
 
+  const doBookLeftover = (slot: SlotWithPortion): void => {
+    const source = slot.leftoverSource;
+    if (!source) return;
+    setError(undefined);
+    bookLeftover.mutate(
+      {
+        slotId: slot.id,
+        // 被引用那一餐由服务端下发（同日午餐），前端不自己拼「晚餐 + 同日午餐已定」的判断
+        leftoverOf: source.slotId,
+        // 与 A 的大卡、编辑器的同一条口径：未定的餐槽没有名单快照，默认全员（总纲 §3）
+        diners: slot.menu?.diners.map((diner) => diner.memberId) ?? members.map((member) => member.id),
+      },
+      {
+        onSuccess: (saved) => setBooked(saved),
+        onError: (cause) => setError(cause instanceof Error ? cause.message : '预定「吃剩的」失败'),
+      },
+    );
+  };
+
   return (
     <div className={styles.wrap} data-testid="simple-view">
-      {next ? (
+      {leftoverSlot ? (
+        <>
+          <div className={styles.emoji} aria-hidden="true">
+            🌙
+          </div>
+          <div className={styles.big} data-testid="simple-leftover-note">
+            {dayLabel(leftoverSlot, today)}
+            {leftoverSlot.meal === 'lunch' ? '午餐' : '晚餐'}
+            <br />
+            吃中午剩的
+          </div>
+          <div className={styles.leftover}>🌙 {(leftoverSlot.menu?.dishes ?? []).map((dish) => dish.name).join('、')}</div>
+          <div className="sub">不另采购 —— 吃的是中午多做的那几道，做菜量已按留量上浮。</div>
+          {/* 刚定下：给一个「这一步做完了」的大按钮（与向导里的「就这么吃」同一形态） */}
+          {booked ? (
+            <button
+              type="button"
+              className={styles.main}
+              data-testid="simple-leftover-done"
+              onClick={() => {
+                setBooked(null);
+                setDismissed(true);
+              }}
+            >
+              👍 好
+            </button>
+          ) : null}
+          {/* 取消：这一屏没有别的取消路径（已定的餐不出现在这里），所以它就是 C 的取消入口
+              ——与 A 的 `cancel-leftover-button` 同一语义、同一种大按钮 */}
+          <button
+            type="button"
+            className={styles.sec}
+            data-testid="simple-cancel-leftover"
+            disabled={cancel.isPending}
+            onClick={() => {
+              setError(undefined);
+              cancel.mutate(leftoverSlot.id, {
+                onSuccess: () => {
+                  setBooked(null);
+                  setDismissed(true);
+                },
+                onError: (cause) => setError(cause instanceof Error ? cause.message : '取消失败'),
+              });
+            }}
+          >
+            {cancel.isPending ? '取消中…' : '不吃剩的了'}
+          </button>
+        </>
+      ) : next ? (
         <>
           <div className={styles.emoji} aria-hidden="true">
             🍽️
@@ -79,6 +181,21 @@ export function SimpleView() {
           <button type="button" className={styles.main} data-testid="simple-recommend" onClick={() => setWizard(true)}>
             ✨ 给我们推荐
           </button>
+          {/* 「吃剩的」（#22）：只在服务端下发了来源（同日午餐已定且有留量菜）时给入口，
+              已定的餐槽不再重复给（要改就去编辑器）——与 A 的 `book-leftover-button` 同一显示条件 */}
+          {next.leftoverSource ? (
+            <button
+              type="button"
+              className={styles.sec}
+              data-testid="simple-leftover"
+              disabled={bookLeftover.isPending}
+              onClick={() => doBookLeftover(next)}
+            >
+              {bookLeftover.isPending
+                ? '预定中…'
+                : `🌙 吃中午剩的（${next.leftoverSource.dishes.map((dish) => dish.name).join('、')}）`}
+            </button>
+          ) : null}
           <Link className={styles.sec} to={`/slot/${next.id}`} data-testid="simple-manual">
             ✋ 自己挑菜
           </Link>
@@ -95,8 +212,26 @@ export function SimpleView() {
           <div className="sub">没定的餐 app 不打扰 —— 可能在外吃、吃剩的。</div>
         </>
       )}
+      {error ? (
+        <div className="card" data-testid="simple-leftover-error">
+          {error}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+/**
+ * 回声该显示哪一份读数（刚在本屏定下的那一餐）：
+ *   * 列表里那一份**已定** → 服务端已经给出结论：还是留量就用它（菜名从被引用那一餐现推导，
+ *     午餐改了菜这里跟着变）；不是留量了（午餐被改、这一餐被联动画回未定…）就丢掉回声；
+ *   * 列表里还没有 / 还是敲之前那份未定数据 → 用落库响应顶着：否则家人刚按完大按钮，
+ *     屏上会闪回「还没定」那一步（按钮又冒出来）。C 没有别的反馈渠道，闪一下比滞后更难理解。
+ *     （与 A 同一局限：别人在另一台设备上取消午餐、而本页查询未重拉时，两边都会先显示旧的一份。）
+ */
+function keepEcho(booked: SlotWithPortion, resumed: SlotWithPortion | undefined): SlotWithPortion | undefined {
+  if (resumed === undefined || resumed.status !== 'decided') return booked;
+  return resumed.menu !== null && resumed.menu.leftoverSlotId !== null ? resumed : undefined;
 }
 
 /** 两步向导：1 谁吃（名单）→ 2 吃这些（每道可换、整套可换可撤销、就这么吃） */
