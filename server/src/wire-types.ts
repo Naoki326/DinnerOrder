@@ -800,11 +800,139 @@ export interface SlotCancelResponse {
 /**
  * `PATCH /api/family-rules` 的入参：没传的项保持原样。
  *
- * 本票只开放留量上浮系数（冷藏期与截止时刻的编辑入口归 #26 统一收口）；
+ * 开放的字段就是**会改变买菜清单聚合结果**的那三个（留量上浮系数 + 两个餐次截止时刻，
+ * #23 评审修复 ①：改了它们，进行中的清单会被标过期）；冷藏期的编辑入口归 #26 统一收口。
  * 完整的家规形状见上面 `FamilyRules`（四个值一张单例表）。
  */
 export interface FamilyRulesPatch {
   leftoverUplift?: number;
+  /** 餐次截止时刻（家庭时区整点，0–23） */
+  lunchCutoffHour?: number;
+  dinnerCutoffHour?: number;
+}
+
+// ---------------------------------------------------------------- 买菜清单（M1-11）
+
+/** 买菜清单的状态：进行中 / 已归档（总纲 §2.7） */
+export type GroceryListStatus = 'active' | 'archived';
+
+/**
+ * 清单过期的原因（**枚举，不是那句渲染好的中文**）。界面上的句子由 `reason` + `staleSlotId` 现拼，
+ * 存中文会把「改文案」变成「改历史数据」，而且「今天午餐」这种相对叫法会随时间漂移。
+ *
+ * 新增会改变聚合结果的写路时，这里与迁移 009 的 CHECK 要一并加一档——
+ * 否则那份清单会**静默地**与新口径不一致（#23 评审发现的缺口）。
+ */
+export type GroceryStaleReason = 'menu_changed' | 'cancelled' | 'set_undone' | 'family_rules_changed';
+
+/** 清单行的两种形态（总纲 §2.7）：聚合行（同一食材生重合计）/ 手工行（掌勺者临时加） */
+export type GroceryItemKind = 'aggregate' | 'manual';
+
+/**
+ * 聚合行的来源：这一份食材来自**哪一餐的哪道菜**（原型 v1 行内那句「来自 N 道菜：明天午餐·红烧排骨」）。
+ *
+ * 存的是 (slotId, recipeId) 而不是渲染好的字符串：菜名改了（家里改名/转正改写）行内的来源要跟着变，
+ * 日期与餐次从 slotId 解析即可——存字符串就是存一份会与菜单漂移的快照。
+ */
+export interface GroceryItemSource {
+  /** 'YYYY-MM-DD:lunch|dinner' */
+  slotId: string;
+  date: string;
+  meal: MealKind;
+  recipeId: string;
+  recipeName: string;
+}
+
+/**
+ * 买菜清单里的一条行。
+ *
+ * 两种形态共用一个形状（`kind` 区分）：勾选、排序、删除对两种行是同一套操作，
+ * 分开定义只会让每个操作在两处各写一遍。
+ *
+ * `grams` / `ingredientId` / `sources` 为空的组合恰好对应手工行（掌勺者只写名字、没量）；
+ * 聚合行没有克数是自相矛盾的（那是一条没有意义的行），服务端不会产出这种形状。
+ */
+export interface GroceryItem {
+  id: number;
+  kind: GroceryItemKind;
+  /** 聚合行指向食材字典；手工行没有（不属于任何菜谱） */
+  ingredientId: string | null;
+  /** 聚合行 = 食材规范名；手工行 = 掌勺者写的自由文本 */
+  name: string;
+  /** 生重合计（g）；手工行没有克数 */
+  grams: number | null;
+  /**
+   * 这个食材在菜里，但克数还没定（导入期的模糊份量，`adult_grams = 0` 待重标）。
+   * 这类项**列出并标记**而不是静默跳过：0 g 不是「不需要买」，是「还不知道买多少」。
+   */
+  needsRelabel: boolean;
+  /** 买到打个勾（逐行勾选，总纲 §2.7） */
+  checked: boolean;
+  /** 聚合行按食材分组用的分类（来自互换表已挂的食材指针，见 domain/grocery.ts）；手工行恒为 null */
+  category: string | null;
+  /** 这一份食材来自哪几餐的哪道菜（按餐次、菜序）；手工行为空数组 */
+  sources: GroceryItemSource[];
+}
+
+/**
+ * 买菜清单（物化实体，总纲 §2.7、§3）。
+ *
+ * **同时只有一份进行中清单**（迁移 009 的局部唯一索引）：物化的不是聚合算法，而是聚合的**结果**
+ * ——勾选态、手工行、过期标记这三样不属于任何一餐、也不属于任何菜谱，现算没有地方存它们。
+ */
+export interface GroceryList {
+  id: number;
+  status: GroceryListStatus;
+  /** 改餐后标记过期（清单还在、勾选还在，但与当前菜单对不上，等一次手动重算） */
+  stale: boolean;
+  /**
+   * 过期原因（枚举）；未过期为 null。界面上那句「⚠️ （原因），清单过期了」由它与 `staleSlotId` 现拼
+   * ——服务端不存渲染好的中文（改文案 = 改历史数据，且相对叫法会漂移）。
+   */
+  staleReason: GroceryStaleReason | null;
+  /**
+   * 哪一餐的改动弄过期的（'YYYY-MM-DD:lunch|dinner'）：原因那句的主语。
+   * 家规改动（`family_rules_changed`）没有具体餐，为 null。
+   */
+  staleSlotId: string | null;
+  createdAt: string;
+  /** 最后一次重算的时刻（创建时与 createdAt 同值：新清单就是一次聚合的结果） */
+  recalculatedAt: string | null;
+  archivedAt: string | null;
+  /** 这份清单聚合了几餐（「吃剩的」那一餐不加采购，不计入） */
+  mealCount: number;
+  items: GroceryItem[];
+  /**
+   * 生熟换算参考（WS/T 554 附录 A 互换表，界面上那句「生重为准 · …」）：
+   * 数字从互换表现算（「米生:熟 ≈ 1:2.2」「肉熟重约 ×0.7」），不在代码里硬编码 0.65 / 2.2 这类数值
+   * ——改了表，界面跟着变；表里查不到就只留「生重为准」那句。
+   */
+  exchangeNote: string;
+}
+
+/** `GET /api/grocery` 的响应：进行中清单（没有就不凭空造）+ 家庭时区的今天 */
+export interface GroceryListResponse {
+  /**
+   * 进行中的清单；null = 现在没有要买的东西（没定过餐、或都吃过了）。
+   *
+   * 「没有就 null」而不是「现物化一张空清单」：归档之后再刷新页面，不该看到一张
+   * 与刚归档那张内容一样的新清单（那看起来就像归档把勾选冲掉了）。空的购物车没有信息量。
+   */
+  list: GroceryList | null;
+  /** 家庭时区的今天（与 `/api/slots` 的 `today` 同一口径），界面按它给来源标「今天午餐」 */
+  today: string;
+  /** 已归档的清单数（「买完归档」是常态动作，界面上要能看见它真的存下来了） */
+  archivedCount: number;
+}
+
+/** `POST /api/grocery/items` 的入参：加一条手工行（自由文本，不属于任何菜谱） */
+export interface GroceryManualItemInput {
+  name: string;
+}
+
+/** `PATCH /api/grocery/items/:id` 的入参：勾选/取消勾选（显式布尔——开关切换会在两端各翻一次） */
+export interface GroceryItemCheckInput {
+  checked: boolean;
 }
 
 /** `/api/health` 的响应（#13 立的冒烟 API，web 首页页脚用它显示通道状态） */

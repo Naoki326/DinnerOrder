@@ -56,6 +56,9 @@ export function coolOffDays(db: Db): number {
 /** 留量上浮系数的可接受区间（与迁移 007 的 CHECK 同源） */
 export const LEFTOVER_UPLIFT_RANGE = { min: 1, max: 5 } as const;
 
+/** 餐次截止时刻的可接受区间（家庭时区整点，与迁移 006 的 CHECK 同源） */
+export const CUTOFF_HOUR_RANGE = { min: 0, max: 23 } as const;
+
 /** 掌勺者提交的上浮系数超出可接受区间 */
 export class InvalidUpliftError extends Error {
   constructor(readonly value: number) {
@@ -64,22 +67,50 @@ export class InvalidUpliftError extends Error {
   }
 }
 
+/** 掌勺者提交的餐次截止时刻不是 0–23 的整点 */
+export class InvalidCutoffHourError extends Error {
+  constructor(
+    readonly field: 'lunchCutoffHour' | 'dinnerCutoffHour',
+    readonly value: number,
+  ) {
+    super(`餐次截止时刻必须是 ${CUTOFF_HOUR_RANGE.min}–${CUTOFF_HOUR_RANGE.max} 之间的整点：${field} = ${value}`);
+    this.name = 'InvalidCutoffHourError';
+  }
+}
+
 /**
  * 改家规（单例配置的常规写入口，总纲 §3「全部可调」）。
  *
  * 没传的项保持原样（部分更新）：家规是一份配置，不是每次都要提交全部字段的表单。
- * 区间在领域层也拦一道（不只靠 CHECK）：`InvalidUpliftError` 能翻成一句人话，
- * 而 SQLite 的 CHECK 失败是一句没法解释给家人听的英文。
+ * 区间在领域层也拦一道（不只靠 CHECK）：`InvalidUpliftError` / `InvalidCutoffHourError`
+ * 能翻成一句人话，而 SQLite 的 CHECK 失败是一句没法解释给家人听的英文。
  *
  * `updated_at` 走注入时钟（与事件留痕同一套时间基准）：测试里拨钟也能看见配置的改动时刻。
+ *
+ * ⚠️ 调用方职责：改了**会影响买菜清单聚合**的值（上浮系数 / 两个截止时刻）时要标记清单过期。
+ * 判据是 `domain/grocery.ts` 的 `familyRulesAffectGrocery`（清单自己的知识：它读了哪些家规值），
+ * 组合点在路由里（与改餐 → `markGroceryStale` 同一路数）。
  */
 export function updateFamilyRules(db: Db, clock: Clock, patch: FamilyRulesPatch): FamilyRules {
   const current = familyRules(db);
-  const next = patch.leftoverUplift ?? current.leftoverUplift;
-  if (next < LEFTOVER_UPLIFT_RANGE.min || next > LEFTOVER_UPLIFT_RANGE.max) throw new InvalidUpliftError(next);
-  db.prepare('UPDATE family_rules SET leftover_uplift = ?, updated_at = ? WHERE id = 1').run(
-    next,
-    clock.now().toISOString(),
-  );
+  const leftoverUplift = patch.leftoverUplift ?? current.leftoverUplift;
+  if (leftoverUplift < LEFTOVER_UPLIFT_RANGE.min || leftoverUplift > LEFTOVER_UPLIFT_RANGE.max) {
+    throw new InvalidUpliftError(leftoverUplift);
+  }
+  const lunchCutoffHour = cutoffHour('lunchCutoffHour', patch.lunchCutoffHour ?? current.lunchCutoffHour);
+  const dinnerCutoffHour = cutoffHour('dinnerCutoffHour', patch.dinnerCutoffHour ?? current.dinnerCutoffHour);
+  db.prepare(
+    `UPDATE family_rules
+        SET leftover_uplift = ?, lunch_cutoff_hour = ?, dinner_cutoff_hour = ?, updated_at = ?
+      WHERE id = 1`,
+  ).run(leftoverUplift, lunchCutoffHour, dinnerCutoffHour, clock.now().toISOString());
   return familyRules(db);
+}
+
+/** 截止时刻的领域层校验：翻成人话拒绝，而不是把 SQLite 的 CHECK 英文报给家人 */
+function cutoffHour(field: 'lunchCutoffHour' | 'dinnerCutoffHour', value: number): number {
+  if (!Number.isInteger(value) || value < CUTOFF_HOUR_RANGE.min || value > CUTOFF_HOUR_RANGE.max) {
+    throw new InvalidCutoffHourError(field, value);
+  }
+  return value;
 }

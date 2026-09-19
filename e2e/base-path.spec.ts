@@ -20,8 +20,9 @@ test('BASE_PATH=/dinner 下 app 壳可用且 API 跟随子路径', async ({ page
   expect(requestedPaths.some((p) => p.startsWith(`${E2E.subPath.basePath}/assets/`))).toBe(true);
   expect(await page.evaluate(() => window.__APP_CONFIG__?.basePath)).toBe(E2E.subPath.basePath);
 
-  // 底部导航切到「买菜」占位页，证明 Router 的 basename 也是对的
+  // 底部导航切到「买菜」清单页，证明 Router 的 basename 也是对的
+  // （用的是页面自己的 testid，而不是 App 壳的：导航换页真的发生了）
   await page.getByRole('link', { name: /买菜/ }).click();
   await expect(page).toHaveURL(`${SUB_PATH_URL}grocery`);
-  await expect(page.getByTestId('placeholder')).toBeVisible();
+  await expect(page.getByTestId('grocery-view')).toBeVisible();
 });

@@ -6,6 +6,7 @@ import type { LlmClient } from './llm/types.js';
 import { registerHealthRoutes } from './api/health.js';
 import { registerFeedbackRoutes } from './api/feedback.js';
 import { registerFamilyRulesRoutes } from './api/family-rules.js';
+import { registerGroceryRoutes } from './api/grocery.js';
 import { registerIngredientRoutes } from './api/ingredients.js';
 import { registerMemberRoutes } from './api/members.js';
 import { registerPortionRoutes } from './api/portion.js';
@@ -50,6 +51,7 @@ export function createApp(options: AppOptions): Hono {
   registerHealthRoutes(api, options);
   registerFamilyRulesRoutes(api, options);
   registerFeedbackRoutes(api, options);
+  registerGroceryRoutes(api, options);
   registerIngredientRoutes(api, options);
   registerMemberRoutes(api, options);
   registerPortionRoutes(api, options);

@@ -5,8 +5,9 @@ import { routerBasename } from './config';
 import { IdentityProvider } from './identity';
 import { ViewModeProvider } from './viewMode';
 import { FamilyView } from './routes/FamilyView';
+import { GroceryView } from './routes/GroceryView';
 import { HomeRoute } from './routes/HomeRoute';
-import { GroceryView, NotFoundView } from './routes/Placeholders';
+import { NotFoundView } from './routes/Placeholders';
 import { ReviewView } from './routes/ReviewView';
 import { SlotView } from './routes/SlotView';
 
@@ -35,7 +36,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      // 买菜清单：占位（后续工单给物化清单）
+      // 买菜清单（总纲 §2.7、S8）：三视图共用底部导航，买菜入口只有这一页
       path: '/grocery',
       element: (
         <AppShell>

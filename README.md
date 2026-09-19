@@ -109,7 +109,7 @@ server/                 @dinnerorder/server —— Hono + better-sqlite3 + 领�
   src/e2e-server.ts     E2E 专用入口：与生产同一条装配路，只把 LLM 换成确定性 fake；另挂一个测试专用的时钟控制口（需 `E2E_CLOCK_CONTROL=1`，生产入口没有；S6 转正要把一餐拨到「已经吃过」）
   src/testing/harness.ts 集成测试 harness（内存库 + 可控时钟 + fake LLM + 直打 HTTP）
   src/domain/            领域逻辑（食材字典、家人画像、菜谱、餐槽、份量、推荐管线、导入管线）
-  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行；004 = 外部菜谱池；005 = 导入工具链；006 = 反馈与家规；007 = 留量与留量上浮列；008 = 转正台账）
+  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行；004 = 外部菜谱池；005 = 导入工具链；006 = 反馈与家规；007 = 留量与留量上浮列；008 = 转正台账；009 = 买菜清单）
 web/                    @dinnerorder/web —— React 18 + Vite + Router 7 + TanStack Query
   src/identity.tsx      当前身份（设备本地：localStorage；家人画像在服务端）
 e2e/                    Playwright 冒烟 + 家人与当前身份
@@ -136,11 +136,15 @@ e2e/                    Playwright 冒烟 + 家人与当前身份
 | `POST /api/feedback` | **写一条反馈**（总纲 §2.5）：菜品 × 家人 + 点踩/赞 + 快捷标签（太油/太甜/量太多/量太少）。同一人同一餐同一道菜重复提交 = 改主意（UPDATE，不堆历史）；点踩由任一本餐用餐者触发即进**冷藏期**（家规，默认 14 天） |
 | `GET /api/feedback?days=` | 窗口内的反馈 + **正在冷藏期的菜**（带到期日，界面据此解释「这道为什么没出现」）+ **饭后餐卡**（窗口内已上桌的餐） |
 | `DELETE /api/feedback` | 撤回一条反馈（判定只有赞/踩两种，「什么都不说」用撤回表达） |
-| `GET /api/family-rules` · `PATCH /api/family-rules` | 家规（单例配置，总纲 §3「全部可调」）：读给界面（冷藏期天数 + 餐次截止时刻 + 留量上浮系数），写开放留量上浮系数（默认 1.5×，可改） |
+| `GET /api/family-rules` · `PATCH /api/family-rules` | 家规（单例配置，总纲 §3「全部可调」）：读给界面（冷藏期天数 + 餐次截止时刻 + 留量上浮系数），写开放**会进聚合的那三个**（留量上浮系数默认 1.5× + 午/晚截止时刻）；改了它们会把进行中的买菜清单标过期（`family_rules_changed`） |
 | `GET /api/portion/rules` | 份量规则表：成人能量锚点 + WS/T 554 分带折算系数 + 各人群推荐量 + 餐次占比（逐条带来源） |
 | `POST /api/portion/preview` | 草稿菜单的份量（编辑期即时重算；年龄按服务端时钟现算）。可带 `slotId`（必须是真餐槽 id，否则 400 `invalid_slot_id`）：留量上浮要问「这一餐有没有被『吃剩的』引用」 |
 | `GET /api/portion/exchange` | WS/T 554 附录 A 生熟/同类互换表（七组，带基准与口径） |
 | `GET /api/portion/exchange/convert?from=&grams=` | 互换换算：`grams` 的 `from` 等价于组内各条的多少克 |
+| `GET /api/grocery` | **买菜清单**（总纲 §2.7、S8）：进行中的清单（聚合行 + 手工行 + 逐行勾选 + 过期标记**结构**：原因枚举 `staleReason` + 哪一餐 `staleSlotId`，那句中文由界面现拼）或 `null`（没定过餐/刚归档且菜单没变）、家庭时区的今天、已归档份数 |
+| `POST /api/grocery/recalculate` | **手动重算**：重新聚合 + 勾选按食材继承 + 手工行保留 + 清过期标记（只认进行中的清单，否则 409 `no_grocery_list`） |
+| `POST /api/grocery/archive` | **买完归档**：进行中 → 已归档（勾选一起封存）；没有进行中的清单 → 409 |
+| `POST /api/grocery/items` · `PATCH /api/grocery/items/:id` · `DELETE /api/grocery/items/:id` | 手工行增删 + 逐行勾选（`PATCH` 送显式布尔，不是 toggle）；聚合行不可手工删（400 `aggregate_item_not_deletable`） |
 
 **错误响应形状统一为 `{error: '<代码>'}`**（可能附指认字段，如 `unknown_ingredient` 带 `ingredientId`）。
 入参校验失败是 `{error:'invalid_request', issues:[{path,message}]}`，**不是** `@hono/zod-validator` 的缺省形状；
