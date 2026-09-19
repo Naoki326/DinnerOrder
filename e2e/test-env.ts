@@ -13,6 +13,8 @@ export const E2E = {
   },
   /** 手机尺寸：iPhone 12 一档，本项目手机优先 */
   viewport: { width: 390, height: 844 },
+  /** E2E 服务端注入的确定性 fake 模型名（E2E 断言留痕里的模型名时用） */
+  fakeModel: 'e2e-fake-llm',
 } as const;
 
 export const ROOT_URL = `http://127.0.0.1:${E2E.root.port}`;

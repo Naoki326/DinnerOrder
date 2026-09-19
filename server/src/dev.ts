@@ -1,10 +1,10 @@
 import { serve } from '@hono/node-server';
 import { createApp } from './app.js';
+import { createLlmClient } from './bootstrap.js';
 import { systemClock } from './clock.js';
 import { loadServerConfig, normalizeBasePath, resolveDevApiPort } from './config.js';
 import { ensureParentDir, openDatabase } from './db/index.js';
 import { runMigrations } from './db/migrate.js';
-import { createUnconfiguredLlmClient } from './llm/unconfigured.js';
 
 /**
  * 开发 API 进程：`pnpm dev` 由根目录并行拉起它（缺省 8788）与 Vite（5173）。
@@ -29,7 +29,9 @@ runMigrations(db, config.migrationsDir);
 const app = createApp({
   db,
   clock: systemClock,
-  llm: createUnconfiguredLlmClient(),
+  // 与生产同一份选择规则（bootstrap.createLlmClient）：配了 .env 就是真调用。
+  // 开发时不配也照跑——推荐降级成简化推荐，其余功能不受影响。
+  llm: createLlmClient(),
   basePath: config.basePath,
   // 刻意不传 webDistDir：开发时前端由 Vite 提供，避免误服过期构建产物
 });

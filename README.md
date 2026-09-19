@@ -39,6 +39,10 @@
 | `WEB_DIST_DIR` | `web/dist` | 前端构建产物目录 |
 | `MIGRATIONS_DIR` | `server/migrations` | 迁移 SQL 目录 |
 | `DEV_API_PORT` | `8788` | 开发 API 端口（与 Vite 代理目标共用此变量） |
+| `OPENAI_BASE_URL` | 无 | LLM 端点（OpenAI 兼容；百炼 DashScope 或本机代理）。缺它或 key 时推荐自动走**简化推荐**，其余功能不受影响 |
+| `OPENAI_API_KEY` | 无 | LLM key。**绝不打印、绝不入库**；只写在仓库根 `.env`（chmod 600，已被 .gitignore 排除） |
+| `LLM_MODEL` | `qwen3.8-flash` | 模型名（写进留痕的 `llm_model`，模板版本进 `llm_prompt_version`） |
+| `DEBUG` | 无 | `DEBUG=1` 时把 LLM 的完整请求/响应落到 `data/logs/`（spec §4；随 `.env` 一起排除出备份），默认不落盘 |
 
 `.env` 在仓库根（**已被 `.gitignore` 排除，绝不入库**），由 `server/src/dev.ts` / 生产入口经
 `--env-file-if-exists` 加载；真实 shell 环境变量优先级高于文件。密钥不打印、不进日志。
@@ -53,10 +57,12 @@ server/                 @dinnerorder/server —— Hono + better-sqlite3 + 领�
   src/config.ts         BASE_PATH 归一化 + 环境变量装载
   src/static.ts         index.html 注入 window.__APP_CONFIG__ / manifest 改写 / serveStatic
   src/db/               openDatabase + 迁移执行器（编号 .sql，事务化，失败回滚）
-  src/llm/              MCP 形状的 LLM seam：types / fake（测试用）/ unconfigured（生产占位）
+  src/llm/              LLM seam：types（工具面 + completion）/ openai（真实端点，重试在编排层）/ fake（测试与 E2E）/ prompt（模板 + 机器可读段）/ recommendation-schema（Zod 校验）/ unconfigured（未配 key 时的占位）
+  src/bootstrap.ts      createLlmClient() + bootstrap()：生产入口与 E2E 服务端共用的装配
+  src/e2e-server.ts     E2E 专用入口：与生产同一条装配路，只把 LLM 换成确定性 fake
   src/testing/harness.ts 集成测试 harness（内存库 + 可控时钟 + fake LLM + 直打 HTTP）
-  src/domain/            领域逻辑（食材字典、家人画像）
-  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行）
+  src/domain/            领域逻辑（食材字典、家人画像、菜谱、餐槽、份量、推荐管线）
+  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行；004 = 外部菜谱池）
 web/                    @dinnerorder/web —— React 18 + Vite + Router 7 + TanStack Query
   src/identity.tsx      当前身份（设备本地：localStorage；家人画像在服务端）
 e2e/                    Playwright 冒烟 + 家人与当前身份
@@ -74,6 +80,7 @@ e2e/                    Playwright 冒烟 + 家人与当前身份
 | `GET /api/slots?days=` · `GET /api/slots/:id` | 餐槽与菜单；单餐响应内嵌 `portion`（本餐每道菜的生重） |
 | `PUT /api/slots/:id` · `DELETE /api/slots/:id` | 定餐 = 改餐（整份菜单一次提交）· 取消（留痕只增不改） |
 | `GET /api/history/recent-dishes?days=` | 最近吃过的菜（去重窗口，走事件流） |
+| `POST /api/slots/:id/recommendation` | **整餐推荐**（总纲 §4）：规则硬过滤与时令检索 → LLM 从池中选 → 降级链。不落库、不缓存，接受与否由下一次 `PUT` 决定 |
 | `GET /api/portion/rules` | 份量规则表：成人能量锚点 + WS/T 554 分带折算系数 + 各人群推荐量 + 餐次占比（逐条带来源） |
 | `POST /api/portion/preview` | 草稿菜单的份量（编辑期即时重算；年龄按服务端时钟现算） |
 | `GET /api/portion/exchange` | WS/T 554 附录 A 生熟/同类互换表（七组，带基准与口径） |
@@ -107,9 +114,13 @@ import { createTestHarness } from './testing/harness.js';
 
 const h = createTestHarness({ basePath: '/dinner' });
 h.clock.set('2025-06-08T10:00:00.000Z');        // 可控时钟（去重窗口/冷藏期）
-h.llm.setToolResult('some_tool', { content: '…' }); // 编程序 LLM 响应
+h.llm.setToolResult('some_tool', { content: '…' }); // 编程序 LLM 工具响应
+h.llm.setCompletion('{"dishes":[…] }');        // 编程序 completion（推荐管线用）
+h.llm.queueCompletion(new Error('超时'), '第二次成功'); // 排队逐次出参：降级链就是这么测的
 const { status, body } = await h.json('/dinner/api/health'); // 进程内直打，不占端口
 h.close();
 ```
 
-`h.llm.calls` 记录每次调用（含失败调用），用来断言「LLM 被调用了几次、带了什么参数」。
+`h.llm.calls` 记录每次工具调用（含失败调用），`h.llm.completionCalls` 记录每次 completion（含失败的那几次）——
+用来断言「LLM 被调用了几次、带了什么参数」。推荐测试里还会直接断言 **prompt 内容**（池子、结构、
+近 7 天已吃）：ADR-0001 决定「LLM 只从池中选」，所以池子就是契约的一部分。

@@ -9,3 +9,4 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - '@types/node@22.20.4'
+  - openai@7.19.0

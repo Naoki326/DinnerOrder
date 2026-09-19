@@ -1,7 +1,13 @@
+import { useState } from 'react';
 import { Link } from 'react-router';
 import { apiBaseUrl } from '../config';
 import { useHealth } from '../api/health';
 import { useSlots, type MealSlot, type SlotWithPortion } from '../api/meals';
+import {
+  useAcceptRecommendation,
+  useRecommendation,
+  type MealRecommendation,
+} from '../api/recommendations';
 import styles from './HomeView.module.css';
 
 /**
@@ -11,8 +17,9 @@ import styles from './HomeView.module.css';
  * 往下按天列出后面的餐槽卡。服务端已经把「已经过了的餐次」滤掉了（午 14:00 / 晚 21:00
  * 截止，家庭时区），首页不需要自己再判一次时间。
  *
- * 「给我推荐」还是禁用态：整餐推荐是 #17 的活，本票只打通手动定餐这条路。
- * 「吃中午剩的」也是（留量引用 #22），先占位。
+ * 「给我推荐」是**显式触发**的（总纲 §2.2）：点一下才向后端要一份整餐推荐，
+ * 拿到后在本卡位置展开推荐面板——每道菜带一句理由、「没做过」标记与一键接受。
+ * 摘下的菜照旧进编辑器（定餐 = 换菜，同一个编辑器），只是推荐把草稿预填好了。
  *
  * 已定的卡直接显示**每道菜的本餐生重**（`slot.portion` 由列表接口内嵌，份量已随时钟现算）；
  * 逐食材的拆解在定餐编辑器里（大卡只给每道菜的合计——手机首屏容不下逐食材列表）。
@@ -76,6 +83,40 @@ export function HomeView() {
 /** 最近的一餐：定餐的入口（未定）或查看/改餐的入口（已定） */
 function HeroCard({ slot, today }: { slot: SlotWithPortion; today: string | undefined }) {
   const decided = slot.status === 'decided';
+  const [recommendation, setRecommendation] = useState<MealRecommendation | null>(null);
+  const recommend = useRecommendation(slot.id);
+  const accept = useAcceptRecommendation(slot.id);
+  const [error, setError] = useState<string | undefined>(undefined);
+
+  const request = (): void => {
+    setError(undefined);
+    recommend.mutate(
+      {},
+      {
+        onSuccess: (result) => setRecommendation(result),
+        onError: (cause) => setError(cause instanceof Error ? cause.message : '推荐失败'),
+      },
+    );
+  };
+
+  const acceptRecommendation = (): void => {
+    if (!recommendation) return;
+    setError(undefined);
+    accept.mutate(
+      {
+        booking: {
+          diners: recommendation.diners.map((diner) => diner.memberId),
+          dishes: recommendation.dishes.map((dish) => dish.recipeId),
+        },
+        recommendation,
+      },
+      {
+        // 接受成功后收起面板：菜单已经落库，卡片上会直接显示它（面板再挂在那儿是重复的）
+        onSuccess: () => setRecommendation(null),
+        onError: (cause) => setError(cause instanceof Error ? cause.message : '保存失败'),
+      },
+    );
+  };
 
   return (
     <div className={`card ${styles.hero}`} data-testid="empty-slot" data-slot-id={slot.id}>
@@ -110,20 +151,122 @@ function HeroCard({ slot, today }: { slot: SlotWithPortion; today: string | unde
         </div>
       ) : null}
 
+      {recommendation ? (
+        <RecommendationPanel
+          recommendation={recommendation}
+          pending={accept.isPending}
+          onAccept={acceptRecommendation}
+          onDiscard={() => setRecommendation(null)}
+        />
+      ) : null}
+
+      {error ? (
+        <div className={styles.recommendError} data-testid="recommend-error">
+          {error}
+        </div>
+      ) : null}
+
       <Link className="btn block" to={`/slot/${slot.id}`} data-testid={decided ? 'edit-slot-button' : 'book-slot-button'}>
         {decided ? '✏️ 看看 / 改这餐' : '🍽 现在定这一餐'}
       </Link>
 
       <div className={styles.actions}>
-        <button type="button" className="btn ghost" disabled data-testid="recommend-button" title="整餐推荐是后续工单">
-          ✨ 给我推荐
+        {/* 显式触发（总纲 §2.2）：打开餐槽不自动生成，点一下才问 LLM。
+            推荐过之后按钮变「换一整套」的措辞——再点就是重新现算一份（不缓存）。 */}
+        <button
+          type="button"
+          className="btn ghost"
+          data-testid="recommend-button"
+          disabled={recommend.isPending || !slot.editable}
+          onClick={request}
+        >
+          {recommend.isPending ? '正在配餐…' : recommendation ? '🔄 换一整套' : '✨ 给我推荐'}
         </button>
         <button type="button" className="btn ghost" disabled title="留量引用是后续工单">
           🌙 吃中午剩的
         </button>
       </div>
       <div className="sub" style={{ marginTop: 10 }}>
-        手动挑菜按同一条编辑路径走；「给我推荐」由推荐管线工单接通。
+        手动挑菜按同一条编辑路径走；「给我推荐」按这餐的人、忌口与时令现配一份。
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 推荐面板：结构摘要 + 每道菜的理由 + 「没做过」+ 一键接受。
+ *
+ * 两处「显著标记」是 spec 的硬要求，不是装饰：
+ *   * 外部补位菜标「没做过」（spec S6）——家人要知道这盘菜家里没做过；
+ *   * 简化推荐标警示条（spec S7）——LLM 没参与时必须说清，否则家人会以为那是模型配的。
+ */
+function RecommendationPanel({
+  recommendation,
+  pending,
+  onAccept,
+  onDiscard,
+}: {
+  recommendation: MealRecommendation;
+  pending: boolean;
+  onAccept: () => void;
+  onDiscard: () => void;
+}) {
+  const simplified = recommendation.llm.format === 'rules_only';
+  const structure = recommendation.structure;
+
+  return (
+    <div className={styles.recommendPanel} data-testid="recommendation-panel">
+      <div className={styles.recommendHead}>
+        <span data-testid="recommendation-structure">
+          按家规配：{structure.meat} 荤 · {structure.veg} 素 · {structure.soup} 汤
+        </span>
+        {simplified ? (
+          <span className="badge warn" data-testid="recommendation-degraded">
+            简化推荐
+          </span>
+        ) : null}
+      </div>
+
+      {simplified ? (
+        <div className={styles.recommendNote} data-testid="recommendation-note">
+          LLM 这次没接上，这份是规则直接拼的（时令 + 荤素结构 + 去重 + 爱吃）。
+          {recommendation.notes.length > 0 ? `（${recommendation.notes[recommendation.notes.length - 1]}）` : ''}
+        </div>
+      ) : null}
+
+      <div className={styles.dishList} data-testid="recommendation-dishes">
+        {recommendation.dishes.map((dish) => (
+          <div key={dish.recipeId} className={styles.recommendDish} data-testid={`recommend-dish-${dish.recipeId}`}>
+            <span className={`${styles.kind} ${styles[dish.kind]}`}>{KIND_LABEL[dish.kind]}</span>
+            <span className={styles.recommendName}>
+              {dish.name}
+              {dish.origin === 'external' ? (
+                <span className="badge" data-testid={`recommend-external-${dish.recipeId}`}>
+                  没做过
+                </span>
+              ) : null}
+            </span>
+            <span className={styles.recommendReason}>{dish.reason ?? '规则直接拼的，没有理由'}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className={styles.actions}>
+        <button
+          type="button"
+          className="btn block"
+          data-testid="accept-recommendation"
+          disabled={pending}
+          onClick={onAccept}
+        >
+          {pending ? '保存中…' : '✅ 就这一套，定下来'}
+        </button>
+        <button type="button" className="btn ghost" data-testid="discard-recommendation" onClick={onDiscard}>
+          先不要
+        </button>
+      </div>
+      <div className="sub" style={{ marginTop: 8 }}>
+        定下来之后还可以像手动档一样换菜、改用餐者。
       </div>
     </div>
   );

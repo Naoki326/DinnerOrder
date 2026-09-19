@@ -16,6 +16,7 @@ import {
   InvalidSlotIdError,
   listSlotEvents,
   listUpcomingSlots,
+  LlmMetaWithoutRecommendationError,
   parseSlotId,
   recentDishes,
   SlotNotDecidedError,
@@ -38,6 +39,15 @@ const bookingSchema = z.object({
     )
     .min(1, '菜单里至少要有一道菜'),
   source: z.enum(['manual', 'recommendation']).optional(),
+  /** 接受推荐时回传的 LLM 元数据（形状见 wire-types；服务端只用它留痕，不参与判定） */
+  llm: z
+    .object({
+      model: z.string().min(1),
+      promptVersion: z.string().min(1),
+      latencyMs: z.number().int().min(0),
+      degraded: z.boolean(),
+    })
+    .optional(),
 });
 
 const listQuerySchema = z.object({
@@ -144,5 +154,6 @@ function bookingError(c: Context, id: string | undefined, error: unknown): Respo
   if (error instanceof EmptyDinersError) return c.json({ error: 'empty_diners', id }, 400);
   if (error instanceof EmptyDishesError) return c.json({ error: 'empty_dishes', id }, 400);
   if (error instanceof DuplicateDishError) return c.json({ error: 'duplicate_dish', recipeId: error.recipeId }, 400);
+  if (error instanceof LlmMetaWithoutRecommendationError) return c.json({ error: 'llm_meta_without_recommendation', id }, 400);
   throw error;
 }

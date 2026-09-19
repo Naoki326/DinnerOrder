@@ -124,6 +124,20 @@ export function ingredientExists(db: Db, id: string): boolean {
 }
 
 /**
+ * 当月时令的食材 id 集合（推荐期排序用）。
+ *
+ * 明确一个口径：**时令是排序不是过滤**。“未录时令 = 四季有售”（见 002 的注释），
+ * 拿它当过滤器会把整个四季皆宜的菜谱库一次排掉——那是把“不清楚”当成“不合适”。
+ * 所以这个集合只让 `rankPool` 给命中的菜加分。
+ */
+export function seasonalIngredientIds(db: Db, month: number): Set<string> {
+  const rows = db
+    .prepare('SELECT ingredient_id FROM ingredient_season_months WHERE month = ?')
+    .all(month) as { ingredient_id: string }[];
+  return new Set(rows.map((row) => row.ingredient_id));
+}
+
+/**
  * 隐性忌口「含」指针的递归展开（蚝油含贝类、贝类若还含什么就继续）。
  * 表里只存直接指针，展开在这里做一次、给全体调用方用（菜谱忌口推导与推荐期硬过滤同一口径）。
  * 深度优先 + visited：指针表理论上能有环（A 含 B、B 含 A），展开不能因此死循环。

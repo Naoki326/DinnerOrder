@@ -87,3 +87,57 @@
   margin: 14px 12px;
   font-size: 12px;
 }
+
+/* ---------------------------------------------------------------- 整餐推荐面板（#17） */
+
+/* 推荐面板嵌在大卡里，用一点背景色与内边距跟「已定菜单」分开：
+   它是一份**还没定**的草稿，视觉上不能和已定的菜单混在一起 */
+.recommendPanel {
+  margin: 10px 0 4px;
+  padding: 10px 10px 2px;
+  border-radius: 10px;
+  background: var(--chip);
+}
+
+.recommendHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.recommendNote {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--warn);
+}
+
+.recommendDish {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.recommendName {
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recommendReason {
+  flex: 1 1 100%;
+  margin-left: 30px;
+  font-size: 12px;
+  color: var(--sub);
+}
+
+.recommendError {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--warn);
+}

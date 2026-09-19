@@ -193,6 +193,14 @@ export interface LlmCallMeta {
   degraded: boolean;
 }
 
+/**
+ * 这次推荐走的是哪一档。
+ *
+ * `json_schema` 与 `json_object` 都是 LLM 选的（区别只在端点支不支持 strict schema），
+ * `rules_only` 是**简化推荐**——LLM 这轮没参与，界面必须显著标记（总纲 §4 降级链）。
+ */
+export type RecommendationFormat = 'json_schema' | 'json_object' | 'rules_only';
+
 /** 一条留痕事件（append-only，当前状态由它折叠得出） */
 export interface MealEvent {
   seq: number;
@@ -214,6 +222,73 @@ export interface SlotBooking {
   dishes: MenuDishInput[];
   /** 缺省 manual；#17 接受推荐时传 recommendation */
   source?: BookingSource;
+  /**
+   * 接受推荐时回传这次推荐的 LLM 调用元数据（总纲 §3 决议 3：留痕要能回答「为什么推这道」）。
+   *
+   * 为什么由**客户端回传**而不是服务端凭来源自己推断：推荐接口刻意不落库（不做缓存菜单，
+   * 总纲 §4），推荐响应与「接受」是两个请求，服务端此刻没有「上次推荐用了哪个模型」的记忆。
+   * 回传的字段只作留痕，不参与任何判定；只允许 `source:'recommendation'` 时携带，
+   * 手动定餐带上它是明显的调用错误，直接拒收。
+   */
+  llm?: LlmCallMeta;
+}
+
+// ---------------------------------------------------------------- 整餐推荐（M1-05）
+
+/** 推荐里一道菜的来源：家庭菜谱（做过）/ 外部补位（没做过） */
+export type RecipeOrigin = 'family' | 'external';
+
+/** 整餐推荐里的一道菜：只要菜谱 id + 一句理由，份量由份量引擎现算（LLM 不进数值路径，ADR-0004） */
+export interface RecommendedDish {
+  recipeId: string;
+  name: string;
+  kind: RecipeKind;
+  /** family = 家庭池；external = 外部池补位，界面标「没做过」（spec S6） */
+  origin: RecipeOrigin;
+  /** LLM 给的一句话理由；简化推荐（无 LLM）时为 null，界面不编造理由 */
+  reason: string | null;
+}
+
+/** 本餐的家规结构：几位、基线（2 荤 1 素 1 汤）与实际要的菜数（每 ±1 大人 ±1 道菜） */
+export interface RecommendationStructure {
+  /** 大人用餐者数 */
+  adults: number;
+  /** 小孩用餐者数 */
+  children: number;
+  /** 荤菜道数 */
+  meat: number;
+  /** 素菜道数 */
+  veg: number;
+  /** 汤道数 */
+  soup: number;
+}
+
+/** 推荐接口的 LLM 元数据：与留痕同形状，另给「走的哪一档」便于观测降级链 */
+export interface RecommendationLlmMeta extends LlmCallMeta {
+  format: RecommendationFormat;
+}
+
+/** `POST /api/slots/:id/recommendation` 的响应：推荐**不落库**，接受与否由再来一次 PUT 决定 */
+export interface MealRecommendation {
+  slotId: string;
+  /** 这一餐是谁在吃（推荐按这份名单过滤忌口、算家规结构） */
+  diners: DinerRef[];
+  structure: RecommendationStructure;
+  dishes: RecommendedDish[];
+  llm: RecommendationLlmMeta;
+  /** 降级链的痕迹（简化推荐时非空），界面把原因说清楚而不是只标一个「简化」 */
+  notes: string[];
+}
+
+/** `POST /api/slots/:id/recommendation` 的入参：用餐者缺省全员（与定餐编辑器的默认同一口径） */
+export interface RecommendationRequest {
+  /** 用餐者名单（member id）；不传 = 全体家人 */
+  diners?: string[];
+}
+
+/** `POST /api/slots/:id/recommendation` 的响应包装 */
+export interface RecommendationResponse {
+  recommendation: MealRecommendation;
 }
 
 /** 菜单里一道菜的入参 */

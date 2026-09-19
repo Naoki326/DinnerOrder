@@ -17,6 +17,7 @@
     "@hono/zod-validator": "0.9.1",
     "better-sqlite3": "12.11.1",
     "hono": "4.13.8",
+    "openai": "7.19.0",
     "zod": "4.6.5"
   },
   "devDependencies": {

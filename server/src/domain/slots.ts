@@ -238,6 +238,11 @@ export function bookSlot(db: Db, clock: Clock, id: string, booking: SlotBooking)
   const diners = resolveDiners(db, booking.diners);
   const dishes = resolveDishes(db, booking.dishes);
   const source: BookingSource = booking.source ?? 'manual';
+  // 元数据只在「接受推荐」时合法：手动挑菜却声称「这是 LLM 推的」会在留痕里变成假证据，
+  // 而留痕的全部价值就是可回溯——宁可 400 也别写一条解释不了的记录。
+  if (booking.llm !== undefined && source !== 'recommendation') {
+    throw new LlmMetaWithoutRecommendationError(id);
+  }
 
   const append = db.transaction((): void => {
     const now = listSlotEvents(db, id);
@@ -247,12 +252,11 @@ export function bookSlot(db: Db, clock: Clock, id: string, booking: SlotBooking)
       id,
       date: parsed.date,
       meal: parsed.meal,
-      // 本票（手动定餐）只会产生 replace；replace_set（换一整套）由 #18 写入——
-      // 类型先在那里备好，否则 #18 改 CHECK 就要重建事件表（append-only 的表不好碰）
-      type: current && current.type !== 'cancel' ? 'replace' : 'decide',
+      type: eventTypeFor(current, source),
       source,
       diners,
       dishes,
+      llm: booking.llm,
     });
   });
   append();
@@ -289,15 +293,44 @@ interface NewEvent {
   source: BookingSource;
   diners: DinerRef[];
   dishes: MenuDish[];
+  /** 接受推荐时带的 LLM 元数据（手动定餐为 undefined） */
+  llm?: LlmCallMeta;
+}
+
+/**
+ * 该记哪种事件（ADR-0007 的词汇）：
+ *   * 未定 → 第一条是「预定」（decide）；
+ *   * 已定 → 换一整套（replace_set）——**接受整餐推荐就是把这一餐整套换掉**，
+ *     ADR-0007 特意把「换单道」与「换一整套」分开记，因为后者要能反悔回上一套（#18）。
+ *     在同一个编辑器里手动换掉几道菜仍然是「改餐」（replace），两者靠 source 区分。
+ */
+function eventTypeFor(current: MealEvent | undefined, source: BookingSource): MealEventType {
+  const decided = current !== undefined && current.type !== 'cancel';
+  if (!decided) return 'decide';
+  return source === 'recommendation' ? 'replace_set' : 'replace';
 }
 
 function insertEvent(db: Db, clock: Clock, event: NewEvent): void {
   const result = db
     .prepare(
-      `INSERT INTO meal_events (slot_id, slot_date, meal, type, source, occurred_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO meal_events
+         (slot_id, slot_date, meal, type, source, occurred_at,
+          llm_model, llm_prompt_version, llm_latency_ms, llm_degraded)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(event.id, event.date, event.meal, event.type, event.source, clock.now().toISOString());
+    .run(
+      event.id,
+      event.date,
+      event.meal,
+      event.type,
+      event.source,
+      clock.now().toISOString(),
+      // 三件套要么都空、要么都齐（002 的 CHECK）：只接受完整的元数据，半份会在库里被拒
+      event.llm?.model ?? null,
+      event.llm?.promptVersion ?? null,
+      event.llm?.latencyMs ?? null,
+      event.llm === undefined ? null : event.llm.degraded ? 1 : 0,
+    );
   const seq = Number(result.lastInsertRowid);
 
   const insertDiner = db.prepare(
@@ -409,6 +442,14 @@ export class RecipeRetiredError extends Error {
   constructor(readonly recipeId: string) {
     super(`这道菜已经退役了：${recipeId}`);
     this.name = 'RecipeRetiredError';
+  }
+}
+
+/** 手动定餐却带上了 LLM 元数据（留痕里不能有解释不了的东西） */
+export class LlmMetaWithoutRecommendationError extends Error {
+  constructor(readonly id: string) {
+    super(`只有 source='recommendation' 的定餐能携带 LLM 元数据：${id}`);
+    this.name = 'LlmMetaWithoutRecommendationError';
   }
 }
 

@@ -33,7 +33,7 @@ export default defineConfig({
       // 先删掉上一轮留下的库：E2E 会改画像（增删忌口/改出生年月），
       // 带脏库启动会让断言看着种子、实际是上次的残留。两个实例各删各的库，互不影响。
       // `*.db*` 一并覆盖 -wal/-shm（WAL 侧文件不删，新库会看到旧日记）。
-      command: 'rm -f data/e2e-root.db* && node server/dist/index.js',
+      command: 'rm -f data/e2e-root.db* && node server/dist/e2e-server.js',
       url: `${ROOT_URL}/api/health`,
       reuseExistingServer: false,
       timeout: 60_000,
@@ -43,10 +43,11 @@ export default defineConfig({
         BASE_PATH: E2E.root.basePath,
         DB_PATH: 'data/e2e-root.db',
         WEB_DIST_DIR: 'web/dist',
+        // E2E 一律用确定性 fake LLM（服务端入口自己注入）：不联网、不随模型变
       },
     },
     {
-      command: 'rm -f data/e2e-sub.db* && node server/dist/index.js',
+      command: 'rm -f data/e2e-sub.db* && node server/dist/e2e-server.js',
       url: `http://127.0.0.1:${E2E.subPath.port}${E2E.subPath.basePath}/api/health`,
       reuseExistingServer: false,
       timeout: 60_000,

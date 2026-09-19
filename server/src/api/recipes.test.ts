@@ -52,12 +52,33 @@ describe('菜谱库', () => {
     expect(active.map((recipe) => recipe.id)).not.toContain('xiangjiandaiyu');
 
     const drafts = await listRecipes('?status=draft');
-    expect(drafts.map((recipe) => recipe.id)).toEqual(['xiangguhuaji']);
-    expect(drafts[0]?.source).toBe('howtocook');
+    // 草稿态有两条来源：导入的样张（#15）与 #17 的外部菜谱池（补位用，同样是 draft）
+    expect(drafts.map((recipe) => recipe.id)).toContain('xiangguhuaji');
+    expect(drafts.find((recipe) => recipe.id === 'xiangguhuaji')?.source).toBe('howtocook');
+    expect(drafts.every((recipe) => recipe.status === 'draft')).toBe(true);
 
     const retired = await listRecipes('?status=retired');
     expect(retired.map((recipe) => recipe.id)).toEqual(['xiangjiandaiyu']);
     expect(retired[0]?.source).toBe('scraped');
+  });
+
+  it('外部菜谱池以草稿态入库：补位用「没做过」的菜，不混进家庭池（ADR-0006）', async () => {
+    harness = createTestHarness();
+
+    const drafts = await listRecipes('?status=draft');
+    const ids = drafts.map((recipe) => recipe.id);
+    expect(ids).toEqual(expect.arrayContaining(['gongbaojiding', 'culubaicai', 'zicaidanhuatang']));
+
+    // 三个来源都种了样张（HowToCook / 爬取 / LLM 生成）—— 补位池不是单一渠道的临时物
+    expect(new Set(drafts.map((recipe) => recipe.source))).toEqual(new Set(['howtocook', 'scraped', 'llm']));
+
+    // 适季月份照实写：醋溜白菜秋冬、凉拌黄瓜夏天
+    expect((await getRecipe('culubaicai')).seasonMonths).toEqual([1, 2, 11, 12]);
+    expect((await getRecipe('liangbanhuanggua')).seasonMonths).toContain(9);
+
+    // 忌口样本齐备：宫保鸡丁含辣椒（大宝忌辣）、回锅肉用豆瓣酱（隐性忌口 → 辣椒）
+    expect((await getRecipe('gongbaojiding')).avoidIngredientIds).toContain('chili');
+    expect((await getRecipe('huiguorou')).avoidIngredientIds).toContain('chili');
   });
 
   it('菜谱带别名、口味封闭五标签、适季月份、难度与来源', async () => {

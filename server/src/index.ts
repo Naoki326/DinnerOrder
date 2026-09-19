@@ -1,33 +1,20 @@
 import { serve } from '@hono/node-server';
-import { createApp } from './app.js';
-import { systemClock } from './clock.js';
-import { loadServerConfig } from './config.js';
-import { ensureParentDir, openDatabase } from './db/index.js';
-import { runMigrations } from './db/migrate.js';
-import { createUnconfiguredLlmClient } from './llm/unconfigured.js';
+import { bootstrap } from './bootstrap.js';
 
-/** 生产入口（launchd 直跑 `node server/dist/index.js`，spec §7） */
+/**
+ * 生产入口（launchd 直跑 `node server/dist/index.js`，spec §7）。
+ * 库、迁移、LLM 客户端与 app 的装配在 `bootstrap()`（与 E2E 共用一份）；
+ * 这里只管：listen、打印一条启动行、把信号转成优雅停机。
+ */
 function main(): void {
-  const config = loadServerConfig();
-
-  ensureParentDir(config.dbPath);
-  const db = openDatabase(config.dbPath);
-  const { applied, alreadyApplied } = runMigrations(db, config.migrationsDir);
+  const { config, db, llm, app, applied, alreadyApplied } = bootstrap();
   if (applied.length > 0) {
-    console.log(`[db] 已应用迁移：${applied.map((m) => m.version).join(', ')}（此前 ${alreadyApplied.length} 个）`);
+    console.log(`[db] 已应用迁移：${applied.join(', ')}（此前 ${alreadyApplied} 个）`);
   }
-
-  const app = createApp({
-    db,
-    clock: systemClock,
-    llm: createUnconfiguredLlmClient(),
-    basePath: config.basePath,
-    webDistDir: config.webDistDir,
-  });
 
   const server = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {
     console.log(
-      `[server] 家餐桌 listening on http://${info.address}:${info.port} (BASE_PATH=${config.basePath}, DB=${config.dbPath})`,
+      `[server] 家餐桌 listening on http://${info.address}:${info.port} (BASE_PATH=${config.basePath}, DB=${config.dbPath}, LLM=${llm.model})`,
     );
   });
 

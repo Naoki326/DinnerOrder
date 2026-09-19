@@ -6,7 +6,29 @@
 
 ## 归属 #17（整餐推荐管线）
 
-- （暂无）
+- ✅ 已由 #17 处理（实现完成，待审查）；下面两条是实施中发现、**有意不在本票处理**的项。
+
+- **家规公式仍是常量，未落家规表**（来源：#17 实施）。`server/src/domain/recommendation.ts` 的
+  `BASELINE`（2 荤 1 素 1 汤）、`BASELINE_ADULTS`、`DEDUPE_DAYS`（7）、`LLM_TIMEOUT_MS`（30s）、
+  `MIN_FAMILY_PER_POSITION`（3）、`MAX_FAMILY_PER_POSITION`（8）都是实施者自定的常量；
+  spec §2.2/§4 说这些值属家规（“家规可调”）。与 `MEAL_CUTOFF_HOUR` 同一归口。
+  **#20 需接：把这些值连同餐次截止一起挪进家规表（单例配置）。**
+
+- **近 30 天反馈摘要进 prompt 的位置已留好但没人填**（来源：#17 实施）。
+  `buildPrompt({ feedbackSummary })` 已就位并有测试；但 #17 的 AC 不含反馈采集，
+  调用方（`recommendMeal`）不传它。**#20（反馈与餐后回顾）接上后要在 `recommendMeal` 里填。**
+  ⚠️ 注意：ADR-0005 要求反馈以**文本摘要**形式进 prompt，且点踩走的是**冷藏期硬排除**
+  （14 天，家规可配）——两个机制不能合并成一个分数。
+
+- **换菜（单道 3 候选 / 换一整套 / 反悔）未实现**（来源：#17 范围界定）。
+  #17 的 AC 只要求整餐推荐 + 一键接受，`MealEventType.replace_set` 已在 002 备好但没人写。
+  **#18 需接**：单道下钻 3 候选（各带理由、同会话累积排除）、换一整套、回上一条快照。
+  可直接复用：`buildPool`（池子）、`rankPool`（规则降级排序）、`selectWithLlm`（降级链）。
+
+- **本机代理端点不支持 strict `json_schema`，E2E 因此看不到 `json_schema` 档的降级**
+  （来源：#17 实施，preflight 已记录）。真实部署（DashScope）能走 strict 档；本机只能走
+  `json_object` 档。代码两档都在、`RecommendationFormat` 会把实际档位报出来，
+  集成测试用 fake 两档都覆盖了。**部署到 Mac mini 后建议人工走查一次真调用的 format。**
 
 ## 归属 #19（冷启动导入工具）
 
