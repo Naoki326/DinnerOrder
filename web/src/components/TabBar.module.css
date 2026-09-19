@@ -1,0 +1,37 @@
+.bar {
+  position: fixed;
+  bottom: 12px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  z-index: 40;
+  pointer-events: none;
+}
+
+.inner {
+  pointer-events: auto;
+  display: flex;
+  gap: 2px;
+  width: min(92%, 480px);
+  padding: 5px;
+  background: var(--card);
+  border-radius: 99px;
+  box-shadow: 0 4px 16px rgba(60, 50, 30, 0.18);
+}
+
+.tab {
+  flex: 1;
+  padding: 9px 0;
+  border-radius: 99px;
+  font-size: 14px;
+  text-align: center;
+  color: var(--sub);
+  text-decoration: none;
+}
+
+.on {
+  background: var(--ink);
+  color: #fff;
+  font-weight: 600;
+}

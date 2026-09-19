@@ -1,0 +1,11 @@
+packages:
+  - server
+  - web
+
+# 只允许这两个依赖跑 install 脚本（原生绑定 / esbuild 二进制），其余一律拦住
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+
+minimumReleaseAgeExclude:
+  - '@types/node@22.20.4'

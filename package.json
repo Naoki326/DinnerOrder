@@ -1,0 +1,31 @@
+{
+  "name": "dinner-order",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "家餐桌 · DinnerOrder —— 家常菜预定与买菜助手（单进程前后端一体）",
+  "packageManager": "pnpm@12.4.2",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "build": "pnpm run build:server && pnpm run build:web",
+    "build:server": "pnpm --filter @dinnerorder/server run build",
+    "build:web": "pnpm --filter @dinnerorder/web run build",
+    "start": "node --env-file-if-exists=.env server/dist/index.js",
+    "typecheck": "tsc -p tsconfig.json && pnpm -r run typecheck",
+    "lint": "eslint .",
+    "test": "pnpm --filter @dinnerorder/server run test",
+    "test:watch": "pnpm --filter @dinnerorder/server run test:watch",
+    "test:e2e": "pnpm run build && playwright test"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@playwright/test": "1.58.0",
+    "@types/node": "22.20.4",
+    "eslint": "9.39.5",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.0"
+  }
+}

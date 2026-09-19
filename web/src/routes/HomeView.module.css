@@ -1,0 +1,37 @@
+.hero {
+  padding: 16px 14px;
+}
+
+.kicker {
+  color: var(--sub);
+  font-size: 12px;
+}
+
+.headline {
+  font-size: 22px;
+  font-weight: 800;
+  margin: 4px 0 10px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.actions > * {
+  flex: 1;
+}
+
+.ghostCard {
+  border: 1.5px dashed #d8cfc0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.footnote {
+  text-align: center;
+  color: var(--sub);
+  margin: 14px 12px;
+  font-size: 12px;
+}

@@ -1,0 +1,11 @@
+.shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.content {
+  flex: 1;
+  /* 给底部固定导航条留出空间 */
+  padding-bottom: 96px;
+}

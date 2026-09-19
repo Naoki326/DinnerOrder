@@ -1,0 +1,129 @@
+/* 设计 token 直接搬原型（prototype/main-ui 分支的 main-ui.html），手机优先、中文优先字体栈 */
+:root {
+  --bg: #faf7f2;
+  --card: #fff;
+  --ink: #33302b;
+  --sub: #8a8378;
+  --line: #eee7dc;
+  --accent: #d9480f;
+  --accent-soft: #fff0e6;
+  --hun: #c92a2a;
+  --su: #2f9e44;
+  --tang: #1971c2;
+  --chip: #f3efe8;
+  --warn: #e67700;
+  --ok: #2b8a3e;
+  --r: 16px;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100vh;
+  padding-bottom: 24px;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+a {
+  color: var(--accent);
+}
+
+.card {
+  background: var(--card);
+  border-radius: var(--r);
+  box-shadow: 0 1px 4px rgba(60, 50, 30, 0.07);
+  padding: 14px;
+  margin: 10px 12px;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: var(--chip);
+  color: var(--sub);
+  vertical-align: middle;
+}
+
+.badge.ok {
+  background: #ebfbee;
+  color: var(--ok);
+}
+
+.badge.warn {
+  background: #fff4e6;
+  color: var(--warn);
+}
+
+.badge.acc {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.btn {
+  display: inline-block;
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  text-align: center;
+}
+
+.btn.ghost {
+  background: var(--chip);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.btn.block {
+  display: block;
+  width: 100%;
+}
+
+.btn[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.spread {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sub {
+  color: var(--sub);
+  font-size: 12px;
+}

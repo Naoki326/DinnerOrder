@@ -1,0 +1,28 @@
+{
+  "name": "@dinnerorder/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=../.env --clear-screen=false src/dev.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node --env-file-if-exists=../.env dist/index.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.1",
+    "@hono/zod-validator": "0.9.1",
+    "better-sqlite3": "12.11.1",
+    "hono": "4.13.8",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}
