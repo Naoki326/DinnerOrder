@@ -1,0 +1,75 @@
+/* 餐后回顾（总纲 §2.5）：饭后餐卡 + 冷藏期清单 */
+
+.hint {
+  display: flex;
+  flex-direction: column;
+}
+
+.cooling {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cooling li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.dishes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.dish {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dish:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.dishHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+/* 荤 / 素 / 汤 三色标记（与 HomeView / SlotView 同一套 token） */
+.kind {
+  flex: none;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  color: #fff;
+}
+
+.meat {
+  background: var(--hun);
+}
+
+.veg {
+  background: var(--su);
+}
+
+.soup_meat,
+.soup_veg {
+  background: var(--tang);
+}

@@ -21,6 +21,7 @@ import type {
 } from '../wire-types.js';
 import { listMembers, resolveMembers } from './members.js';
 import { seasonalIngredientIds } from './ingredients.js';
+import { coolingDishes, feedbackSummary } from './feedback.js';
 import { hasPendingRelabel, listRecipes } from './recipes.js';
 import { parseDate } from './family-time.js';
 import {
@@ -53,17 +54,22 @@ import {
  * 把「将来的计划」也算进「最近吃过」，会让 prompt 里那句「近 7 天已吃」变成谎话。
  */
 
-/** 家庭池每位最多取多少道进候选（总纲 §4①：每位 6–8 道） */
+/** 家庭池每位最多取多少道进候选（总纲 §4①：每位 6–8 道）
+ * TODO(#26 统一收口)：进家规表。 */
 export const MAX_FAMILY_PER_POSITION = 8;
 
-/** 家庭池某位候选少于这个数就用外部菜谱池补位（总纲 §4①、spec S6） */
+/** 家庭池某位候选少于这个数就用外部菜谱池补位（总纲 §4①、spec S6）
+ * TODO(#26 统一收口)：进家规表。 */
 export const MIN_FAMILY_PER_POSITION = 3;
 
-/** 家规基线（总纲 §2.2：2 荤 1 素 1 汤，每 ±1 大人 → ±1 道菜）。家规表化见 #20 */
+/** 家规基线（总纲 §2.2：2 荤 1 素 1 汤，每 ±1 大人 → ±1 道菜）
+ * TODO(#26 统一收口)：进家规表（总纲 §3：家规 = 单例配置，全部可调）。本票不做——
+ * 本票只把「冷藏天数 + 餐次截止」落表（`domain/family-rules.ts`），其余常量一并留给 #26。 */
 const BASELINE = { meat: 2, veg: 1, soup: 1 } as const;
 const BASELINE_ADULTS = 2;
 
-/** 去重窗口（家规默认 7 天，总纲 §4）：窗口内上桌过的菜**硬排除**（换菜候选的池干放宽也用它） */
+/** 去重窗口（家规默认 7 天，总纲 §4）：窗口内上桌过的菜**硬排除**（换菜候选的池干放宽也用它）
+ * TODO(#26 统一收口)：进家规表。 */
 export const DEDUPE_DAYS = 7;
 
 /** 候选池的位：荤 / 素 / 汤；`soup_meat` 与 `soup_veg` 都算汤位（总纲 §2.8 的汤分荤素只为忌口） */
@@ -96,7 +102,7 @@ export async function recommendMeal(
 ): Promise<MealRecommendation> {
   const parsed = parseSlotId(id);
   if (!parsed) throw new InvalidSlotIdError(id);
-  if (hasMealPassed(clock, parsed.date, parsed.meal)) throw new SlotPassedError(id);
+  if (hasMealPassed(db, clock, parsed.date, parsed.meal)) throw new SlotPassedError(id);
 
   const diners = resolveDiners(db, options.diners);
   // 时令月份按目标那一餐的日期取（不是「今天」）
@@ -104,12 +110,15 @@ export async function recommendMeal(
   // 两份窗口口径不同，别合并：「近 7 天」决定谁不能进池，「近 30 天次数」只是给 LLM 的软信号
   const recent = recentDishes(db, clock, DEDUPE_DAYS);
   const times30d = new Map(recentDishes(db, clock, 30).map((dish) => [dish.recipeId, dish.times]));
+  // 冷藏期是**硬排除**（ADR-0005）：点踩过的菜在窗口内不进推荐，且与忌口一样在入池前就排掉
+  const cooling = coolingDishes(db, clock);
 
   const plan = buildPool(db, {
     diners,
     month,
     recent,
     times30d,
+    cooling,
     seasonalIngredients: seasonalIngredientIds(db, month),
   });
   if (plan.pool.length === 0) throw new NoCandidatesError(id);
@@ -121,6 +130,10 @@ export async function recommendMeal(
     diners,
     pool: plan.pool,
     recentDishes: recent,
+    // 近 30 天反馈摘要（点赞 + 带标签的反馈）：**软信号**进 prompt，零数值权重（ADR-0005）。
+    // 点踩的**判定**不进摘要——它已经由冷藏期的硬排除表达完了；但**标签**进摘要（「为什么太油」
+    // 是另一个问题，布尔的冷藏期答不了；界面上唯一能选标签的两条路都要有这个出口）。
+    feedbackSummary: feedbackSummary(db, clock),
   };
   const prompt = buildPrompt(promptInput);
 
@@ -179,6 +192,7 @@ export interface PoolPlan {
  *
  * 顺序要紧：**硬排除在取池之前**，被排除的菜根本不进池子，也就没机会被 LLM 选走；
  * 而「近 7 天已吃」的全量另有段落进 prompt 作软避让（主料别连着重复）。
+ * 冷藏期的菜（点踩的硬后果，ADR-0005）与忌口同一位置：入池前就排掉，不靠排序。
  */
 export function buildPool(
   db: Db,
@@ -189,6 +203,8 @@ export function buildPool(
     recent: RecentDish[];
     /** 近 30 天做过几次（软信号，进 prompt） */
     times30d: Map<string, number>;
+    /** 冷藏期内的菜（点踩的硬后果）：窗口内不进池，到期自动回来 */
+    cooling: Map<string, string>;
     /** 当月时令的食材 id（排序用，不是过滤器） */
     seasonalIngredients: Set<string>;
   },
@@ -198,7 +214,9 @@ export function buildPool(
   const loves = new Set(context.diners.flatMap((member) => member.loves.map((entry) => entry.id)));
 
   const allowed = (recipe: Recipe): boolean =>
-    !recentIds.has(recipe.id) && !recipe.avoidIngredientIds.some((ingredientId) => avoid.has(ingredientId));
+    !recentIds.has(recipe.id) &&
+    !context.cooling.has(recipe.id) &&
+    !recipe.avoidIngredientIds.some((ingredientId) => avoid.has(ingredientId));
 
   const rank = (recipes: Recipe[]): Recipe[] =>
     rankPool(recipes, {

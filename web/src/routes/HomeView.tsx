@@ -8,7 +8,10 @@ import {
   useRecommendation,
   type MealRecommendation,
 } from '../api/recommendations';
+import { feedbackOf, useFeedback, type CoolingDish, type DishFeedback } from '../api/feedback';
+import { useIdentity } from '../identity';
 import { CandidateList, type SwapCandidate } from '../components/CandidateList';
+import { FeedbackBar } from '../components/FeedbackBar';
 import styles from './HomeView.module.css';
 
 /**
@@ -28,6 +31,7 @@ import styles from './HomeView.module.css';
 export function HomeView() {
   const health = useHealth();
   const slots = useSlots(3);
+  const feedback = useFeedback();
 
   const list = slots.data?.slots ?? [];
   const today = slots.data?.today;
@@ -48,7 +52,7 @@ export function HomeView() {
           <div className="sub">检查一下网络或服务是不是停了。</div>
         </div>
       ) : next ? (
-        <HeroCard slot={next} today={today} />
+        <HeroCard slot={next} today={today} feedback={feedback.data?.feedback} cooling={feedback.data?.cooling ?? []} />
       ) : (
         <div className={`card ${styles.hero}`} data-testid="empty-slot">
           <div className={styles.kicker}>最近未定餐槽</div>
@@ -82,7 +86,20 @@ export function HomeView() {
 }
 
 /** 最近的一餐：定餐的入口（未定）或查看/改餐的入口（已定） */
-function HeroCard({ slot, today }: { slot: SlotWithPortion; today: string | undefined }) {
+function HeroCard({
+  slot,
+  today,
+  feedback,
+  cooling,
+}: {
+  slot: SlotWithPortion;
+  today: string | undefined;
+  /** 近 30 天的反馈（菜单阶段的点踩从它读回当前身份说过什么） */
+  feedback: DishFeedback[] | undefined;
+  /** 正在冷藏期的菜（说清「这道为什么没进推荐」） */
+  cooling: CoolingDish[];
+}) {
+  const { current } = useIdentity();
   const decided = slot.status === 'decided';
   const [recommendation, setRecommendation] = useState<MealRecommendation | null>(null);
   // 「换一整套」前那一份**草稿**推荐：草稿没落库（总纲 §4），所以「上一套」只能在前端留住。
@@ -161,7 +178,7 @@ function HeroCard({ slot, today }: { slot: SlotWithPortion; today: string | unde
             // （都由 resolveDishes 按提交顺序产出），所以这里用下标取本餐生重
             const grams = slot.portion?.dishes.find((item) => item.recipeId === dish.recipeId)?.totalGrams;
             return (
-              <div key={dish.recipeId} className={styles.dishRow}>
+              <div key={dish.recipeId} className={styles.dishRow} data-testid={`hero-dish-${dish.recipeId}`}>
                 <span className={`${styles.kind} ${styles[dish.kind]}`}>{KIND_LABEL[dish.kind]}</span>
                 <span>{dish.name}</span>
                 {/* 只标「留量」不标倍数：上浮要等 #22 的「吃剩的」引用就位（总纲 §2.6：
@@ -176,6 +193,36 @@ function HeroCard({ slot, today }: { slot: SlotWithPortion; today: string | unde
               </div>
             );
           })}
+        </div>
+      ) : null}
+
+      {/* 冷藏期的菜要说清为什么它暂时不在推荐里（「看不见的排除」与换菜候选的忌口排除同一纪律） */}
+      {decided && slot.menu && cooledInMenu(slot, cooling).length > 0 ? (
+        <div className={styles.coolingNote} data-testid="hero-cooling">
+          有人点过踩，这道菜暂时不推：{cooledInMenu(slot, cooling).map((dish) => `${dish.name}（${dish.until} 起）`).join('、')}
+        </div>
+      ) : null}
+
+      {/* 菜单阶段的反馈（总纲 §2.5）：单道点踩 + 快捷标签。点了踩当场进冷藏期——
+          所以它不只记一笔，而是真的改变下一次推荐（这一点在文案里说清）。 */}
+      {decided && slot.menu && current ? (
+        <div className={styles.feedbackBlock} data-testid="hero-feedback">
+          <div className={styles.feedbackLabel}>这餐的吃后感（归属 {current.emoji} {current.name}）</div>
+          {slot.menu.dishes.map((dish) => (
+            <div key={dish.recipeId} className={styles.feedbackRow}>
+              <span className={styles.feedbackName}>{dish.name}</span>
+              <FeedbackBar
+                slotId={slot.id}
+                recipeId={dish.recipeId}
+                recipeName={dish.name}
+                memberId={current.id}
+                memberName={current.name}
+                current={feedbackOf(feedback, slot.id, dish.recipeId, current.id)}
+                testIdPrefix="hero"
+                compact
+              />
+            </div>
+          ))}
         </div>
       ) : null}
 
@@ -413,6 +460,12 @@ function GhostCard({ slot, today }: { slot: SlotWithPortion; today: string | und
       </div>
     </Link>
   );
+}
+
+/** 这一餐菜单里正在冷藏期的菜（界面提示用） */
+function cooledInMenu(slot: SlotWithPortion, cooling: CoolingDish[]): CoolingDish[] {
+  const ids = new Set((slot.menu?.dishes ?? []).map((dish) => dish.recipeId));
+  return cooling.filter((dish) => ids.has(dish.recipeId));
 }
 
 const KIND_LABEL: Record<string, string> = {

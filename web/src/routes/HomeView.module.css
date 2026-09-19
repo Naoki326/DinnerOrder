@@ -153,3 +153,38 @@
   color: var(--accent);
   font-weight: 600;
 }
+
+/* 冷藏期的菜：说清「为什么这道暂时不推」（与换菜候选的忌口排除同一纪律） */
+.coolingNote {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--warn);
+  line-height: 1.5;
+}
+
+/* 菜单阶段的反馈（总纲 §2.5）：单道点踩 + 快捷标签 */
+.feedbackBlock {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.feedbackLabel {
+  font-size: 12px;
+  color: var(--sub);
+}
+
+.feedbackRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.feedbackName {
+  flex: 1;
+  font-size: 13px;
+  padding-top: 4px;
+}

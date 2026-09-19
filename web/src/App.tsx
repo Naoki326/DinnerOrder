@@ -5,7 +5,8 @@ import { routerBasename } from './config';
 import { IdentityProvider } from './identity';
 import { FamilyView } from './routes/FamilyView';
 import { HomeView } from './routes/HomeView';
-import { GroceryView, NotFoundView, ReviewView } from './routes/Placeholders';
+import { GroceryView, NotFoundView } from './routes/Placeholders';
+import { ReviewView } from './routes/ReviewView';
 import { SlotView } from './routes/SlotView';
 
 /**
@@ -32,6 +33,7 @@ const router = createBrowserRouter(
       ),
     },
     {
+      // 买菜清单：占位（后续工单给物化清单）
       path: '/grocery',
       element: (
         <AppShell>
@@ -48,6 +50,7 @@ const router = createBrowserRouter(
       ),
     },
     {
+      // 餐后回顾：饭后餐卡的常驻入口（不弹窗不推送，总纲 §2.5）
       path: '/review',
       element: (
         <AppShell>

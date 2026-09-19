@@ -15,15 +15,17 @@ import type { MemberProfile, RecentDish, Recipe, RecipeKind, RecommendationStruc
  *    给多了只会增加幻觉面。只给「id/菜名/位/主料/近 30 天次数/来源」。
  */
 
-/** 改了 prompt 措辞或池子形状就 +1（留痕里的版本号，历史推荐靠它对回当时的模板） */
-export const PROMPT_VERSION = '2026-09-rec-v1';
+/** 改了 prompt 措辞或池子形状就 +1（留痕里的版本号，历史推荐靠它对回当时的模板）
+ * v2（#20）：prompt 多了【近 30 天反馈】段（点赞 + 带标签的反馈的软信号）——
+ * 同一库在 v1 与 v2 下渲染出的 prompt 不同，所以版本号要跟着走。 */
+export const PROMPT_VERSION = '2026-09-rec-v2';
 
 /**
  * 换菜候选模板的版本号（spec §2.3）。**与整餐推荐分开**：两套 prompt 的措辞各自演化，
  * 合成一个版本号就会让「留痕里的版本号」说不清是哪张模板——而它存在的唯一意义就是能对回模板。
  * 留痕里目前只落整餐推荐的版本（单道换菜不携 LLM 元数据，见 api/replacements.ts 的说明）。
  */
-export const CANDIDATE_PROMPT_VERSION = '2026-09-candidate-v1';
+export const CANDIDATE_PROMPT_VERSION = '2026-09-candidate-v2';
 
 /**
  * 留痕的 LLM 元数据可能来自哪条路（`PUT /api/slots/:id` 的 `source`）。
@@ -87,7 +89,7 @@ export interface PromptInput {
   pool: PoolEntry[];
   /** 近 7 天已吃的菜（软避让，总纲 §4①） */
   recentDishes: RecentDish[];
-  /** 近 30 天反馈摘要（#20 落数据，本票接口留好位置：非空就写进 prompt） */
+  /** 近 30 天反馈摘要（#20 落数据；非空就写进 prompt 作软信号，零数值权重） */
   feedbackSummary?: string[];
 }
 
@@ -105,6 +107,12 @@ export const STRUCTURE_MARK = '【本餐结构】';
 export const POOL_MARK = '【候选池】';
 export const RECENT_MARK = '【近 7 天已吃】';
 export const PROFILE_MARK = '【家人画像】';
+/**
+ * 近 30 天反馈摘要段（#20 落数据）。整餐推荐与换菜候选**共用这一段标记**：
+ * 两条 prompt 的差别是「配一整餐」还是「换一道」，而「家里最近对这几样说过什么」
+ * 在两条路上是同一件事——两个标记行只会让 fake/测试多一处要认的东西。
+ */
+export const FEEDBACK_MARK = '【近 30 天反馈】';
 
 export function buildPrompt(input: PromptInput): { system: string; prompt: string; structure: PromptStructureBlock } {
   const structure: PromptStructureBlock = {
@@ -127,7 +135,7 @@ export function buildPrompt(input: PromptInput): { system: string; prompt: strin
   ];
 
   if (input.feedbackSummary && input.feedbackSummary.length > 0) {
-    lines.push('', '【近 30 天反馈】', input.feedbackSummary.join('；'));
+    lines.push('', FEEDBACK_MARK, input.feedbackSummary.join('；'));
   }
 
   lines.push(
@@ -271,6 +279,8 @@ export interface CandidatePromptInput {
   pool: PoolEntry[];
   /** 近 7 天已吃的菜（软避让，与整餐推荐同一口径） */
   recentDishes: RecentDish[];
+  /** 近 30 天反馈摘要（**软信号**，与整餐推荐同一段；ADR-0005 的另一条路） */
+  feedbackSummary?: string[];
 }
 
 /**
@@ -293,6 +303,14 @@ export function buildCandidatePrompt(input: CandidatePromptInput): { system: str
     input.recentDishes.length === 0
       ? '（近 7 天没做过这些菜）'
       : input.recentDishes.map((dish) => `${dish.name}（${mealLabel(dish.meal)}，${dish.date}）`).join('、'),
+  ];
+
+  // 与整餐推荐同一段（同一个 `feedbackSummary` 语义）：换菜时也该知道「最近这几样被说过什么」
+  if (input.feedbackSummary && input.feedbackSummary.length > 0) {
+    lines.push('', FEEDBACK_MARK, input.feedbackSummary.join('；'));
+  }
+
+  lines.push(
     '',
     SWAP_MARK,
     JSON.stringify(swap),
@@ -301,7 +319,7 @@ export function buildCandidatePrompt(input: CandidatePromptInput): { system: str
     JSON.stringify(input.pool.map(poolLine)),
     '',
     `请从【同位候选池】中选 ${input.count} 个替换【换菜请求】里那道菜的候选（池子不够就少给），输出 JSON。`,
-  ];
+  );
 
   return { system: CANDIDATE_SYSTEM_PROMPT, prompt: lines.join('\n'), swap };
 }

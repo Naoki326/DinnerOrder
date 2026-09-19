@@ -14,6 +14,7 @@ import type {
   SwapRelaxation,
 } from '../wire-types.js';
 import { ingredientLabel, seasonalIngredientIds } from './ingredients.js';
+import { coolingDishes, feedbackSummary } from './feedback.js';
 import { listMembers, resolveMembers } from './members.js';
 import { hasPendingRelabel, findRecipe, listRecipes } from './recipes.js';
 import { DEDUPE_DAYS, MAX_FAMILY_PER_POSITION, MIN_FAMILY_PER_POSITION, poolEntryOf } from './recommendation.js';
@@ -94,7 +95,7 @@ export async function findCandidates(
 ): Promise<SwapCandidates> {
   const parsed = parseSlotId(id);
   if (!parsed) throw new InvalidSlotIdError(id);
-  if (hasMealPassed(clock, parsed.date, parsed.meal)) throw new SlotPassedError(id);
+  if (hasMealPassed(db, clock, parsed.date, parsed.meal)) throw new SlotPassedError(id);
 
   const slot = foldSlot(db, clock, parsed.date, parsed.meal);
   const menu = menuOf(slot, options);
@@ -111,6 +112,10 @@ export async function findCandidates(
   const recent = recentDishes(db, clock, DEDUPE_DAYS);
   const times30d = new Map(recentDishes(db, clock, 30).map((dish) => [dish.recipeId, dish.times]));
   const exclude = new Set(options.exclude ?? []);
+  // 冷藏期是**硬排除**（ADR-0005）：点踩过的菜在窗口内不进候选，且不放宽——
+  // 与忌口不同（那是安全问题），但它同样是「这条路上不要再出现这道菜」的硬规则，
+  // 池干时唯一该发生的是「没得换」，而不是把家人刚说过不要的菜端回来。
+  const cooling = coolingDishes(db, clock);
 
   const layer = buildCandidatePool(db, {
     diners,
@@ -118,6 +123,7 @@ export async function findCandidates(
     recent,
     times30d,
     exclude,
+    cooling,
     replacing,
     menu,
     seasonalIngredients: seasonalIngredientIds(db, month),
@@ -131,6 +137,8 @@ export async function findCandidates(
     diners,
     pool: layer.pool,
     recentDishes: recent,
+    // 近 30 天反馈摘要：**软信号**进 prompt（ADR-0005 的另一条路，与冷藏期的硬排除分开）
+    feedbackSummary: feedbackSummary(db, clock),
   };
   const prompt = buildCandidatePrompt(promptInput);
 
@@ -175,6 +183,7 @@ export async function findCandidates(
  * 界面据此提示家人（比如「这几道刚吃过」）。
  *
  * 一直不放宽的两条：**忌口**（硬过滤，安全问题）与**同桌已占用的菜**（再做一道一模一样的没意义）。
+ * 冷藏期是入池前就排掉的（同一份 `samePosition` 就不再出现），所以放宽对它也不生效。
  */
 function buildCandidatePool(
   db: Db,
@@ -184,6 +193,8 @@ function buildCandidatePool(
     recent: { recipeId: string }[];
     times30d: Map<string, number>;
     exclude: Set<string>;
+    /** 冷藏期内的菜（点踩的硬后果）：窗口内不进候选，任何放宽档都不放回 */
+    cooling: Map<string, string>;
     replacing: { recipeId: string; name: string; kind: Recipe['kind'] };
     /** 本餐菜单上已有的菜（含被换掉的那道）：它们不该作为候选再上一遍 */
     menu: Set<string>;
@@ -219,7 +230,9 @@ function buildCandidatePool(
   // 候选与「为什么没选它」都从同一个同位集合里分出来：同位且没被忌口命中的能当候选，
   // 命中的进 excluded 带原因展示——被排除的菜也要看得见，否则家人以为库里没有这道菜。
   // 同桌已有的菜（含正在被换掉的那道）不进 excluded：那是「已经在桌上了」，不是「被忌口排除」。
-  const samePosition = [...listRecipes(db, 'all')].filter((recipe) => recipe.status !== 'retired' && positionOf(recipe.kind) === position);
+  const samePosition = [...listRecipes(db, 'all')].filter(
+    (recipe) => recipe.status !== 'retired' && positionOf(recipe.kind) === position && !context.cooling.has(recipe.id),
+  );
   const excluded: SwapExcluded[] = [];
   const eligible: Recipe[] = [];
   for (const recipe of samePosition) {

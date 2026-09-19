@@ -3,6 +3,7 @@ import {
   buildCandidatePrompt,
   buildPrompt,
   CANDIDATE_PROMPT_VERSION,
+  FEEDBACK_MARK,
   parsePromptCandidates,
   parsePromptPool,
   parsePromptStructure,
@@ -308,6 +309,15 @@ describe('换菜候选 prompt', () => {
     // 做法步骤与克数绝不进 prompt（ADR-0004）
     expect(prompt).not.toContain('这是做法步骤');
     expect(prompt).not.toContain('adultGrams');
+  });
+
+  it('近 30 天反馈摘要与整餐推荐共用同一段标记（#20；空数组时不写这一段）', () => {
+    const withFeedback = buildCandidatePrompt({ ...candidateInput, feedbackSummary: ['红烧排骨：妈妈点过赞'] }).prompt;
+    expect(withFeedback).toContain(FEEDBACK_MARK);
+    expect(withFeedback).toContain('妈妈点过赞');
+    // 标记与整餐推荐那条路是同一个字符串：两条 prompt 的「最近说过什么」是同一件事
+    expect(FEEDBACK_MARK).toBe('【近 30 天反馈】');
+    expect(buildCandidatePrompt(candidateInput).prompt).not.toContain(FEEDBACK_MARK);
   });
 
   it('假的确定性挑选：按池子前 N 个出（N = 请求的候选数），每道一句理由', () => {

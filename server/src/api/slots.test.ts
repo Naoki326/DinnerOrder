@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createTestHarness, type TestHarness } from '../testing/harness.js';
+import { CANDIDATE_PROMPT_VERSION, PROMPT_VERSION } from '../llm/prompt.js';
 
 let harness: TestHarness;
 
@@ -567,7 +568,7 @@ describe('换一整套的撤销', () => {
         diners: ALL,
         dishes: [{ recipeId: 'kelejichi' }, { recipeId: 'culutudousi' }],
         source: 'recommendation',
-        llm: { model: 'fake-llm', promptVersion: '2026-09-rec-v1', latencyMs: 3, degraded: false },
+        llm: { model: 'fake-llm', promptVersion: PROMPT_VERSION, latencyMs: 3, degraded: false },
       }),
     });
     expect(accepted.status).toBe(200);
@@ -596,10 +597,10 @@ describe('LLM 元数据的 prompt 版本校验', () => {
 
   it('已知版本（整餐推荐模板）通过并进留痕', async () => {
     harness = createTestHarness();
-    const { status } = await acceptWithVersion('2026-09-rec-v1');
+    const { status } = await acceptWithVersion(PROMPT_VERSION);
     expect(status).toBe(200);
     const { history } = await getSlot('2025-06-01:dinner');
-    expect(history[0]?.llm?.promptVersion).toBe('2026-09-rec-v1');
+    expect(history[0]?.llm?.promptVersion).toBe(PROMPT_VERSION);
   });
 
   it('伪造的版本号 → 400 unknown_prompt_version，且一行都不落库', async () => {
@@ -612,7 +613,7 @@ describe('LLM 元数据的 prompt 版本校验', () => {
 
   it('换菜候选模板的版本号 → 400：模板与来源绑定，候选模板不产生这条留痕', async () => {
     harness = createTestHarness();
-    const { status, body } = await acceptWithVersion('2026-09-candidate-v1');
+    const { status, body } = await acceptWithVersion(CANDIDATE_PROMPT_VERSION);
     expect(status).toBe(400);
     expect(body.error).toBe('unknown_prompt_version');
     // 拒收就是一行不落：留痕里不能出现「整餐推荐用了候选模板」这条假证据

@@ -14,7 +14,8 @@ import type {
   SlotBooking,
 } from '../wire-types.js';
 import { findRecipe } from './recipes.js';
-import { addDays, familyDate, familyInstant, MEAL_CUTOFF_HOUR, parseDate } from './family-time.js';
+import { addDays, familyDate, familyInstant, parseDate } from './family-time.js';
+import { familyRules } from './family-rules.js';
 import { promptVersionFor } from '../llm/prompt.js';
 
 // 线上形状定义在 wire-types.ts（前端也从那里取）
@@ -64,12 +65,19 @@ interface DishesRow {
 
 // ---------------------------------------------------------------- 判定（全部经注入时钟）
 
-/** 这一餐是否已经过了截止时刻（过了就当它已经上桌：不再可定、不再可改、进「最近吃过」窗口） */
-export function hasMealPassed(clock: Clock, date: string, meal: MealKind): boolean {
+/**
+ * 这一餐是否已经过了截止时刻（过了就当它已经上桌：不再可定、不再可改、进「最近吃过」窗口）。
+ *
+ * 截止时刻是**家规**（#20 从 `family-time.ts` 的常量搬进 `family_rules` 表，默认午 14:00 / 晚 21:00）：
+ * 读表而不是读常量，「全部可调」才是真的。
+ */
+export function hasMealPassed(db: Db, clock: Clock, date: string, meal: MealKind): boolean {
   const now = clock.now();
   if (date < familyDate(now)) return true;
   if (date > familyDate(now)) return false;
-  return now.getTime() >= familyInstant(date, MEAL_CUTOFF_HOUR[meal]).getTime();
+  const rules = familyRules(db);
+  const hour = meal === 'lunch' ? rules.lunchCutoffHour : rules.dinnerCutoffHour;
+  return now.getTime() >= familyInstant(date, hour).getTime();
 }
 
 /** 家庭时区的今天 */
@@ -85,10 +93,10 @@ export function todayOf(clock: Clock): string {
  */
 export function foldSlot(db: Db, clock: Clock, date: string, meal: MealKind): MealSlot {
   const history = listSlotEvents(db, slotId(date, meal));
-  return toSlot(clock, date, meal, history);
+  return toSlot(db, clock, date, meal, history);
 }
 
-function toSlot(clock: Clock, date: string, meal: MealKind, history: MealEvent[]): MealSlot {
+function toSlot(db: Db, clock: Clock, date: string, meal: MealKind, history: MealEvent[]): MealSlot {
   const last = history[history.length - 1];
   const decided = last !== undefined && last.type !== 'cancel';
   return {
@@ -97,7 +105,7 @@ function toSlot(clock: Clock, date: string, meal: MealKind, history: MealEvent[]
     meal,
     status: decided ? 'decided' : 'undecided',
     menu: decided ? { diners: last.diners, dishes: last.dishes } : null,
-    editable: !hasMealPassed(clock, date, meal),
+    editable: !hasMealPassed(db, clock, date, meal),
     canUndoSet: canUndoSet(history),
   };
 }
@@ -194,13 +202,13 @@ function llmMeta(row: EventRow): LlmCallMeta | null {
 export function listUpcomingSlots(db: Db, clock: Clock, days: number): MealSlot[] {
   const today = todayOf(clock);
   // 晚餐过了则今天什么也不剩（午餐截止更早，必然也过了）
-  const start = hasMealPassed(clock, today, 'dinner') ? addDays(today, 1) : today;
+  const start = hasMealPassed(db, clock, today, 'dinner') ? addDays(today, 1) : today;
   const dates = Array.from({ length: days }, (_, offset) => addDays(start, offset));
   const history = eventsBySlot(db, dates[0]!, dates[dates.length - 1]!);
   const slots: MealSlot[] = [];
   for (const date of dates) {
     for (const meal of ['lunch', 'dinner'] as const) {
-      const slot = toSlot(clock, date, meal, history.get(slotId(date, meal)) ?? []);
+      const slot = toSlot(db, clock, date, meal, history.get(slotId(date, meal)) ?? []);
       if (slot.editable) slots.push(slot);
     }
   }
@@ -274,7 +282,7 @@ export class NothingToUndoError extends Error {
 export function bookSlot(db: Db, clock: Clock, id: string, booking: SlotBooking): MealSlot {
   const parsed = parseSlotId(id);
   if (!parsed) throw new InvalidSlotIdError(id);
-  if (hasMealPassed(clock, parsed.date, parsed.meal)) throw new SlotPassedError(id);
+  if (hasMealPassed(db, clock, parsed.date, parsed.meal)) throw new SlotPassedError(id);
 
   const diners = resolveDiners(db, booking.diners);
   const dishes = resolveDishes(db, booking.dishes);
@@ -579,7 +587,7 @@ export function recentDishes(db: Db, clock: Clock, days: number): RecentDish[] {
 
   const byRecipe = new Map<string, RecentDish>();
   for (const row of rows) {
-    if (!hasMealPassed(clock, row.slot_date, row.meal)) continue;
+    if (!hasMealPassed(db, clock, row.slot_date, row.meal)) continue;
     const existing = byRecipe.get(row.recipe_id);
     if (existing) {
       existing.times += 1;

@@ -15,9 +15,11 @@
 /** 家庭的日历时区（餐槽日期、截止时刻、时令月份都按它算） */
 export const FAMILY_TIME_ZONE = 'Asia/Shanghai';
 
-/** 餐次截止时刻（家规，spec §2.1「任何时刻可把当前时刻之后的某一餐从『未定』变为『已定』」）：
- * 过了这个点这一餐就不能再定——午饭后不能再定午饭。数值后移到家规表（#20）。 */
-export const MEAL_CUTOFF_HOUR = { lunch: 14, dinner: 21 } as const;
+// 餐次截止时刻（家规）**不在这个文件里**：自 #20 起它在 `family_rules` 表
+// （`lunch_cutoff_hour` / `dinner_cutoff_hour`，缺省午 14:00 / 晚 21:00，总纲 §3
+// 「家规 = 单例配置，全部可调」）。运行时判定一律读表（`domain/family-rules.ts` 的
+// `familyRules` + `domain/slots.ts` 的 `hasMealPassed`）——这里不再留一份会与库漂移的
+// 常量副本。要调家规请改表。
 
 const dateFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone: FAMILY_TIME_ZONE,

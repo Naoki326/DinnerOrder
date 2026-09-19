@@ -14,7 +14,8 @@ import type { RecommendationLlmMeta } from '../wire-types.js';
  * 调用方负责兜底（规则排序）：这里只把「LLM 这一侧发生了什么」如实带出来。
  */
 
-/** 单次 LLM 调用超时（spec §4②：超时 30s） */
+/** 单次 LLM 调用超时（spec §4②：超时 30s）
+ * TODO(#26 统一收口)：进家规表（家规 = 单例配置，全部可调，总纲 §3）。 */
 const LLM_TIMEOUT_MS = 30_000;
 
 /** 采样温度（spec §4②：0.7——要一点变化，否则同一餐永远推同样的菜） */

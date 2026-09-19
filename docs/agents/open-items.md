@@ -20,7 +20,7 @@
 | — | （台账文档） | `b9c0343` | — | — |
 | 6 | **#18 M1-06 换菜与候选** | —（未 commit，改动在工作区） | 266 unit + 27 E2E | ✅ 实现完成（含审查修复），待审查 |
 | 7 | **#19 M1-07 冷启动导入工具** | —（未 commit，改动在工作区） | 324 unit + 27 E2E | ✅ 实现完成（含审查修复），待审查 |
-| 8 | #20 M1-08 反馈、餐后回顾与冷藏期 | — | — | 待做 |
+| 8 | #20 M1-08 反馈、餐后回顾与冷藏期 | — | 341 unit + 29 E2E | ✅ 实现完成，待审查 |
 | 9 | #21 M1-09 转正流程 | — | — | 待做 |
 | 10 | #22 M1-10 留量 | — | — | 待做 |
 | 11 | #23 M1-11 买菜清单 | — | — | 待做 |
@@ -43,7 +43,7 @@
 
 - **LLM 端点**：本机 `127.0.0.1:8004`（OpenAI 兼容），配置在仓库根 `.env`（**已 gitignore，绝不入库**）。模型 `deepseek-v4.1-flash`。
 - **实测能力**：纯 completion ✅ ／ `json_object` ✅ 稳定 ／ **`strict json_schema` 不被支持**（实现按「失败即转 `json_object`」处理，有测试覆盖）。
-- **测试现状**：`pnpm test` 324 条（23 文件，含 2 条真 LLM 冒烟）／`pnpm test:e2e` 27 条（**3 个 webServer 实例**：8790 根路径、8791 子路径、8792 LLM 故障）。
+- **测试现状**：`pnpm test` 341 条（23 文件 + 1 跳过，含 2 条真 LLM 冒烟）／`pnpm test:e2e` 29 条（**3 个 webServer 实例**：8790 根路径、8791 子路径、8792 LLM 故障）。
 - **外部菜谱池**：`server/library-data/howtocook.jsonl`（HowToCook 采集快照，**266 道**——采集侧已按 id 去重，去重前的 372 篇里有 1 条同 id；重跑命令见 README）+ 导入 CLI（`pnpm --filter @dinnerorder/server run import:library`，参数直接跟在脚本名后、不要插 `--`）。导入完全离线；LLM 重标/菜系初打只在加 `--llm` 时发生（走 `json_object` + Zod）。详见 `server/library-data/README.md`。
 - **E2E 必须 `pnpm test:e2e`**（它先 build）；直接 `npx playwright test` 会跑**旧构建产物**——这个坑已踩过一次。
 
@@ -54,6 +54,9 @@
 3. **验证要看真实产物**：改源码后忘了 `pnpm build`，导致 E2E 一直在测旧 `web/dist`，白追几轮。
 4. **审查子代理用 `general-purpose`**（有 bash）；`explore` 类型只有 read/grep/find/ls，**跑不了 git diff 与测试**，证据等级弱。
 5. **测试写死计数必坏**：留痕是 append-only，历史永不删除 → 断言只能用「相对本次操作」的写法。
+6. **E2E spec 的文件名顺序是隐含依赖**：`meal.spec.ts` 断言「未定餐槽的留痕是空的」，任何在它**之前**跑、
+   往餐槽写留痕的 spec 都会把它打红（append-only，清不掉）。新增 spec 起名要注意字母序——
+   #20 的 `review.spec.ts` 取名就是这个原因（叫 `feedback.spec.ts` 会因为 `f < m` 而先跑、打红 meal）。
 
 ---
 
@@ -66,14 +69,15 @@
 - **家规公式仍是常量，未落家规表**（来源：#17 实施）。`server/src/domain/recommendation.ts` 的
   `BASELINE`（2 荤 1 素 1 汤）、`BASELINE_ADULTS`、`DEDUPE_DAYS`（7）、`LLM_TIMEOUT_MS`（30s）、
   `MIN_FAMILY_PER_POSITION`（3）、`MAX_FAMILY_PER_POSITION`（8）都是实施者自定的常量；
-  spec §2.2/§4 说这些值属家规（“家规可调”）。与 `MEAL_CUTOFF_HOUR` 同一归口。
-  **#20 需接：把这些值连同餐次截止一起挪进家规表（单例配置）。**
+  spec §2.2/§4 说这些值属家规（“家规可调”）。
+  **#20 只搬了餐次截止（`MEAL_CUTOFF_HOUR` → `family_rules` 表）；其余常量由 #26 统一收口**——
+  #20 的家规表（`family_rules`，单例）就是收口的落点，届时追加列即可（本票已在这几处标了 TODO）。
 
 - **近 30 天反馈摘要进 prompt 的位置已留好但没人填**（来源：#17 实施）。
   `buildPrompt({ feedbackSummary })` 已就位并有测试；但 #17 的 AC 不含反馈采集，
-  调用方（`recommendMeal`）不传它。**#20（反馈与餐后回顾）接上后要在 `recommendMeal` 里填。**
-  ⚠️ 注意：ADR-0005 要求反馈以**文本摘要**形式进 prompt，且点踩走的是**冷藏期硬排除**
-  （14 天，家规可配）——两个机制不能合并成一个分数。
+  调用方（`recommendMeal`）不传它。
+  ✅ **已由 #20 处理**：`recommendMeal` 与 `findCandidates` 都传 `feedbackSummary(db, clock)`
+  （两条 prompt 模板各 +1 版本号；换菜那条也用同一段标记【近 30 天反馈】）。
 
 - **换菜（单道 3 候选 / 换一整套 / 反悔）未实现**（来源：#17 范围界定）。
   #17 的 AC 只要求整餐推荐 + 一键接受，`MealEventType.replace_set` 已在 002 备好但没人写。
@@ -101,7 +105,9 @@
   - **单道换菜（`replace` + `manual`）不留 LLM 元数据**。理由：单道换菜走的是整份菜单 `PUT`（与手动改餐同一条路），它可能改变任意多道菜，因此「这一条换菜事件是哪些 LLM 调用造成的」无法忠实重建；写半分元数据比不写更糟（看起来能回溯，实际是假证据）。要可回溯就得把「一次换菜」升成一个专门的动作 + 事件，那是后续工单的事。整餐推荐的 `replace_set` **照旧带全套元数据**（那个调用确实造成了整套菜单）。
   - **候选池的「同位」只到荤/素/汤位，不区分荤汤/素汤**（总纲 §2.8 的汤分荤素只为忌口）。所以换一道荤汤可能给一道素汤——结构上不算变（都是汤位），但口味可能变；若之后要锁「荤汤换荤汤」，那是在 `llm/recommendation-schema.ts` 的 `positionOf` 之外再加一层更细的分位。
   - **`excludeDishes` 的闭包 `slotId` 不重置**（来源：#18 末轮复审，低危、当前不可达）。`web/src/routes/SlotView.tsx` 用 `setSession({ slotId, excludes: [...(current.slotId === slotId ? current.excludes : []), ...] })` —— `slotId` 来自闭包而非 updater 入参，若某天出现「不经 HomeView 的 A 槽 → B 槽 → A 槽」客户端路由（组件实例不卸载），A 的旧排除集会被复活；`sessionExcludes` 的**读**已按 slotId 匹配，所以只是写入侧不严谨。当前 UI 离页必经 HomeView（卸载即清），**不可达**。若日后加餐槽间的直接导航，把不可靠的闭包捕获改为在 effect 里按 slotId 重置。
-  - **家规常量未落表**（`DEDUPE_DAYS` 已被候选的池干放宽复用，#20 挪进家规表时两边会一起动）。
+  - **家规常量未落表**（`DEDUPE_DAYS` 已被候选的池干放宽复用）。
+    ✅ **已由 #20 处理的部分**：餐次截止时刻（原 `domain/family-time.ts` 的 `MEAL_CUTOFF_HOUR`）与冷藏天数（`cool_off_days`，默认 14）已落 `family_rules` 单例表（迁移 006），运行时读表（`domain/family-rules.ts`），原常量已删除。
+    **剩余部分归 #26 收口**：`server/src/domain/recommendation.ts` 的 `BASELINE`（2 荤 1 素 1 汤）与 `BASELINE_ADULTS`、`DEDUPE_DAYS`（7）、`LLM_TIMEOUT_MS`（30s）、`MIN_FAMILY_PER_POSITION`（3）、`MAX_FAMILY_PER_POSITION`（8）仍是实施者自定常量，spec §2.2/§4 说这些属家规（“家规可调”）。落点是 #20 建好的同一张 `family_rules` 表（追加列即可，代码里几处 TODO 已标注），并同时把 `web/` 里的显示值一并改成读表（不把 7 天/基线个数硬编码进文案）。
   - **「换菜会话」的边界是「不离开槽位页」**。会话排除集活在 `SlotView`/`HomeView` 的组件状态里（`SlotView` 那份刻意提到外层、不随 `key` 重挂载，`e2e/replace.spec.ts` 有回归用例）；但保存会 `navigate('/')` 离开，回同一页再换菜时排除集归零。判断：这与「一轮换菜 = 页面生命周期」的口径一致（已定菜单本身也没变成别的东西），**保留**。若日后要求「保存后回同一页仍累积」，得把会话提到路由之外（`sessionStorage` 或提升到 `App`），属语义变更。
   - **`bookSlot` 的 `sameMenu` 短路与撤销的交互**（来源：#18 复审）。连续两次「换一整套」拿到**完全同一套**菜单时不会追事件（`slots.ts` 的 `sameMenu` 判定），于是 `canUndoSet` 仍指向更早那套——用户刚点的那一下被「跳过」了，撤销会跨过它。判断：`sameMenu` 短路是 #17 的既有语义（防手机双击写两条重复留痕），**不在本票改**；真实触发条件苛刻（LLM  temperatura 0.7 + 确定性 fake 才容易复现），若要修应把「换一整套」与「保存改动」的短路分开判定。
 
@@ -150,8 +156,27 @@
 
 ## 归属 #20（反馈、餐后回顾与冷藏期）
 
-- **`MEAL_CUTOFF_HOUR` 家规化**（来源：#15、#16 审查）。`server/src/domain/family-time.ts` 的餐次截止（午 14:00 / 晚 21:00）是实施者自定的数值（spec §2.1 只写「当前时刻之后」未给数值）。总纲 §3 把家规定义为「单例配置，全部可调」，这两个数值应进家规表。代码注释已声明后移至本票。
-- **快捷标签定义**（§2.5）与「餐后回顾」UI 入口——本票主体。
+- ✅ **`MEAL_CUTOFF_HOUR` 家规化**（来源：#15、#16 审查）。已落：`family_rules` 单例表
+  （`lunch_cutoff_hour` / `dinner_cutoff_hour`，迁移 006，默认午 14 / 晚 21），运行时判定读表
+  （`domain/family-rules.ts` 的 `familyRules` + `domain/slots.ts` 的 `hasMealPassed`——
+  签名多了 `db`）。原常量已从 `domain/family-time.ts` 删除（不留会与库漂移的副本），
+  只在那里留了一句指向家规表的注释。`GET /api/family-rules` 是读口。
+- ✅ **快捷标签定义**（总纲 §2.5）与「餐后回顾」UI 入口。已落：封闭四值
+  （太油/太甜/量太多/量太少；`FEEDBACK_TAGS` 与迁移 006 的 CHECK 同源）、
+  反馈条组件 `web/src/components/FeedbackBar.tsx`（菜单卡 + 回顾卡共用一套），
+  回顾页 `web/src/routes/ReviewView.tsx` 由底部导航的「回顾」标签常驻进入（不弹窗不推送）。
+- ✅ **反馈摘要接进 `recommendMeal`**（台账「归属 #17」那条）。`recommendMeal` 与 `findCandidates`
+  都传 `feedbackSummary(db, clock)`（近 30 天；点赞写成句子，**带标签的反馈不论赞踩都把标签文本聚进摘要**
+  ——标签回答「为什么太油/太甜/量太多」，冷藏期的布尔答不了这个问题，而冷藏期那条硬排除照旧只认点踩）。
+  两条 prompt 模板因此各 +1 版本（`2026-09-rec-v2` / `2026-09-candidate-v2`）——旧版本号已从
+  留痕校验里移除（`slots.test.ts` 改成从 `PROMPT_VERSION` 读）。
+  （评审修复轮改的就是这一条：原先只有点赞行的标签进摘要，而界面上唯一能选标签的两条路产出的标签
+  会被 `verdict !== 'like'` 全部丢掉——菜单阶段点踩 + 标签的路径等于白选。）
+
+- **#22 接**：家规表已建好（`family_rules`，单例，迁移 006），它加留量上浮系数直接 `ALTER TABLE ... ADD COLUMN`
+  即可（或另建一列，形状不变）——但**本票没有**建家规的写接口（只读），也没有把
+  `recommendation.ts` 的 `BASELINE` / `DEDUPE_DAYS` / `LLM_TIMEOUT_MS` 搬进去：那是 #26 的统一收口
+  （代码里已标 TODO）。
 
 ## 归属 #21（转正流程）
 

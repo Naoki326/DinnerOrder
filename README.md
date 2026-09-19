@@ -109,7 +109,7 @@ server/                 @dinnerorder/server —— Hono + better-sqlite3 + 领�
   src/e2e-server.ts     E2E 专用入口：与生产同一条装配路，只把 LLM 换成确定性 fake
   src/testing/harness.ts 集成测试 harness（内存库 + 可控时钟 + fake LLM + 直打 HTTP）
   src/domain/            领域逻辑（食材字典、家人画像、菜谱、餐槽、份量、推荐管线、导入管线）
-  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行；004 = 外部菜谱池；005 = 导入工具链）
+  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行；004 = 外部菜谱池；005 = 导入工具链；006 = 反馈与家规）
 web/                    @dinnerorder/web —— React 18 + Vite + Router 7 + TanStack Query
   src/identity.tsx      当前身份（设备本地：localStorage；家人画像在服务端）
 e2e/                    Playwright 冒烟 + 家人与当前身份
@@ -129,7 +129,11 @@ e2e/                    Playwright 冒烟 + 家人与当前身份
 | `POST /api/slots/:id/undo-set` | **撤销换一整套**：把这一餐退回上一次「换一整套」之前那一套（恢复上一条事件的快照，撤销本身也是一条留痕）；没有可撤的就 409 `nothing_to_undo` |
 | `GET /api/history/recent-dishes?days=` | 最近吃过的菜（去重窗口，走事件流） |
 | `POST /api/slots/:id/recommendation` | **整餐推荐**（总纲 §4）：规则硬过滤与时令检索 → LLM 从池中选 → 降级链。不落库、不缓存，接受与否由下一次 `PUT` 决定 |
-| `POST /api/slots/:id/candidates` | **换菜候选**（spec S2）：给一道菜要 3 个同位替换选项（各带理由、忌口排除原因、「没做过」标记）；`exclude` = 本换菜会话累积排除的菜（被换掉的 + 已出示过的候选），池干按 `none→dedupe→session` 放宽（忌口永不 relax）。不落库 |
+| `POST /api/slots/:id/candidates` | **换菜候选**（spec S2）：给一道菜要 3 个同位替换选项（各带理由、忌口排除原因、「没做过」标记）；`exclude` = 本换菜会话累积排除的菜（被换掉的 + 已出示过的候选），池干按 `none→dedupe→session` 放宽（忌口与**冷藏期**永不 relax）。不落库 |
+| `POST /api/feedback` | **写一条反馈**（总纲 §2.5）：菜品 × 家人 + 点踩/赞 + 快捷标签（太油/太甜/量太多/量太少）。同一人同一餐同一道菜重复提交 = 改主意（UPDATE，不堆历史）；点踩由任一本餐用餐者触发即进**冷藏期**（家规，默认 14 天） |
+| `GET /api/feedback?days=` | 窗口内的反馈 + **正在冷藏期的菜**（带到期日，界面据此解释「这道为什么没出现」）+ **饭后餐卡**（窗口内已上桌的餐） |
+| `DELETE /api/feedback` | 撤回一条反馈（判定只有赞/踩两种，「什么都不说」用撤回表达） |
+| `GET /api/family-rules` | 家规（单例配置）：冷藏期天数 + 餐次截止时刻（午 14:00 / 晚 21:00，总纲 §3「全部可调」） |
 | `GET /api/portion/rules` | 份量规则表：成人能量锚点 + WS/T 554 分带折算系数 + 各人群推荐量 + 餐次占比（逐条带来源） |
 | `POST /api/portion/preview` | 草稿菜单的份量（编辑期即时重算；年龄按服务端时钟现算） |
 | `GET /api/portion/exchange` | WS/T 554 附录 A 生熟/同类互换表（七组，带基准与口径） |

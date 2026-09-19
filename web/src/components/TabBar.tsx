@@ -4,10 +4,15 @@ import styles from './TabBar.module.css';
 const TABS = [
   { to: '/', label: '🍽 今天', end: true },
   { to: '/grocery', label: '🛒 买菜', end: false },
+  { to: '/review', label: '📝 回顾', end: false },
   { to: '/family', label: '👨‍👩‍👧‍👦 家人', end: false },
 ];
 
-/** 底部主导航（原型 tabsA 的形态）。三视图是设备本地偏好，留给设置票。 */
+/**
+ * 底部主导航（原型 tabsA 的形态）＋一个常驻的「回顾」入口（总纲 §2.5：饭后餐卡的吃后感入口，
+ * 不弹窗不推送——它是家人想去才去的一页，所以常驻在导航里而不是浮层）。
+ * 三视图是设备本地偏好，留给设置票。
+ */
 export function TabBar() {
   return (
     <nav className={styles.bar} aria-label="主导航" data-testid="tab-bar">

@@ -309,6 +309,133 @@ export interface RecommendationResponse {
   recommendation: MealRecommendation;
 }
 
+// ---------------------------------------------------------------- 反馈与餐后回顾（M1-08）
+
+/**
+ * 一条反馈的判定：点赞 / 点踩。
+ *
+ * 点踩是**布尔**语义（ADR-0005：任一本餐用餐者点踩即触发冷藏期，不叠加、不分程度），
+ * 所以这里没有「几分」这种字段——零数值权重是决议，不是还没做。
+ */
+export type FeedbackVerdict = 'like' | 'dislike';
+
+/**
+ * 快捷标签（总纲 §2.5、CONTEXT「快捷标签」）：封闭值域，就 4 个（总纲 §2.5 说的「3–4 个」）。
+ *
+ * 它与 `recipe_tastes`（口味五标签）是两件不同的事：口味是「这道菜是什么味」（菜谱属性，
+ * 参与排序），快捷标签是「这一次做得怎么样」（反馈属性，进近 30 天摘要）——
+ * 「太油」说的是这一盘，不是这道菜本身。值域封闭的理由与口味标签一致：自由文本喂给 LLM
+ * 就是一团没法聚合的东西。
+ */
+export type FeedbackTag = '太油' | '太甜' | '量太多' | '量太少';
+
+/**
+ * 一条反馈的线上形状（菜品 × 家人 × 那一餐）。
+ *
+ * 注意它与「留痕」是两种东西：留痕 append-only（菜单的变化不可改写），反馈**可以改主意**
+ * （点错了重按就是新的判定）——所以它有自己的表与自己的读取口，不挂 meal_events。
+ */
+export interface DishFeedback {
+  /** 归属的家人（无登录，归属「当前身份」，总纲 §2.4） */
+  memberId: string;
+  memberName: string;
+  /** 哪一餐的这道菜（'YYYY-MM-DD:lunch|dinner'） */
+  slotId: string;
+  recipeId: string;
+  recipeName: string;
+  recipeKind: RecipeKind;
+  verdict: FeedbackVerdict;
+  /** 快捷标签（可以是空数组：赞/踩都不强制选标签；只要带了标签就进 30 天摘要，不论判定） */
+  tags: FeedbackTag[];
+  /** 最后一次改动的时间（反馈可改主意，这里给的是当前看法的时间） */
+  updatedAt: string;
+}
+
+/**
+ * `GET /api/feedback?days=` 的响应：窗口内的反馈（按餐槽、菜、家人排好序）。
+ *
+ * 顺带回 `cooling`（**当前正在冷藏期**的菜）：界面要在「今天吃什么」里说清
+ * 「为什么这道菜没出现」——排除原因要看得见，与换菜候选的忌口排除原因同一纪律。
+ */
+export interface FeedbackListResponse {
+  feedback: DishFeedback[];
+  /** 正在冷藏期的菜（`storeFeedback` 的响应里单条 `cooling` 之外的另一份视图） */
+  cooling: CoolingDish[];
+  /** 饭后餐卡（窗口内已上桌的餐 + 它们当前的反馈）——「吃后感」入口的数据面 */
+  meals: ReviewMeal[];
+}
+
+/**
+ * 餐后回顾卡上的一餐：吃过什么 + 现在收到的反馈。
+ *
+ * 为什么单独给一个形状而不复用 `SlotWithPortion`：回顾关心的是**已经上桌**的餐
+ * （已过截止时刻），而 `GET /api/slots` 是「下一餐优先」的工作列表，刻意不给已过的餐次。
+ * 两条取数语义不同，形状也就不该共用一个。
+ */
+export interface ReviewMeal {
+  /** 'YYYY-MM-DD:lunch|dinner' */
+  slotId: string;
+  date: string;
+  meal: MealKind;
+  diners: DinerRef[];
+  dishes: MenuDish[];
+  /** 这一餐当前收到的全部反馈（菜品 × 家人） */
+  feedback: DishFeedback[];
+}
+
+/** 一道正在冷藏期的菜：界面用它解释「这道为什么不在推荐里」 */
+export interface CoolingDish {
+  recipeId: string;
+  name: string;
+  /** 冷藏期到期的家庭日历日（'YYYY-MM-DD'；当天不再冷藏） */
+  until: string;
+}
+
+/** `POST /api/feedback` 的入参：写一条反馈（同一人同一餐同一道菜重复提交 = 改主意） */
+export interface FeedbackInput {
+  /** 哪一餐的哪道菜 */
+  slotId: string;
+  recipeId: string;
+  /** 归属的家人（界面送「当前身份」）；不传 = 报错而不是猜——反馈必须有主 */
+  memberId: string;
+  verdict: FeedbackVerdict;
+  /** 快捷标签（缺省空数组；不强制） */
+  tags?: FeedbackTag[];
+}
+
+/** `POST /api/feedback` 的响应：落库后的那一条 + 它是否把这道菜点进了冷藏期 */
+export interface FeedbackResponse {
+  feedback: DishFeedback;
+  /** 点踩且本餐用餐者里有人命中 → 这道菜当前处于冷藏期（界面提示「14 天内不再推」） */
+  cooling: { recipeId: string; until: string } | null;
+}
+
+/**
+ * `DELETE /api/feedback` 的入参：撤回一条反馈（按下去又后悔）。
+ *
+ * 为什么不做「点第二下取消」：反馈的判定只有赞/踩两种，再点一下是**改成另一种**；
+ * 「什么都不说」是第三种状态，用删除表达最清楚（撤回之后这道菜不再受它影响）。
+ */
+export interface FeedbackDeleteInput {
+  slotId: string;
+  recipeId: string;
+  memberId: string;
+}
+
+/** `GET /api/family-rules` 的响应：家规单例配置（冷藏期、餐次截止） */
+export interface FamilyRules {
+  /** 冷藏期天数（某菜被任一本餐用餐者点踩后退出的推荐窗口；到期自动解除） */
+  coolOffDays: number;
+  /** 餐次截止时刻（家庭时区整点）：过了就不能再定/改这一餐 */
+  lunchCutoffHour: number;
+  dinnerCutoffHour: number;
+}
+
+/** `GET /api/family-rules` 的包装 */
+export interface FamilyRulesResponse {
+  rules: FamilyRules;
+}
+
 // ---------------------------------------------------------------- 换菜与候选（M1-06）
 
 /**
