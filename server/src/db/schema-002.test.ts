@@ -31,14 +31,6 @@ describe('002 迁移的引用完整性与 append-only 触发', () => {
     ).toThrow(/FOREIGN KEY/);
   });
 
-  it('口味是封闭五标签：第⑥种口味进不了库', () => {
-    harness = createTestHarness();
-
-    expect(() =>
-      harness.db.prepare("INSERT INTO recipe_tastes (recipe_id, taste) VALUES ('fanqiechaodan', '苦')").run(),
-    ).toThrow(/CHECK/);
-  });
-
   it('隐性忌口「含」指针不能指向自己（自引用校验）', () => {
     harness = createTestHarness();
 

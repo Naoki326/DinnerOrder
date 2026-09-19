@@ -134,8 +134,7 @@ CREATE TABLE meal_events (
   slot_id     TEXT NOT NULL,
   slot_date   TEXT NOT NULL,
   meal        TEXT NOT NULL CHECK (meal IN ('lunch', 'dinner')),
-  -- 预定（含首次改餐后的每次改餐）→ decide/replace；取消 → cancel
-  -- 预定 → decide；改餐 → replace单道 / replace_set整套（§3 决议 3：换单道、换一整套各记一条）；取消 → cancel
+  -- 预定 → decide；改餐 → replace（单道）/ replace_set（整套）：§3 决议 3 要求换单道、换一整套各记一条；取消 → cancel
   type        TEXT NOT NULL CHECK (type IN ('decide', 'replace', 'replace_set', 'cancel')),
   -- 定餐来源：手动挑菜 / 接受整餐推荐（#17 落值）
   source      TEXT NOT NULL CHECK (source IN ('manual', 'recommendation')),
