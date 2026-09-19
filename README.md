@@ -101,15 +101,15 @@ server/                 @dinnerorder/server —— Hono + better-sqlite3 + 领�
   src/config.ts         BASE_PATH 归一化 + 环境变量装载
   src/static.ts         index.html 注入 window.__APP_CONFIG__ / manifest 改写 / serveStatic
   src/db/               openDatabase + 迁移执行器（编号 .sql，事务化，失败回滚）
-  src/llm/              LLM seam：types（工具面 + completion）/ openai（真实端点，重试在编排层）/ fake（测试与 E2E）/ prompt（模板 + 机器可读段）/ recommendation-schema（Zod 校验）/ import-schema（导入期重标与菜系初打，json_object + Zod）/ unconfigured（未配 key 时的占位）
+  src/llm/              LLM seam：types（工具面 + completion）/ openai（真实端点，重试在编排层）/ fake（测试与 E2E）/ prompt（模板 + 机器可读段）/ recommendation-schema（Zod 校验）/ import-schema（导入期重标与菜系初打，json_object + Zod）/ promotion-schema（转正改写：口述差异 + 待重标项，json_object + Zod）/ unconfigured（未配 key 时的占位）
   src/library/          冷启动采集器（HowToCook markdown / 下厨房 HTML / LLM 生成草稿；纯解析、吃 fixture、不碰网）
   scripts/              import-library（采集成快照 + 归一 + 落库 + 报告）· fetch-xiachufang（有界抓热榜）
   library-data/         HowToCook 采集快照 JSONL（导入的输入，随仓库走）
   src/bootstrap.ts      createLlmClient() + bootstrap()：生产入口与 E2E 服务端共用的装配
-  src/e2e-server.ts     E2E 专用入口：与生产同一条装配路，只把 LLM 换成确定性 fake
+  src/e2e-server.ts     E2E 专用入口：与生产同一条装配路，只把 LLM 换成确定性 fake；另挂一个测试专用的时钟控制口（需 `E2E_CLOCK_CONTROL=1`，生产入口没有；S6 转正要把一餐拨到「已经吃过」）
   src/testing/harness.ts 集成测试 harness（内存库 + 可控时钟 + fake LLM + 直打 HTTP）
   src/domain/            领域逻辑（食材字典、家人画像、菜谱、餐槽、份量、推荐管线、导入管线）
-  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行；004 = 外部菜谱池；005 = 导入工具链；006 = 反馈与家规；007 = 留量与留量上浮列）
+  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行；004 = 外部菜谱池；005 = 导入工具链；006 = 反馈与家规；007 = 留量与留量上浮列；008 = 转正台账）
 web/                    @dinnerorder/web —— React 18 + Vite + Router 7 + TanStack Query
   src/identity.tsx      当前身份（设备本地：localStorage；家人画像在服务端）
 e2e/                    Playwright 冒烟 + 家人与当前身份
@@ -124,6 +124,9 @@ e2e/                    Playwright 冒烟 + 家人与当前身份
 | `GET /api/members` · `GET /api/members/:id` | 家人画像（大人/小孩、性别、出生年月、忌口、爱吃） |
 | `PATCH /api/members/:id` | 改画像：`birthMonth` / `avoid[]` / `loves[]`，传了的块整体替换 |
 | `GET /api/recipes?status=` | 家庭菜谱库（缺省只给转正态，`all` 一次拿齐） |
+| `GET /api/recipes/:id` | 单道菜谱（含食材克数、口味、菜系、状态） |
+| `POST /api/recipes/:id/promotion` | **转正**（总纲 §2.8、spec S6）：草稿 → LLM 改写成家里版本（可口述差异、校对菜系）→ 状态 `active` 进家庭库与推荐池。门槛：只转**已经上桌**的草稿（ADR-0006）；LLM 失败就整次失败（502），草稿原样留着 |
+| `GET /api/recipes/:id/promotions` | 某道菜的转正台账（编辑留痕：谁按谁的口述改的、菜系前后值、LLM 元数据） |
 | `GET /api/slots?days=` · `GET /api/slots/:id` | 餐槽与菜单；单餐响应内嵌 `portion`（本餐每道菜的生重） |
 | `PUT /api/slots/:id` · `DELETE /api/slots/:id` | 定餐 = 改餐（整份菜单一次提交；`leftoverOf` = 预定成吃某餐剩的，菜品必须为空）· 取消（留痕只增不改；`released[]` 报出被联动画回未定的引用方） |
 | `POST /api/slots/:id/undo-set` | **撤销换一整套**：把这一餐退回上一次「换一整套」之前那一套（恢复上一条事件的快照，撤销本身也是一条留痕）；没有可撤的就 409 `nothing_to_undo` |

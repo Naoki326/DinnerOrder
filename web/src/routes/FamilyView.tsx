@@ -120,8 +120,10 @@ function MemberCard({ member, isCurrent }: { member: Member; isCurrent: boolean 
         {loves.map((entry) => (
           <EntryChip
             key={`${entry.kind}:${entry.id}`}
-            testId={`${member.id}-loves-entry-${entry.id}`}
-            removeTestId={`${member.id}-loves-remove-${entry.id}`}
+            // testid 带上 kind（#21）：member_loves 是混合粒度（食材**或**菜），只用 id 时
+            // 一道菜谱 id 与一个食材 id 相同就会撞车（strict 模式直接报错）。
+            testId={`${member.id}-loves-entry-${entry.kind}-${entry.id}`}
+            removeTestId={`${member.id}-loves-remove-${entry.kind}-${entry.id}`}
             variant="loves"
             name={entry.name}
             kind={entry.kind}
@@ -342,7 +344,8 @@ function LovesPicker({
               key={option.key}
               type="button"
               className={styles.suggestion}
-              data-testid={`${testIdPrefix}-suggestion-${option.id}`}
+              // kind 带上（与 EntryChip 同一理由：同一个 id 可能既是食材又是菜）
+              data-testid={`${testIdPrefix}-suggestion-${option.kind}-${option.id}`}
               onClick={() => add(option)}
             >
               {option.name}

@@ -79,17 +79,17 @@ test('家人页编辑画像：忌口/爱吃条目可增删、出生年月可改'
 
   // --- 爱吃增：直接搜规范名 ---
   await page.getByTestId('dad-loves-input').fill('排骨');
-  await page.getByTestId('dad-loves-suggestion-pork_ribs').click();
-  await expect(page.getByTestId('dad-loves-entry-pork_ribs')).toContainText('猪排骨');
+  await page.getByTestId('dad-loves-suggestion-ingredient-pork_ribs').click();
+  await expect(page.getByTestId('dad-loves-entry-ingredient-pork_ribs')).toContainText('猪排骨');
   await page.reload();
-  await expect(page.getByTestId('dad-loves-entry-pork_ribs')).toBeVisible();
+  await expect(page.getByTestId('dad-loves-entry-ingredient-pork_ribs')).toBeVisible();
 
   // --- 爱吃删：种子里的土豆还在，新加的排骨删掉 ---
-  await page.getByTestId('dad-loves-remove-pork_ribs').click();
-  await expect(page.getByTestId('dad-loves-entry-pork_ribs')).toBeHidden();
+  await page.getByTestId('dad-loves-remove-ingredient-pork_ribs').click();
+  await expect(page.getByTestId('dad-loves-entry-ingredient-pork_ribs')).toBeHidden();
   // 用 testid 而不是 getByText：爱吃现在是**混合粒度**（食材 + 具体菜，#15 接通），
   // getByText('土豆') 会同时命中「土豆」食材与「土豆炖牛腩」这道菜（子串匹配 → strict 冲突）
-  await expect(page.getByTestId('dad-loves-entry-potato')).toBeVisible();
+  await expect(page.getByTestId('dad-loves-entry-ingredient-potato')).toBeVisible();
 
   // --- 出生年月可改（#16 份量引擎按它现算年龄分带） ---
   const birth = page.getByTestId('member-birth-dabao');
@@ -110,10 +110,10 @@ test('画像条目落在食材字典上，且不吃手机宽度', async ({ page 
   // 种子里小宝忌贝类、虾，爱吃玉米/猪排骨/鸡翅——忌口与爱吃都指向字典规范名
   await expect(page.getByTestId('xiaobao-avoid-entry-shellfish')).toContainText('贝类');
   await expect(page.getByTestId('xiaobao-avoid-entry-shrimp')).toContainText('虾');
-  await expect(page.getByTestId('xiaobao-loves-entry-corn')).toBeVisible();
+  await expect(page.getByTestId('xiaobao-loves-entry-ingredient-corn')).toBeVisible();
 
   // 爱吃是混合粒度（总纲 §2.9）：小宝还爱吃「玉米胡萝卜排骨汤」这道菜本身（#15 随菜谱表补录）
-  await expect(page.getByTestId('xiaobao-loves-entry-yumihuluobogutang')).toContainText('玉米胡萝卜排骨汤');
+  await expect(page.getByTestId('xiaobao-loves-entry-recipe-yumihuluobogutang')).toContainText('玉米胡萝卜排骨汤');
 
   // 小孩卡片显示按出生年月现算的年龄；大人显示「大人」（都带性别）
   await expect(page.getByTestId('member-subtitle-xiaobao')).toContainText('岁');

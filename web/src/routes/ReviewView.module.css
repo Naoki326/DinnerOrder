@@ -61,6 +61,66 @@
   color: #fff;
 }
 
+/* 转正（#21）：草稿菜的「转正成家里菜谱」入口与展开后的表单 */
+.promote {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+}
+
+.promote .btn {
+  align-self: flex-start;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.promoteResult {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* 手机优先：输入区吃满卡片宽度，键盘弹起时也不横向溢出 */
+.textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 14px;
+  color: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  resize: vertical;
+}
+
+.cuisine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cuisine select {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 14px;
+  color: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.error {
+  color: var(--hun);
+  font-size: 13px;
+}
+
 .meat {
   background: var(--hun);
 }

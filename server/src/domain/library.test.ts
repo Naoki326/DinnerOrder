@@ -440,7 +440,10 @@ describe('份量重标（LLM 离线路径；本机端点走 json_object + 校验
     harness.llm.setCompletionError(new Error('端点超时'));
     const outcome = await relabelDrafts(harness.db, harness.llm, { maxAttempts: 2 });
     expect(outcome.notes.join('')).toContain('端点超时');
-    expect(relabelReport(harness.db).pending).toHaveLength(1);
+    // 库里有 002/004 的种子草稿，008 又刻意种了一个待重标项（本票自己的
+    // `pending_relabel_ribs` 的排骨，给转正那条路
+    // 留真实样本）——所以只看**本次导入这道菜**的欠账，不写全库条数（写死计数必坏）
+    expect(relabelReport(harness.db).pending.filter((item) => item.recipeId === 'htc_9')).toHaveLength(1);
 
     // 形状不合（负数克数）：Zod 挡住，同样不写库
     harness.llm.setCompletionError(undefined as unknown as Error);

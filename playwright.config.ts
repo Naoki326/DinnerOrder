@@ -44,6 +44,9 @@ export default defineConfig({
         DB_PATH: 'data/e2e-root.db',
         WEB_DIST_DIR: 'web/dist',
         // E2E 一律用确定性 fake LLM（服务端入口自己注入）：不联网、不随模型变
+        // 只有根路径这一个实例开时钟控制口（S6 转正需要把一餐推到「已经吃过」）：
+        // 控制口是测试专用 seam，其余实例与生产入口一样没有它
+        E2E_CLOCK_CONTROL: '1',
       },
     },
     {

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { createApp } from './app.js';
-import { systemClock } from './clock.js';
+import { systemClock, type Clock } from './clock.js';
 import { loadServerConfig, REPO_ROOT, type ServerConfig } from './config.js';
 import { ensureParentDir, openDatabase, type Db } from './db/index.js';
 import { runMigrations } from './db/migrate.js';
@@ -49,6 +49,12 @@ export interface BootstrapOptions {
    * 而生产入口走 `createLlmClient(env)`；两者的其余装配（库/迁移/静态产物）完全一样。
    */
   llm?: LlmClient;
+  /**
+   * 注入时钟（缺省 `systemClock`）。生产入口不传——只有 E2E 服务端需要一个可拨动的时钟
+   * （`E2E_CLOCK_CONTROL=1` 时它经 `PUT /api/e2e/clock` 调）。
+   * 这个 seam 与测试 harness 的 `createTestClock()` 是同一件事，只是隔着一条 HTTP 通道。
+   */
+  clock?: Clock;
 }
 
 export interface Bootstrapped {
@@ -71,7 +77,8 @@ export function bootstrap(options: BootstrapOptions = {}): Bootstrapped {
   const { applied, alreadyApplied } = runMigrations(db, config.migrationsDir);
 
   const llm = options.llm ?? createLlmClient(env, root);
-  const app = createApp({ db, clock: systemClock, llm, basePath: config.basePath, webDistDir: config.webDistDir });
+  const clock = options.clock ?? systemClock;
+  const app = createApp({ db, clock, llm, basePath: config.basePath, webDistDir: config.webDistDir });
 
   return { config, db, llm, app, applied: applied.map((migration) => migration.version), alreadyApplied: alreadyApplied.length };
 }

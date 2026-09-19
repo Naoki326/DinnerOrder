@@ -387,8 +387,16 @@ function parsePoolSection(prompt: string, mark: string): PoolEntry[] {
   }
 }
 
-/** 取标记行之后的那一段（到下一个标记行或空行为止） */
-function sectionAfter(prompt: string, mark: string): string | undefined {
+/**
+ * 取标记行之后的那一段（到下一个标记行或空行为止）。
+ *
+ * **导出**（#21）：转正改写（`llm/promotion-schema.ts`）的 prompt 用的是同一套
+ * 「标记行 + 下一行紧凑 JSON」的分节约定（见文件头纪律 2），读回它的输入必须走同一个解析器
+ * ——两份逐行相同的拷贝一旦漂移（比如一边改成容忍空行、另一边没改），
+ * 就会出现「fake 对某一条路读出来的输入与另一条不一样」这种难查的分歧。
+ * 形状确实是**同一个**：都取 `mark` 行紧后那一行（空行算没内容）——所以就地复用，不另立模块。
+ */
+export function sectionAfter(prompt: string, mark: string): string | undefined {
   const lines = prompt.split('\n');
   const start = lines.findIndex((line) => line.trim() === mark);
   if (start === -1) return undefined;

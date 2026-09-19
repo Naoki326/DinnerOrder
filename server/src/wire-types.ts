@@ -815,3 +815,68 @@ export interface HealthResponse {
   basePath: string;
   llm: { tools: { name: string; description: string }[] };
 }
+
+// ---------------------------------------------------------------- 转正（M1-09）
+
+/**
+ * `POST /api/recipes/:id/promotion` 的入参（总纲 §2.8 的转正机制）。
+ *
+ * 三块都是**这一次转正**的信息，不改变菜谱的身份（菜名/别名/来源始终保留：
+ * 转正是把做法改写成家里版本，不是换一道菜）。
+ */
+export interface PromotionInput {
+  /** 掌勺者口述的差异（「多点辣、不放蒜」）；可空——没口述也要转正（模糊份量仍需重标） */
+  differences?: string;
+  /** 掌勺者校对的菜系参考 tag（总纲 §2.8：导入时 LLM 初打、转正时掌勺者校对）；有值压过 LLM */
+  cuisine?: RecipeCuisine;
+  /** 谁点的转正（界面送当前身份，进台账留痕）；不传 = 不记名 */
+  memberId?: string;
+}
+
+/**
+ * `POST /api/recipes/:id/promotion` 的响应：改写并落库之后的菜谱 + LLM 调用元数据。
+ *
+ * 回**整份菜谱**而不是只回状态：界面刷新后要显示改写后的食材克数（掌勺者亲手确认的东西），
+ * 让它再打一次 `GET /recipes/:id` 会把「刚发生的改写」与「读回来的改写」分成两个瞬间。
+ *
+ * `llm` 复用 `LlmCallMeta`（模型名 / prompt 版本 / 耗时 / 降级）——转正的 `degraded` 恒为 false：
+ * LLM 改写失败就整次失败（502，草稿原样留着），不存在「降级转正」这种状态。
+ */
+export interface PromotionResult {
+  recipe: Recipe;
+  llm: LlmCallMeta;
+  /** 改写过程中的说明（重试了几次、丢弃了什么），界面可折叠展示；不静默 */
+  notes: string[];
+}
+
+/** `POST /api/recipes/:id/promotion` 的响应包装 */
+export interface PromotionResponse {
+  promotion: PromotionResult;
+}
+
+/**
+ * 一条转正留痕（总纲 §2.8「治理：编辑留痕」）。转正是唯一一次由 LLM 直接改写既有菜谱行的
+ * 操作，台账回答「谁在什么时候按谁的口述把这道菜改成了什么」。
+ */
+export interface PromotionRecord {
+  recipeId: string;
+  /** 转正的瞬间（ISO） */
+  promotedAt: string;
+  /** 谁点的（家人被删后为 null，历史行留下） */
+  memberId: string | null;
+  memberName: string | null;
+  /** 掌勺者口述的差异原文；空串 = 这次没提差异 */
+  differences: string;
+  /** 菜系参考 tag 的前后值（掌勺者校对）；null = 当时没有值 */
+  cuisineFrom: RecipeCuisine | null;
+  cuisineTo: RecipeCuisine | null;
+  /** 改写的 LLM 调用元数据（模型名 / prompt 版本 / 耗时） */
+  llmModel: string | null;
+  llmPromptVersion: string | null;
+  llmLatencyMs: number | null;
+}
+
+/** `GET /api/recipes/:id/promotions` 的响应 */
+export interface PromotionListResponse {
+  promotions: PromotionRecord[];
+}
