@@ -108,6 +108,10 @@
   - **家规常量未落表**（`DEDUPE_DAYS` 已被候选的池干放宽复用）。
     ✅ **已由 #20 处理的部分**：餐次截止时刻（原 `domain/family-time.ts` 的 `MEAL_CUTOFF_HOUR`）与冷藏天数（`cool_off_days`，默认 14）已落 `family_rules` 单例表（迁移 006），运行时读表（`domain/family-rules.ts`），原常量已删除。
     **剩余部分归 #26 收口**：`server/src/domain/recommendation.ts` 的 `BASELINE`（2 荤 1 素 1 汤）与 `BASELINE_ADULTS`、`DEDUPE_DAYS`（7）、`LLM_TIMEOUT_MS`（30s）、`MIN_FAMILY_PER_POSITION`（3）、`MAX_FAMILY_PER_POSITION`（8）仍是实施者自定常量，spec §2.2/§4 说这些属家规（“家规可调”）。落点是 #20 建好的同一张 `family_rules` 表（追加列即可，代码里几处 TODO 已标注），并同时把 `web/` 里的显示值一并改成读表（不把 7 天/基线个数硬编码进文案）。
+    ⚠️ **别把「可写性」与「搬常量」混成一件事**：本行说的是**把那六个常量搬进表**（归 #26）。
+    至于**已有值的可写口**：冷藏天数（`cool_off_days`）的编辑入口归 #26；而**留量上浮系数与两个
+    餐次截止时刻**已由 #23 评审修复 ① 开放为可写（`PATCH /api/family-rules`）——理由是它们会改变
+    清单该含哪几餐/克数，不开放就没办法在它们变时标清单过期（`server/src/api/family-rules.ts` 的注释）。
   - **「换菜会话」的边界是「不离开槽位页」**。会话排除集活在 `SlotView`/`HomeView` 的组件状态里（`SlotView` 那份刻意提到外层、不随 `key` 重挂载，`e2e/replace.spec.ts` 有回归用例）；但保存会 `navigate('/')` 离开，回同一页再换菜时排除集归零。判断：这与「一轮换菜 = 页面生命周期」的口径一致（已定菜单本身也没变成别的东西），**保留**。若日后要求「保存后回同一页仍累积」，得把会话提到路由之外（`sessionStorage` 或提升到 `App`），属语义变更。
   - **`bookSlot` 的 `sameMenu` 短路与撤销的交互**（来源：#18 复审）。连续两次「换一整套」拿到**完全同一套**菜单时不会追事件（`slots.ts` 的 `sameMenu` 判定），于是 `canUndoSet` 仍指向更早那套——用户刚点的那一下被「跳过」了，撤销会跨过它。判断：`sameMenu` 短路是 #17 的既有语义（防手机双击写两条重复留痕），**不在本票改**；真实触发条件苛刻（LLM  temperatura 0.7 + 确定性 fake 才容易复现），若要修应把「换一整套」与「保存改动」的短路分开判定。
 
