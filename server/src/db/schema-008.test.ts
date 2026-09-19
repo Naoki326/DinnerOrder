@@ -128,13 +128,18 @@ describe('008 迁移的引用完整性与元数据约束', () => {
       { grams: 30, quantity: null, ingredient: '猪肉末' },
       { grams: 12, quantity: null, ingredient: '豆瓣酱' },
     ]);
-    // 全库 0 克项只可能来自 008 的样张（004 的种子一项都没有）
-    const zero = harness.db
+    // 本票的意图是「008 不碰 004」：证明**004 那九道种子草稿一项 0 克都没有**。
+    // 不写成「全库 0 克项只有 pending_relabel_ribs」那种绝对断言——台账明写邀请后续票
+    // 再加待重标样本，写了就是「测试写死计数必坏」（open-items.md 的踩坑第 5 条）。
+    // 这里改成对 004 那九道的**相对**断言（id 逐个列举，不靠 source——004 的 source 有三种）。
+    const zeroInSeedNine = harness.db
       .prepare(
-        `SELECT r.id FROM recipe_ingredients ri JOIN recipes r ON r.id = ri.recipe_id
-          WHERE ri.adult_grams <= 0`,
+        `SELECT DISTINCT r.id FROM recipe_ingredients ri JOIN recipes r ON r.id = ri.recipe_id
+          WHERE ri.adult_grams <= 0 AND r.id IN
+            ('gongbaojiding','huiguorou','fanqieniunan','qingchaodouya','culubaicai',
+             'liangbanhuanggua','jiachangdoufu','zicaidanhuatang','dongguawanizitang')`,
       )
       .all() as { id: string }[];
-    expect(zero.map((row) => row.id)).toEqual(['pending_relabel_ribs']);
+    expect(zeroInSeedNine).toEqual([]);
   });
 });
