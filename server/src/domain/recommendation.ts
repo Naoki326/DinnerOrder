@@ -21,7 +21,7 @@ import type {
 } from '../wire-types.js';
 import { listMembers, resolveMembers } from './members.js';
 import { seasonalIngredientIds } from './ingredients.js';
-import { listRecipes } from './recipes.js';
+import { hasPendingRelabel, listRecipes } from './recipes.js';
 import { parseDate } from './family-time.js';
 import {
   hasMealPassed,
@@ -209,8 +209,12 @@ export function buildPool(
     });
 
   const family = rank(listRecipes(db, 'active').filter(allowed));
-  // 外部池 = 草稿态菜谱（ADR-0006 状态机；不是另一张表，也不是另一套导入路）
-  const external = rank(listRecipes(db, 'draft').filter(allowed));
+  // 外部池 = 草稿态菜谱（ADR-0006 状态机；不是另一张表，也不是另一套导入路）。
+  // **含「待重标」项（0 克）的草稿不进池**：0 克是导入期的显式状态（迁移 005：模糊份量等
+  // LLM 重标），不是「这道菜不要这个食材」。放它进池，份量引擎会直接乘出 0 g 进合计
+  // （#16 的 `portion.ts` 只管算克数，菜谱侧的过滤归这里）。重标成功后写回正数，
+  // 状态自然消失、草稿自动回到池里——不需要额外的白名单或人工解锁。
+  const external = rank(listRecipes(db, 'draft').filter(allowed).filter((recipe) => !hasPendingRelabel(recipe)));
 
   const pool: PoolEntry[] = [];
   const familyCounts: Record<Position, number> = { meat: 0, veg: 0, soup: 0 };

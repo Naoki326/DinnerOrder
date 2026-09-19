@@ -189,6 +189,48 @@ describe('规则引擎：忌口硬过滤与时令检索', () => {
     expect(prompt).toContain('红烧排骨');
   });
 
+  it('含「待重标」项（0 克）的草稿不进补位池；重标成正数后能回来', async () => {
+    harness = createTestHarness();
+    scriptPoolSelection();
+    // 荤位家庭池压到只剩 1 道 → 需要 2 道外部补位（够装下两条草稿，池子组成才是确定的）
+    seedMeal('2025-05-30:lunch', [
+      'hongshaopaigu',
+      'kelejichi',
+      'qingzhengluyu',
+      'tudouniuniu',
+      'tangculiji',
+      'chongcaohuazhengji',
+    ]);
+    harness.db
+      .prepare("UPDATE recipes SET status = 'retired' WHERE id IN ('baizhuoxia', 'gongbaojiding', 'huiguorou')")
+      .run();
+    // 两道荤位草稿（香菇滑鸡 / 番茄牛腩）里，只有番茄牛腩有一项待重标
+    const markRelabeling = (grams: number): void => {
+      harness.db
+        .prepare('UPDATE recipe_ingredients SET adult_grams = ? WHERE recipe_id = ? AND ingredient_id = ?')
+        .run(grams, 'fanqieniunan', 'tomato');
+    };
+    markRelabeling(0);
+
+    const diners = ['mom', 'dad'];
+    await recommend({ diners });
+    const externalIds = (): string[] =>
+      parsePromptPool(promptOf())
+        .filter((entry) => entry.kind === 'meat' && entry.origin === 'external')
+        .map((entry) => entry.id);
+    // 0 克是导入期的显式状态（模糊份量等 LLM 重标），不是「零克食材」：
+    // 放它进池，份量引擎会直接乘出 0 g。所以这道草稿根本不进池。
+    expect(externalIds()).not.toContain('fanqieniunan');
+    // 对照：同一批里克数齐的草稿照常补位（不是「草稿一律不进」）
+    expect(externalIds()).toContain('xiangguhuaji');
+
+    // 重标成功（写回正数）后状态自然消失，同一道草稿回到池子里
+    markRelabeling(120);
+    harness.llm.clearCalls();
+    await recommend({ diners });
+    expect(externalIds()).toContain('fanqieniunan');
+  });
+
   it('近 7 天窗口外的菜可以重新进池（排除会到期）', async () => {
     harness = createTestHarness();
     scriptPoolSelection();

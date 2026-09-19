@@ -28,6 +28,50 @@
 | `pnpm test:watch` | 同上，watch 模式 |
 | `pnpm test:e2e` | 先 `build` 再跑 Playwright 冒烟（根路径 + 子路径两个实例） |
 
+## 冷启动导入（外部菜谱池打底，总纲 §2.8、§5；ADR-0006）
+
+外部菜谱池（150–300 道家常草稿）是**离线批处理**，不进产品界面，也没有 HTTP 入口。分三步，
+每一步都能单独重跑（**导入本身完全离线**：网络只在下面第 1、3 步的有界取数命令里）：
+
+```bash
+# 1. 取数：HowToCook（Anduin2017/HowToCook，Unlicense 公有领域，约 1.5 MB markdown）
+git clone --depth 1 --filter=blob:none --sparse https://github.com/Anduin2017/HowToCook.git /tmp/htc
+cd /tmp/htc && git sparse-checkout set --no-cone '**/*.md' && cd -
+
+# 2. 采集 + 筛选成快照（不碰网，按 id 去重）。--snapshot 落进仓库，导入从此可复现
+pnpm --filter @dinnerorder/server run import:library \
+  --collect-htc /tmp/htc/dishes --snapshot server/library-data/howtocook.jsonl
+
+# 3. 抓下厨房热榜（可选，无开放许可、自家私用风险自知——ADR-0006；只有这一步碰站点）
+pnpm --filter @dinnerorder/server run fetch:xiachufang --out data/xiachufang --top 12
+
+# 4. 导入为草稿 + 出报告（加 --llm 走 LLM 份量重标与菜系初打；加 --dry-run 只算不写）
+pnpm --filter @dinnerorder/server run import:library \
+  --from server/library-data/howtocook.jsonl --xcf-dir data/xiachufang --llm
+
+# 补了字典别名 / 改了筛选口径后重跑：缺省幂等（同 id 已有草稿就跳过），
+# --replace 把**草稿**清掉重写（家庭菜谱永不覆盖）
+pnpm --filter @dinnerorder/server run import:library \
+  --from server/library-data/howtocook.jsonl --replace
+```
+
+注意：参数**直接跟在脚本名后**，不要再插一个 `--`——本仓库的 pnpm（12.4.2）会把 `--`
+原样转发给脚本，而 CLI 是 `allowPositionals:false`，于是直接报 `ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL`。
+脚本内的相对路径一律按**仓库根**解析，所以上面的命令请在仓库根执行（`--db` / `--report`
+缺省落在 `data/`，已 gitignore）。
+
+产出：`data/import-report.json`（导入量 / 重标覆盖率 / **归一失败清单**——这三项就是验收口径）。
+下厨房那条路失败（429、超时、页面改版）**只降级不阻塞**：报告里如实标「抓取不可达」，
+HowToCook 那条路照常跑完；**不要**为它引入 headless 浏览器或反复重试。
+
+两条纪律：
+
+* **来源字段如实**：HowToCook → `howtocook`、下厨房 → `scraped`、LLM 生成 → `llm`（`recipes.source`，002 的 CHECK）。
+* **「适量」一律不猜克数**：采集时没有明确重量单位的项落 0 克并进重标待办（`relabel.pending`），
+  由 LLM 在离线路径重标；覆盖率和待办清单是可重复跑出来的，不是报告里的口头数字。
+  **含 0 克项的草稿不进推荐与换菜候选池**（它乘出来就是 0 g）：这是 0 克「待重标」这个显式状态的
+  正确后果，重标写回正数后自动回来。
+
 ## 运行时配置（环境变量）
 
 | 变量 | 默认 | 说明 |
@@ -57,12 +101,15 @@ server/                 @dinnerorder/server —— Hono + better-sqlite3 + 领�
   src/config.ts         BASE_PATH 归一化 + 环境变量装载
   src/static.ts         index.html 注入 window.__APP_CONFIG__ / manifest 改写 / serveStatic
   src/db/               openDatabase + 迁移执行器（编号 .sql，事务化，失败回滚）
-  src/llm/              LLM seam：types（工具面 + completion）/ openai（真实端点，重试在编排层）/ fake（测试与 E2E）/ prompt（模板 + 机器可读段）/ recommendation-schema（Zod 校验）/ unconfigured（未配 key 时的占位）
+  src/llm/              LLM seam：types（工具面 + completion）/ openai（真实端点，重试在编排层）/ fake（测试与 E2E）/ prompt（模板 + 机器可读段）/ recommendation-schema（Zod 校验）/ import-schema（导入期重标与菜系初打，json_object + Zod）/ unconfigured（未配 key 时的占位）
+  src/library/          冷启动采集器（HowToCook markdown / 下厨房 HTML / LLM 生成草稿；纯解析、吃 fixture、不碰网）
+  scripts/              import-library（采集成快照 + 归一 + 落库 + 报告）· fetch-xiachufang（有界抓热榜）
+  library-data/         HowToCook 采集快照 JSONL（导入的输入，随仓库走）
   src/bootstrap.ts      createLlmClient() + bootstrap()：生产入口与 E2E 服务端共用的装配
   src/e2e-server.ts     E2E 专用入口：与生产同一条装配路，只把 LLM 换成确定性 fake
   src/testing/harness.ts 集成测试 harness（内存库 + 可控时钟 + fake LLM + 直打 HTTP）
-  src/domain/            领域逻辑（食材字典、家人画像、菜谱、餐槽、份量、推荐管线）
-  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行；004 = 外部菜谱池）
+  src/domain/            领域逻辑（食材字典、家人画像、菜谱、餐槽、份量、推荐管线、导入管线）
+  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行；004 = 外部菜谱池；005 = 导入工具链）
 web/                    @dinnerorder/web —— React 18 + Vite + Router 7 + TanStack Query
   src/identity.tsx      当前身份（设备本地：localStorage；家人画像在服务端）
 e2e/                    Playwright 冒烟 + 家人与当前身份

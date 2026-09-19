@@ -49,6 +49,7 @@ function recipe(id: string, overrides: Partial<Recipe> = {}): Recipe {
     effort: 'medium',
     status: 'active',
     source: 'oral',
+    cuisine: '家常',
     steps: '这是做法步骤，绝不该进 prompt',
     ingredients: [
       { ingredientId: 'pork_ribs', name: '猪排骨', adultGrams: 150, scaling: 'linear', rawCookedAnchor: null },

@@ -10,7 +10,9 @@
     "start": "node --env-file-if-exists=../.env dist/index.js",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "import:library": "tsx --env-file-if-exists=../.env scripts/import-library.ts",
+    "fetch:xiachufang": "tsx scripts/fetch-xiachufang.ts"
   },
   "dependencies": {
     "@hono/node-server": "2.1.1",

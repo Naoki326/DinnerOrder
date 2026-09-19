@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<!--
+  下厨房详情页的结构夹具（**手工缩减版**）：保留解析依赖的 DOM 形状——
+  原料表的两列（name / unit）、步骤区的段落块，
+  正文内容只留到「够验解析」为止。理由：下厨房无开放许可（ADR-0006 的决定是自家私用、风险自知），
+  把整页 HTML 抄进仓库等于把那份风险从素材层扩散到代码库——夹具只需要形状，不需要正文。
+-->
+<html>
+  <head><title>蒜蓉蚝油生菜的做法</title></head>
+  <body>
+    <div class="ings">
+      <table>
+        <tr>
+          <td class="name"><a href="/category/1355/">生菜</a></td>
+          <td class="unit">一个</td>
+        </tr>
+        <tr>
+          <td class="name"><a href="/category/2269/">蒜</a></td>
+          <td class="unit">5瓣</td>
+        </tr>
+        <tr>
+          <td class="name"><a href="/category/2362/">生抽</a></td>
+          <td class="unit">两勺</td>
+        </tr>
+        <tr>
+          <td class="name"><a href="/category/1779/">蚝油</a></td>
+          <td class="unit">一勺</td>
+        </tr>
+        <tr>
+          <td class="name"><a href="/category/1805/">盐</a></td>
+          <td class="unit">适量</td>
+        </tr>
+        <tr>
+          <td class="name"><a href="/category/2073/">糖</a></td>
+          <td class="unit">适量</td>
+        </tr>
+      </table>
+    </div>
+
+    <h2 id="steps">蒜蓉蚝油生菜的做法</h2>
+    <div class="steps">
+      <ol>
+        <li class="container"><p class="text">大蒜切成蒜末备用。</p></li>
+        <li class="container"><p class="text">生菜切掉根部后焯水 20 秒捞出摆盘。</p></li>
+        <li class="container"><p class="text">蒜末炒香，倒入蚝油汁，淋在生菜上。</p></li>
+      </ol>
+    </div>
+  </body>
+</html>

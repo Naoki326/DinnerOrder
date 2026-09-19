@@ -15,7 +15,7 @@ import type {
 } from '../wire-types.js';
 import { ingredientLabel, seasonalIngredientIds } from './ingredients.js';
 import { listMembers, resolveMembers } from './members.js';
-import { findRecipe, listRecipes } from './recipes.js';
+import { hasPendingRelabel, findRecipe, listRecipes } from './recipes.js';
 import { DEDUPE_DAYS, MAX_FAMILY_PER_POSITION, MIN_FAMILY_PER_POSITION, poolEntryOf } from './recommendation.js';
 import { parseDate } from './family-time.js';
 import {
@@ -229,6 +229,13 @@ function buildCandidatePool(
       excluded.push({ recipeId: recipe.id, name: recipe.name, reason: blockers.join('、') });
       continue;
     }
+    // 含「待重标」项（0 克）的**草稿**不进候选——与整餐推荐同一道口子（`hasPendingRelabel`）。
+    // 0 克是导入期的显式状态（迁移 005），它乘进份量就是 0 g；重标成功后状态自然消失。
+    // 家庭菜谱不过这道口子（与整餐推荐的 family 池同口径）：克数是掌勺者确认过的，
+    // 0 克只可能是异常数据，不该由这里静默影响换菜。
+    // 它与「被忌口排除的」不同：不是「不能吃」，而是「克数还没定」，所以不进 `excluded` 清单
+    // （那份清单是给家人看的忌口排除原因）。
+    if (recipe.status === 'draft' && hasPendingRelabel(recipe)) continue;
     eligible.push(recipe);
   }
 

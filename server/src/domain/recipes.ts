@@ -12,8 +12,12 @@ interface RecipeRow {
   effort: Recipe['effort'];
   status: RecipeStatus;
   source: Recipe['source'];
+  cuisine: Recipe['cuisine'];
   steps: string;
 }
+
+/** 菜谱列的一处选择：`listRecipes` / `findRecipe` / 导入器都要 SELECT 同一组列（多了就漂移） */
+const RECIPE_COLUMNS = 'id, name, kind, effort, status, source, cuisine, steps';
 
 interface IngredientRow {
   recipe_id: string;
@@ -41,21 +45,33 @@ interface MonthRow {
 export function listRecipes(db: Db, status: RecipeStatus | 'all' = 'active'): Recipe[] {
   const rows =
     status === 'all'
-      ? (db.prepare('SELECT id, name, kind, effort, status, source, steps FROM recipes ORDER BY rowid').all() as RecipeRow[])
-      : (db
-          .prepare(
-            'SELECT id, name, kind, effort, status, source, steps FROM recipes WHERE status = ? ORDER BY rowid',
-          )
-          .all(status) as RecipeRow[]);
+      ? (db.prepare(`SELECT ${RECIPE_COLUMNS} FROM recipes ORDER BY rowid`).all() as RecipeRow[])
+      : (db.prepare(`SELECT ${RECIPE_COLUMNS} FROM recipes WHERE status = ? ORDER BY rowid`).all(status) as RecipeRow[]);
   return hydrate(db, rows);
 }
 
 export function findRecipe(db: Db, id: string): Recipe | undefined {
-  const row = db
-    .prepare('SELECT id, name, kind, effort, status, source, steps FROM recipes WHERE id = ?')
-    .get(id) as RecipeRow | undefined;
+  const row = db.prepare(`SELECT ${RECIPE_COLUMNS} FROM recipes WHERE id = ?`).get(id) as RecipeRow | undefined;
   if (!row) return undefined;
   return hydrate(db, [row])[0];
+}
+
+/**
+ * 这道菜里有没有「待重标」的食材项（`adult_grams = 0`）。
+ *
+ * 0 克不是错误也不是「零克食材」，而是**导入期的显式状态**（迁移 005：模糊份量等 LLM 重标）。
+ * 它对份量引擎与买菜清单都是一个未定的数（乘出来就是 0 g），所以在给「要算克数的地方」
+ * 供菜之前把它拦在外面：推荐/换菜的候选池不收（重标成功后克数变正数，状态自然消失），
+ * 而它在报告里仍看得见（`relabel.pending`）。
+ *
+ * 收口一处的理由：这是同一个状态在两个入口的共同语义（整餐推荐的外部补位池、换菜候选池），
+ * 散在各处就会漏。日后新增「拿菜去算克数」的入口，也要过这里。
+ *
+ * 只判**有没有** 0 克项，不判状态：调用侧自己决定要不要限草稿（家庭菜谱是掌勺者自己录的，
+ * 不该被这条规则挡在推荐外）。
+ */
+export function hasPendingRelabel(recipe: Recipe): boolean {
+  return recipe.ingredients.some((item) => item.adultGrams <= 0);
 }
 
 export function recipeExists(db: Db, id: string): boolean {
@@ -124,6 +140,7 @@ function hydrate(db: Db, rows: RecipeRow[]): Recipe[] {
     effort: row.effort,
     status: row.status,
     source: row.source,
+    cuisine: row.cuisine,
     steps: row.steps,
     ingredients: ingredientsByRecipe.get(row.id) ?? [],
   }));

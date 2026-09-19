@@ -88,6 +88,17 @@ export type TasteTag = '甜' | '辣' | '酸' | '咸鲜' | '清淡';
 /** 难度耗时三档：快手(<20min)/中等/费事 */
 export type RecipeEffort = 'quick' | 'medium' | 'heavy';
 
+/**
+ * 菜系参考 tag（总纲 §2.8：导入时 LLM 初打、转正时掌勺者校对）。
+ *
+ * **只作参考**：不参与忌口过滤、不参与结构配位、不参与排序——它与`tastes`（口味封闭五标签）
+ * 是两件不同的事：口味是「吃起来什么味」（参与展示与排序），菜系是「这是什么路子的菜」。
+ * 值域是与 `recipe_tastes` 并存而不打架的关键：两套分类的值**互不相交**（迁移 005 的 CHECK 写死）。
+ * `null` 是合法状态：导入的菜还没被 LLM 打过 tag、转正时（#21）掌勺者校对之前就是它。
+ */
+export type RecipeCuisine =
+  | '川' | '粤' | '鲁' | '苏浙' | '湘' | '东北' | '闽' | '徽' | '西北' | '京' | '家常';
+
 /** 治理状态机：草稿 → 转正 → 退役（退役不进推荐、历史保留） */
 export type RecipeStatus = 'draft' | 'active' | 'retired';
 
@@ -128,6 +139,8 @@ export interface Recipe {
   effort: RecipeEffort;
   status: RecipeStatus;
   source: RecipeSource;
+  /** 菜系参考 tag（导入时 LLM 初打、转正时掌勺者校对）；null = 还没打过（见 RecipeCuisine） */
+  cuisine: RecipeCuisine | null;
   /** 做法步骤自由文本，掌勺者参考用，**不进推荐管线** */
   steps: string;
   ingredients: RecipeIngredient[];

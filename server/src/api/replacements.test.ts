@@ -359,6 +359,37 @@ describe('候选接口的入参与错误', () => {
     expect(error?.recipeId).toBe('kelejichi');
   });
 
+  it('含「待重标」项（0 克）的草稿不进候选池；重标成正数后能回来', async () => {
+    harness = createTestHarness();
+    scriptLlm();
+    // 荤位家庭菜塞进近 7 天窗口，逼出外部补位（与整餐推荐同一道口子）
+    seedMeal('2025-05-30:lunch', ['kelejichi', 'qingzhengluyu', 'tudouniuniu', 'tangculiji', 'chongcaohuazhengji']);
+    await seedDinner(['hongshaopaigu', 'suanrongcaixin']);
+
+    // 两道荤位草稿（香菇滑鸡 / 番茄牛腩）里只有番茄牛腩变成「待重标」（0 克 = 模糊份量等 LLM 重标）
+    harness.db
+      .prepare("UPDATE recipes SET status = 'retired' WHERE id IN ('gongbaojiding', 'huiguorou')")
+      .run();
+    harness.db
+      .prepare("UPDATE recipe_ingredients SET adult_grams = 0 WHERE recipe_id = 'fanqieniunan' AND ingredient_id = 'tomato'")
+      .run();
+
+    const { body } = await candidates({ replacing: 'hongshaopaigu' });
+    // 不在候选、也不在「被忌口排除」清单里（它不是不能吃，是克数还没定）
+    expect(body.candidates.map((candidate) => candidate.recipeId)).not.toContain('fanqieniunan');
+    expect(body.excluded.map((entry) => entry.recipeId)).not.toContain('fanqieniunan');
+    // 对照：同一批里克数齐的草稿照常候选（不是「草稿一律不进」）
+    expect(body.candidates.map((candidate) => candidate.recipeId)).toContain('xiangguhuaji');
+
+    // 重标成功（写回正数）后，同一道草稿回到候选池
+    harness.db
+      .prepare("UPDATE recipe_ingredients SET adult_grams = 120 WHERE recipe_id = 'fanqieniunan' AND ingredient_id = 'tomato'")
+      .run();
+    harness.llm.clearCalls();
+    const after = await candidates({ replacing: 'hongshaopaigu' });
+    expect(after.body.candidates.map((candidate) => candidate.recipeId)).toContain('fanqieniunan');
+  });
+
   it('这餐过了截止时刻 → 400 slot_passed；餐槽 id 非法 → 400；名单里有人不存在 → 400', async () => {
     harness = createTestHarness();
     scriptLlm();
