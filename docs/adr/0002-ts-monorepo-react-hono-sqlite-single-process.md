@@ -1,0 +1,5 @@
+# 技术栈：TS 全栈，React + Hono，better-sqlite3 手写 SQL，单进程前后端一体
+
+自家家庭工具（票 #11），部署形态是 Mac mini 上 launchd 直跑、纯 HTTP 内网（票 #4），后续维护大概率由 agent 开发会话执行——因此整体取向是「语料最厚、静态可查、依赖最少」，而非生态上限。落定：TypeScript 全栈，pnpm workspace 两包（`server/` / `web/`，共享类型由 server 导出）；前端 React 18 + Vite + TanStack Query + React Router v7（library 模式）+ 手写 CSS（全局 token 直接搬原型样式语言，组件级 CSS Modules）；后端 Hono 4 + @hono/node-server（zod 校验）；存储 better-sqlite3 + 手写 SQL + 约 30 行迁移执行器（`server/migrations/` 编号 .sql，启动时按序执行）；单进程一体——一个 Node 进程一个高位端口（默认 8787），`/api/*` 走 Hono、其余 serveStatic 前端构建产物，launchd 一个 plist；测试 Vitest（单测 + API 集成）+ Playwright（每验收场景一条端到端）；PWA 仅 manifest 不做 Service Worker；Node 24 LTS（下限 22）。
+
+被否决的备选及理由：ORM（Drizzle 备选被否——约 10 张表上加抽象层是负资产，agent 读 raw SQL 出错率最低，迁移用编号 .sql 更可审）、Prisma（引擎二进制对 NAS 部署不友好）、Tailwind（把已验证的 token 视觉语言重写成 class 串，对维护是噪音）、Vue 3 / Svelte 5（同样成立但 React 语料最厚，agent 维护出错率最低）、Express（TS 体验落后）、node:sqlite（要求 Node ≥ 22.5 且 API 新，收益仅省一个依赖）、Service Worker（票 #4 已定不依赖离线；SW 缓存与「数据永远在服务端」的形态易打架且难排查）、前后端分进程（家用量级无并发压力，单进程备份/重启/排障最简）。React Router 与 TanStack Query 属常规选型，不单独成 ADR。
