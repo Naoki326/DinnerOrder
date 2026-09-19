@@ -116,10 +116,10 @@ describe('openai 客户端的接线', () => {
     });
   });
 
-  it('端点报错 → LlmCallError（降级链据此换档重试），且错误正文里的 key 不进消息', async () => {
+  it('端点报错 → LlmCallError（降级链据此换档重试），且错误正文里的 key 真的不进消息', async () => {
     stub = await startStub(() => ({
       status: 401,
-      body: { error: { message: `invalid api key ${API_KEY}`, type: 'invalid_request_error' } },
+      body: { error: { message: `Incorrect API key provided: ${API_KEY}`, type: 'invalid_request_error' } },
     }));
 
     const failure = await client()
@@ -128,6 +128,25 @@ describe('openai 客户端的接线', () => {
 
     expect(failure).toBeInstanceOf(LlmCallError);
     expect(String(failure)).toContain('LLM 调用失败');
+    // 硬要求：错误消息里不能出现 key（这条会继续流到 notes / 接口响应 / DEBUG 日志）
+    expect(String(failure)).not.toContain(API_KEY);
+    expect(String(failure)).toContain('[redacted');
+  });
+
+  it('DEBUG=1 时错误也落盘，但落盘内容同样不含 key', async () => {
+    stub = await startStub(() => ({
+      status: 401,
+      body: { error: { message: `Incorrect API key provided: ${API_KEY}`, type: 'invalid_request_error' } },
+    }));
+    const dir = tempDir();
+
+    await client({ debugLogDir: dir })
+      .complete({ system: 's', prompt: 'p', responseFormat: 'json_object', timeoutMs: 5000 })
+      .catch(() => undefined);
+
+    const log = fs.readFileSync(path.join(dir, fs.readdirSync(dir)[0]!), 'utf8');
+    expect(log).not.toContain(API_KEY);
+    expect(log).toContain('[redacted');
   });
 
   it('DEBUG 落盘：请求/响应写进 data 日志目录，**不含 api key**', async () => {

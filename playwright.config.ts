@@ -59,5 +59,21 @@ export default defineConfig({
         WEB_DIST_DIR: 'web/dist',
       },
     },
+    {
+      // S7 专用：同一个服务端，只把 LLM 换成「每次都失败」，验降级到简化推荐后的界面表现。
+      // 单独开一个实例而不是让主实例可切模式：那会让其他用例的断言依赖执行顺序。
+      command: 'rm -f data/e2e-llm-down.db* && node server/dist/e2e-server.js',
+      url: `http://127.0.0.1:${E2E.llmDown.port}/api/health`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      env: {
+        PORT: String(E2E.llmDown.port),
+        HOST: '127.0.0.1',
+        BASE_PATH: E2E.llmDown.basePath,
+        DB_PATH: 'data/e2e-llm-down.db',
+        WEB_DIST_DIR: 'web/dist',
+        E2E_LLM_MODE: 'fail',
+      },
+    },
   ],
 });

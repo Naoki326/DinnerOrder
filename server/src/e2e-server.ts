@@ -8,6 +8,9 @@
  *
  * 用法：`node server/dist/e2e-server.js`（由 playwright.config.ts 的 webServer 拉起）。
  * 环境变量与生产完全一致（PORT/BASE_PATH/DB_PATH/WEB_DIST_DIR）。
+ *
+ * `E2E_LLM_MODE=fail`：让 LLM 每次都失败（抛错），用于验 S7 的降级路径——
+ * 「断网/超时/schema 连败后界面给出简化推荐并显著标记」。生产入口没有这个开关。
  */
 import { serve } from '@hono/node-server';
 import { bootstrap } from './bootstrap.js';
@@ -16,7 +19,16 @@ import { pickPoolSelection } from './llm/prompt.js';
 
 const llm = createFakeLlmClient();
 llm.setModel('e2e-fake-llm');
-llm.setCompletion((request) => pickPoolSelection(request.prompt) ?? '{"dishes":[]}');
+
+if (process.env.E2E_LLM_MODE === 'fail') {
+  // 降级链会换档重试两次，这里每次调用都失败 → 最终落到简化推荐
+  const fail = (): never => {
+    throw new Error('E2E_LLM_MODE=fail：模拟端点不可达');
+  };
+  llm.setCompletion(fail);
+} else {
+  llm.setCompletion((request) => pickPoolSelection(request.prompt) ?? '{"dishes":[]}');
+}
 
 const { config, db, app, applied } = bootstrap({ env: process.env, llm });
 

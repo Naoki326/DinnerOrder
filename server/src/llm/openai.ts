@@ -141,8 +141,28 @@ function writeDebugLog(
   }
 }
 
-/** 错误描述里去掉可能的凭据痕迹（SDK 的报错正文可能带请求头） */
+/**
+ * 错误描述：**先脱敏再截断**。
+ *
+ * SDK 的报错正文会回引请求内容，实测 401 的 message 里带着完整 key（`Incorrect API key
+ * provided: sk-...`）。这条消息会经 `LlmCallError` → 推荐 `notes` → 接口响应 → 界面展示，
+ * 也会在 `DEBUG=1` 时落 `data/logs/`——所以脱敏必须在**源头**做，不能指望下游。
+ */
 function describeError(cause: unknown): string {
-  if (cause instanceof Error) return `${cause.name}: ${cause.message}`.slice(0, 500);
-  return String(cause).slice(0, 500);
+  const raw = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
+  return redactSecrets(raw).slice(0, 500);
+}
+
+/**
+ * 抹掉错误文本里像凭据的片段。
+ *
+ * 不追求穷举（凭据形态无穷），而是盖住真实会出现的几类：`sk-` 开头的 key、
+ * 常见前缀的 token、`Authorization`/`api[_-]?key` 后面跟的值。多抹一点无害——
+ * 报错里少几个字符，总比把家里的 key 写进日志强。
+ */
+function redactSecrets(text: string): string {
+  return text
+    .replace(/\b(sk|rk|pk)-[A-Za-z0-9_-]{8,}/g, '[redacted-key]')
+    .replace(/(authorization|api[_-]?key|cookie|set-cookie)\s*[:=]\s*\S+/gi, '$1: [redacted]')
+    .replace(/\b[A-Za-z0-9_-]{24,}\b(?=["'\s,)]*$)/g, '[redacted]');
 }

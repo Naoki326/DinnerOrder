@@ -271,6 +271,10 @@ function toEntry(recipe: Recipe, origin: RecipeOrigin, times30d: number): PoolEn
 /**
  * 调料白名单：这些食材不进「主料」列（它们是做法的一部分，不是这餐吃什么）。
  * 用封闭小集合而不是「按克数阈值」：阈值会把虫草花 5g 这类 fixed 项误判成调料。
+ *
+ * 边界：**口尝可见的辛辣香料（辣椒、豆瓣酱、蒜、葱、姜）一律当调料**，不列主料。
+ * 这会让「宫保鸡丁」的主料只剩鸡腿肉（辣椒确实是可吃的主料，但一一枚举会没完）——
+ * 主料只用于展示，不影响结构、过滤与份量，所以取「宁可少列」这一边。
  */
 const SEASONINGS = new Set([
   'salt',
@@ -313,8 +317,10 @@ export function planStructure(diners: MemberProfile[], pool: PoolEntry[]): Recom
 
 /** 家规公式要的道数（未按池子收敛的「应该配多少」） */
 function desiredStructure(diners: MemberProfile[]): RecommendationStructure {
-  const adults = Math.max(1, diners.filter((member) => member.kind === 'adult').length);
+  const adults = diners.filter((member) => member.kind === 'adult').length;
   const children = diners.filter((member) => member.kind === 'child').length;
+  // 大人数如实报（prompt 里的「大人 0、小孩 2」与结构不能各说各的）。
+  // 道数另有下限：没人吃就不定餐了，但一份菜单至少要有一道能配上——所以料位不低于 1。
   return {
     adults,
     children,

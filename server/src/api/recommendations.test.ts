@@ -229,6 +229,17 @@ describe('家规结构（总纲 §2.2 的 M1 公式）', () => {
     expect(oneAdult.body.structure).toEqual({ adults: 1, children: 1, meat: 1, veg: 1, soup: 1 });
   });
 
+  it('全小孩时大人数如实报 0（不能为了凑道数把「大人 0、小孩 2」写成大人 1）', async () => {
+    harness = createTestHarness();
+    scriptPoolSelection();
+
+    const kidsOnly = await recommend({ diners: ['dabao', 'xiaobao'] });
+    // 大人数是个事实，不是配额：写进 prompt 的用餐者段与结构段必须同一个值
+    expect(kidsOnly.body.structure).toMatchObject({ adults: 0, children: 2 });
+    // 道数另算：没人算大人也至少配一道荤（不然一份菜单是空的）
+    expect(kidsOnly.body.structure.meat).toBeGreaterThanOrEqual(1);
+  });
+
   it('结构写进 prompt 的机器可读段落，且响应里的菜品数量与它一致', async () => {
     harness = createTestHarness();
     scriptPoolSelection();

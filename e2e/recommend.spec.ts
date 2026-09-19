@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { E2E, ROOT_URL } from './test-env';
+import { E2E, LLM_DOWN_URL, ROOT_URL } from './test-env';
 
 /**
  * 验收场景 S1 的推荐段 + S6/S7（总纲 §4、spec §2.2）：
@@ -48,6 +48,14 @@ async function historyOf(
 ): Promise<{ type: string; source: string; llm: { model: string; promptVersion: string; degraded: boolean } | null }[]> {
   const response = await page.request.get(`${ROOT_URL}/api/slots/${id}`);
   return ((await response.json()) as { history: never[] }).history;
+}
+
+async function undecidedSlotAt(page: Page, base: string): Promise<string> {
+  const response = await page.request.get(`${base}/api/slots?days=7`);
+  const { slots } = (await response.json()) as { slots: SlotJson[] };
+  const slot = slots.find((item) => item.status === 'undecided');
+  if (!slot) throw new Error(`${base} 窗口内没有未定的餐槽`);
+  return slot.id;
 }
 
 async function nextUndecidedSlot(page: Page): Promise<string> {
@@ -187,4 +195,47 @@ test('「没做过」标记与简化推荐标记：只在真的发生时出现�
   // 手机宽度（总纲「手机优先」）：推荐面板展开后也不横向溢出
   const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(scrollWidth).toBeLessThanOrEqual(390);
+});
+
+/**
+ * S7 降级（总纲 §4、spec issue #12 Testing Decisions 明确「S7 在 E2E 验证」）：
+ * LLM 连续失败时，界面必须给出**纯规则拼餐**的简化推荐，并**显著标记**；恢复后可随时换一整套。
+ *
+ * 这一条跑在专门的 webServer 实例上（`E2E_LLM_MODE=fail`，每个 LLM 调用都抛）——
+ * 不放在主实例，否则其他用例的断言会依赖执行顺序。
+ */
+test('S7：LLM 全失败时给出简化推荐并显著标记，且仍能一键接受（断网也能定餐）', async ({ page }) => {
+  await page.goto(`${LLM_DOWN_URL}/`);
+  // 餐槽 id 现取不写死：那是一个独立的库，且「当前时刻之后」的餐槽才定得了
+  // （写死日期会在当天餐次截止后变成 slot_passed，测试间就自己坏了）
+  const slotId = await undecidedSlotAt(page, LLM_DOWN_URL);
+
+  // 面板走的是同一条推荐接口；这里直接拿响应断言降级链的产物
+  const response = await page.request.post(`${LLM_DOWN_URL}/api/slots/${slotId}/recommendation`, { data: {} });
+  expect(response.ok()).toBe(true);
+  const { recommendation } = (await response.json()) as { recommendation: RecommendationJson };
+
+  // 1) 走的是简化推荐：format=rules_only、degraded=true
+  expect(recommendation.llm.format).toBe('rules_only');
+  expect(recommendation.llm.degraded).toBe(true);
+  // 2) 仍然配满家规结构（规则拼的，不靠模型）
+  expect(recommendation.dishes.length).toBe(
+    recommendation.structure.meat + recommendation.structure.veg + recommendation.structure.soup,
+  );
+  // 3) 简化推荐的理由不编造（没有模型就没有理由）
+  expect(recommendation.dishes.every((dish) => dish.reason === null)).toBe(true);
+  // 4) notes 说清为什么降级（不是默默给一份看不出区别的菜单）
+  expect(recommendation.notes.join(' ')).toMatch(/简化推荐|LLM|失败/);
+
+  // 5) 界面上显著标记（常亮无关——这一份真的降级了，标记必须出现）
+  await page.getByTestId('recommend-button').click();
+  await expect(page.getByTestId('recommendation-panel')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('recommendation-degraded')).toBeVisible();
+
+  // 6) 简化推荐也能一键接受：断网时手动定餐这条路必须通
+  await page.getByTestId('accept-recommendation').click();
+  await expect(page.getByTestId('recommendation-panel')).toBeHidden({ timeout: 15_000 });
+  const saved = await page.request.get(`${LLM_DOWN_URL}/api/slots/${slotId}`);
+  const { slot } = (await saved.json()) as { slot: { status: string } };
+  expect(slot.status).toBe('decided');
 });
