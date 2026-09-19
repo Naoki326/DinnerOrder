@@ -3,8 +3,9 @@ import { RouterProvider, createBrowserRouter } from 'react-router';
 import { AppShell } from './AppShell';
 import { routerBasename } from './config';
 import { IdentityProvider } from './identity';
+import { ViewModeProvider } from './viewMode';
 import { FamilyView } from './routes/FamilyView';
-import { HomeView } from './routes/HomeView';
+import { HomeRoute } from './routes/HomeRoute';
 import { GroceryView, NotFoundView } from './routes/Placeholders';
 import { ReviewView } from './routes/ReviewView';
 import { SlotView } from './routes/SlotView';
@@ -19,7 +20,8 @@ const router = createBrowserRouter(
       path: '/',
       element: (
         <AppShell>
-          <HomeView />
+          {/* 三视图分发：视图模式是设备本地的呈现偏好（总纲 §2.10），默认 A */}
+          <HomeRoute />
         </AppShell>
       ),
     },
@@ -84,7 +86,10 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <IdentityProvider>
-        <RouterProvider router={router} />
+        {/* 「当前身份」与「视图模式」同级（总纲 §2.10）：都是这台设备的偏好，都存 localStorage */}
+        <ViewModeProvider>
+          <RouterProvider router={router} />
+        </ViewModeProvider>
       </IdentityProvider>
     </QueryClientProvider>
   );

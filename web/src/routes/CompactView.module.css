@@ -1,0 +1,145 @@
+/* ============ 变体 B：掌勺者紧凑流（原型 b-dayhead / b-slot 的形态） ============ */
+
+.dayHead {
+  padding: 14px 14px 4px;
+  font-weight: 700;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.slot {
+  background: var(--card);
+  border-radius: 12px;
+  margin: 6px 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(60, 50, 30, 0.07);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.headMain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+
+/* 折叠行上的直定按钮（未定餐槽）：与行头同高的一枚小胶囊 */
+.quick {
+  flex: none;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+/* 餐次前的状态点：已定=绿，未定=灰（与原型 dot.ok / dot.no 同色） */
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 99px;
+  flex: 0 0 auto;
+}
+
+.dot.ok {
+  background: var(--ok);
+}
+
+.dot.todo {
+  background: #d8cfc0;
+}
+
+.meal {
+  width: 34px;
+  flex: 0 0 auto;
+}
+
+.summary {
+  flex: 1;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.miniDish {
+  font-size: 12px;
+  background: var(--chip);
+  border-radius: 6px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.body {
+  padding: 0 12px 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.dishes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
+}
+
+.dishRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dishName {
+  font-weight: 600;
+}
+
+.grams {
+  margin-left: auto;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+/* 荤 / 素 / 汤 三色标记（与 A 视图同一套 token：--hun / --su / --tang） */
+.kind {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 22px;
+  text-align: center;
+  color: #fff;
+}
+
+.meat {
+  background: var(--hun);
+}
+
+.veg {
+  background: var(--su);
+}
+
+.soup_meat,
+.soup_veg {
+  background: var(--tang);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.actions > * {
+  flex: 1;
+}

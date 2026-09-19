@@ -1,4 +1,5 @@
 import { IdentitySwitcher } from './IdentitySwitcher';
+import { SettingsSheet } from './SettingsSheet';
 import styles from './AppHeader.module.css';
 
 /**
@@ -21,7 +22,11 @@ export function AppHeader() {
         <div className={styles.title}>家餐桌</div>
         <div className="sub">{todayLabel(new Date())}</div>
       </div>
-      <IdentitySwitcher />
+      {/* 设置（⚙️，M1 只有「视图模式」一项）与身份条并列常驻：两者都是「这台手机的偏好」 */}
+      <div className={styles.actions}>
+        <SettingsSheet />
+        <IdentitySwitcher />
+      </div>
     </header>
   );
 }

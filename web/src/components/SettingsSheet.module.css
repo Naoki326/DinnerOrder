@@ -1,0 +1,67 @@
+/* 设置入口（齿轮）：造型跟随身份条（同样是一枚白色胶囊），摆在它左边 */
+.gear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--card);
+  border-radius: 99px;
+  padding: 6px 12px;
+  box-shadow: 0 1px 4px rgba(60, 50, 30, 0.1);
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(60, 50, 30, 0.28);
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.sheet {
+  background: var(--card);
+  border-radius: 20px 20px 0 0;
+  padding: 16px 14px 22px;
+  width: min(100%, 480px);
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.sheetHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.note {
+  margin-top: 12px;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--chip);
+  margin-top: 8px;
+  text-align: left;
+}
+
+.option.on {
+  background: var(--accent-soft);
+  outline: 1.5px solid var(--accent);
+}
+
+.option .who {
+  flex: 1;
+}
+
+.option .name {
+  font-weight: 600;
+}

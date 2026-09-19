@@ -1,0 +1,150 @@
+/* ============ 变体 C：长辈小孩极简（原型 c-wrap / c-big / c-btn 的形态） ============ */
+
+.wrap {
+  padding: 24px 20px;
+  text-align: center;
+}
+
+.emoji {
+  font-size: 56px;
+  margin: 18px 0 6px;
+}
+
+.big {
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1.25;
+  margin: 8px 0;
+}
+
+/* 一屏两三个大按钮：目标点击区远大于常规按钮（长辈小孩友好是这套视图的全部理由） */
+.main,
+.sec {
+  display: block;
+  width: 100%;
+  padding: 20px 0;
+  border-radius: 20px;
+  font-size: 20px;
+  font-weight: 700;
+  margin: 12px 0;
+  text-align: center;
+  text-decoration: none;
+}
+
+.main {
+  background: var(--accent);
+  color: #fff;
+}
+
+.sec {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: 0 1px 4px rgba(60, 50, 30, 0.1);
+}
+
+.main[disabled],
+.sec[disabled] {
+  opacity: 0.5;
+}
+
+/* 两道向导的进度点 */
+.dots {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  margin: 10px 0;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 99px;
+  background: var(--line);
+}
+
+.dotOn {
+  background: var(--accent);
+}
+
+/* 第一步：谁吃（大事化小的头像按钮） */
+.dinerRow {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin: 16px 0;
+  flex-wrap: wrap;
+}
+
+.dinerCell {
+  text-align: center;
+}
+
+.avatar {
+  width: 60px;
+  height: 60px;
+  border-radius: 99px;
+  background: var(--chip);
+  font-size: 30px;
+  line-height: 60px;
+}
+
+.avatarOn {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 第二步：每道菜一张大卡（左对齐，字要能看清） */
+.cards {
+  text-align: left;
+}
+
+.card {
+  background: var(--card);
+  border-radius: var(--r);
+  box-shadow: 0 1px 4px rgba(60, 50, 30, 0.07);
+  padding: 14px;
+  margin: 10px 0;
+  font-size: 16px;
+}
+
+.dishName {
+  font-size: 18px;
+}
+
+.grams {
+  color: var(--sub);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.secSmall {
+  margin-top: 8px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: var(--chip);
+  font-size: 14px;
+}
+
+.kind {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 22px;
+  text-align: center;
+  color: #fff;
+}
+
+.meat {
+  background: var(--hun);
+}
+
+.veg {
+  background: var(--su);
+}
+
+.soup_meat,
+.soup_veg {
+  background: var(--tang);
+}
