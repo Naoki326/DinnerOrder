@@ -1,0 +1,25 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# 密钥与环境（绝不入库）
+.env
+.env.*
+!.env.example
+
+# 本地数据与备份
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+data/
+backups/
+
+# 测试与工具产物
+coverage/
+playwright-report/
+test-results/
+.DS_Store
+*.log
