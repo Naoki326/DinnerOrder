@@ -15,7 +15,7 @@
 import { serve } from '@hono/node-server';
 import { bootstrap } from './bootstrap.js';
 import { createFakeLlmClient } from './llm/fake.js';
-import { pickPoolSelection } from './llm/prompt.js';
+import { pickLlmSelection } from './llm/prompt.js';
 
 const llm = createFakeLlmClient();
 llm.setModel('e2e-fake-llm');
@@ -27,7 +27,8 @@ if (process.env.E2E_LLM_MODE === 'fail') {
   };
   llm.setCompletion(fail);
 } else {
-  llm.setCompletion((request) => pickPoolSelection(request.prompt) ?? '{"dishes":[]}');
+  // 同一个确定性 fake 同时支持两条路：整餐推荐（【候选池】）与换菜候选（【同位候选池】）
+  llm.setCompletion((request) => pickLlmSelection(request.prompt) ?? '{"dishes":[]}');
 }
 
 const { config, db, app, applied } = bootstrap({ env: process.env, llm });

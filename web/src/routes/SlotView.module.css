@@ -201,3 +201,16 @@
 .eventType {
   font-weight: 600;
 }
+
+/* ---------------- 换菜候选（spec S2） ---------------- */
+
+.swap {
+  flex: none;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+

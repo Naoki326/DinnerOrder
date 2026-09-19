@@ -1,6 +1,7 @@
 import type { Db } from '../db/index.js';
 import { ingredientExists } from './ingredients.js';
 import { recipeExists } from './recipes.js';
+import { UnknownMemberError } from './slots.js';
 import type { LoveEntry, LoveTarget, MemberProfile, ProfileEntry, ProfilePatch } from '../wire-types.js';
 
 // 线上形状定义在 wire-types.ts（前端也从那里取），领域层自用、也转手给测试与路由
@@ -85,6 +86,30 @@ export function findMember(db: Db, id: string): MemberProfile | undefined {
     avoid.map((entry) => ({ ingredientId: entry.ingredient_id, name: entry.name })),
     loves.map(toLoveEntry),
   );
+}
+
+/**
+ * 按 id 列表解析成员（去重、保持传入顺序）。推荐、换菜、份量三条路都从这里取画像。
+ *
+ * 两种缺席语义，由调用方按「这个人是谁给的」选：
+ *   * `'throw'`（缺省）：名单是**调用方显式给的**，里面出现不存在的人是给错了 → `UnknownMemberError`。
+ *   * `'skip'`：名单是**历史快照**（已定菜单的用餐者），成员后来被删了就跳过——与
+ *     `portionOf` 的 `missingMembers:'assumeAdult'` 同一个取舍：为一个删掉的家人废掉整次读取，
+ *     代价与收益完全不对等（何况他的忌口本来就已随他一起删了）。
+ */
+export function resolveMembers(
+  db: Db,
+  ids: string[],
+  options: { missing?: 'throw' | 'skip' } = {},
+): MemberProfile[] {
+  const byId = new Map(listMembers(db).map((member) => [member.id, member]));
+  const skip = options.missing === 'skip';
+  return [...new Set(ids)].flatMap((memberId) => {
+    const member = byId.get(memberId);
+    if (member) return [member];
+    if (skip) return [];
+    throw new UnknownMemberError(memberId);
+  });
 }
 
 function toLoveEntry(row: LoveRow): LoveEntry {

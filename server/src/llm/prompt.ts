@@ -18,6 +18,43 @@ import type { MemberProfile, RecentDish, Recipe, RecipeKind, RecommendationStruc
 /** 改了 prompt 措辞或池子形状就 +1（留痕里的版本号，历史推荐靠它对回当时的模板） */
 export const PROMPT_VERSION = '2026-09-rec-v1';
 
+/**
+ * 换菜候选模板的版本号（spec §2.3）。**与整餐推荐分开**：两套 prompt 的措辞各自演化，
+ * 合成一个版本号就会让「留痕里的版本号」说不清是哪张模板——而它存在的唯一意义就是能对回模板。
+ * 留痕里目前只落整餐推荐的版本（单道换菜不携 LLM 元数据，见 api/replacements.ts 的说明）。
+ */
+export const CANDIDATE_PROMPT_VERSION = '2026-09-candidate-v1';
+
+/**
+ * 留痕的 LLM 元数据可能来自哪条路（`PUT /api/slots/:id` 的 `source`）。
+ * 目前只有整餐推荐这一条：单道换菜不携 LLM 元数据（见 api/replacements.ts 的说明），
+ * 候选本身不落库，所以候选模板不可能产生这里的留痕。
+ */
+type RecommendationSource = 'recommendation';
+
+/**
+ * **来源 → 允许的模板版本**（ADR-0007：留痕的版本号必须可信）。
+ *
+ * 只校验「版本号在代码库已知集合里」不够：那会允许整餐推荐的留痕写候选模板的版本号，
+ * 于是历史推荐对回的是**另一张模板**——留痕存在的全部意义（可回溯）当场失效。
+ * 模板必须与产生它的那条路绑定，所以这里按来源列出**它自己**那张模板。
+ *
+ * 加了新的「带 LLM 元数据的落库路」就往这个映射里加一条，判断只在这一处；
+ * 只改模板措辞（新增版本号）则改对应的常量值，映射不用动。
+ */
+const PROMPT_VERSIONS_BY_SOURCE: Record<RecommendationSource, string> = {
+  recommendation: PROMPT_VERSION,
+};
+
+/**
+ * 这个来源**允许**写进留痕的模板版本号。找不到来源 = `undefined`（调用方报 400）。
+ *
+ * 候选模板刻意**不在**任何来源下：它现在不产生落库留痕，将来也不该被当成整餐推荐的模板版本。
+ */
+export function promptVersionFor(source: string): string | undefined {
+  return (PROMPT_VERSIONS_BY_SOURCE as Record<string, string | undefined>)[source];
+}
+
 export const SYSTEM_PROMPT = [
   '你是一位中国家庭的日常配餐助手。你的唯一任务是从给定的候选池中挑选并搭配一餐。',
   '严格遵守：',
@@ -144,21 +181,7 @@ function mealLabel(meal: 'lunch' | 'dinner'): string {
  * 在断言里可复现。
  */
 export function parsePromptPool(prompt: string): PoolEntry[] {
-  const block = sectionAfter(prompt, POOL_MARK);
-  if (!block) return [];
-  try {
-    const raw = JSON.parse(block) as { id: string; name: string; kind: RecipeKind; main?: string; source?: string }[];
-    return raw.map((entry) => ({
-      id: entry.id,
-      name: entry.name,
-      kind: entry.kind,
-      mains: entry.main ? entry.main.split('/') : [],
-      origin: entry.source === '外部（没做过）' ? 'external' : 'family',
-      times30d: 0,
-    }));
-  } catch {
-    return [];
-  }
+  return parsePoolSection(prompt, POOL_MARK);
 }
 
 /** 同上，结构段 */
@@ -204,6 +227,146 @@ function positionOfKind(kind: RecipeKind): 'meat' | 'veg' | 'soup' {
   if (kind === 'meat') return 'meat';
   if (kind === 'veg') return 'veg';
   return 'soup';
+}
+
+// ---------------------------------------------------------------- 换菜候选
+
+/**
+ * 换菜候选的 system prompt（spec §2.3：一次 3 个候选、各带一句理由）。
+ *
+ * 与整餐推荐同一套纪律（ADR-0001）：只从给定池里挑 id，不创造新菜；句数与池子限定严格的
+ * 「几个」——池子不够 3 个就少给，不凑数。理由要说**这餐为什么配它**，不复述做法。
+ */
+const CANDIDATE_SYSTEM_PROMPT = [
+  '你是一位中国家庭的日常配餐助手。这一次的任务是：替一道菜，从给定候选池里挑几个替代选项。',
+  '严格遵守：',
+  '1. 只能选候选池里的菜（用它的 id），不得创造任何新菜，不得重复选同一道菜。',
+  '2. 必须正好给 3 个（池子里的菜不足 3 个时，有多少给多少）。',
+  '3. 每位用餐者的忌口已在后端硬过滤，池中不会出现忌口菜；在能选到别的菜时尽量避开同样的主料。',
+  '4. 每道菜给**一句**中文理由（20 字以内，说清为什么这餐适合用它替换），不要复述做法。',
+  '输出只能是 JSON，不要 markdown 代码块，不要解释文字。JSON 形状：',
+  '{"candidates":[{"recipeId":"<候选池里的 id>","reason":"<一句理由>"}]}',
+].join('\n');
+
+/** 【换菜请求】的机器可读段落形状（fake 的确定性挑选靠它知道要挑几个） */
+export interface PromptSwapBlock {
+  date: string;
+  meal: 'lunch' | 'dinner';
+  /** 正在被换掉的那道菜 */
+  replacing: { recipeId: string; name: string; kind: RecipeKind };
+  /** 要几个候选（池子不够就少给） */
+  count: number;
+}
+
+const SWAP_MARK = '【换菜请求】';
+/** 换菜候选池（与整餐的【候选池】同一形状，但语义是「同位替换」） */
+const CANDIDATE_POOL_MARK = '【同位候选池】';
+
+export interface CandidatePromptInput {
+  slot: { date: string; meal: 'lunch' | 'dinner' };
+  /** 正在被换掉的菜 */
+  replacing: { recipeId: string; name: string; kind: RecipeKind };
+  count: number;
+  diners: MemberProfile[];
+  pool: PoolEntry[];
+  /** 近 7 天已吃的菜（软避让，与整餐推荐同一口径） */
+  recentDishes: RecentDish[];
+}
+
+/**
+ * 换菜候选项的 prompt。与 `buildPrompt` 共用「池子段 + 画像段」的形状，
+ * 差别只有两个：目标不是配一整餐，而是替一道菜找同位候选。
+ */
+export function buildCandidatePrompt(input: CandidatePromptInput): { system: string; prompt: string; swap: PromptSwapBlock } {
+  const swap: PromptSwapBlock = {
+    date: input.slot.date,
+    meal: input.slot.meal,
+    replacing: input.replacing,
+    count: input.count,
+  };
+
+  const lines: string[] = [
+    `${PROFILE_MARK}`,
+    ...profileLines(input.diners),
+    '',
+    `${RECENT_MARK}`,
+    input.recentDishes.length === 0
+      ? '（近 7 天没做过这些菜）'
+      : input.recentDishes.map((dish) => `${dish.name}（${mealLabel(dish.meal)}，${dish.date}）`).join('、'),
+    '',
+    SWAP_MARK,
+    JSON.stringify(swap),
+    '',
+    CANDIDATE_POOL_MARK,
+    JSON.stringify(input.pool.map(poolLine)),
+    '',
+    `请从【同位候选池】中选 ${input.count} 个替换【换菜请求】里那道菜的候选（池子不够就少给），输出 JSON。`,
+  ];
+
+  return { system: CANDIDATE_SYSTEM_PROMPT, prompt: lines.join('\n'), swap };
+}
+
+/** 从候选 prompt 里读回【换菜请求】段 */
+export function parsePromptSwap(prompt: string): PromptSwapBlock | undefined {
+  const block = sectionAfter(prompt, SWAP_MARK);
+  if (!block) return undefined;
+  try {
+    return JSON.parse(block) as PromptSwapBlock;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 从候选 prompt 里读回【同位候选池】段（与整餐池共用同一段形状） */
+export function parsePromptCandidates(prompt: string): PoolEntry[] {
+  return parsePoolSection(prompt, CANDIDATE_POOL_MARK);
+}
+
+/**
+ * 按候选 prompt 做一次**确定性的**挑选（取池子前 N 个，N = 请求的候选数）。
+ * 谁用它：`createFakeLlmClient()` 与 E2E 服务端——与 `pickPoolSelection` 同一理由（不依赖真模型）。
+ */
+export function pickCandidateSelection(prompt: string): string | undefined {
+  const swap = parsePromptSwap(prompt);
+  const pool = parsePromptCandidates(prompt);
+  if (!swap || pool.length === 0) return undefined;
+
+  const candidates = pool.slice(0, Math.max(1, swap.count)).map((entry) => ({
+    recipeId: entry.id,
+    reason: `${entry.name} 换掉这一道正合适。`,
+  }));
+  return JSON.stringify({ candidates });
+}
+
+/**
+ * 让一个「按 prompt 就确定性选」的 fake 同时支持整餐与换菜两条路：先看是不是候选 prompt。
+ * 测试与 E2E 服务端用它当唯一入口，免得两边各写一遍分发。
+ */
+export function pickLlmSelection(prompt: string): string | undefined {
+  return pickCandidateSelection(prompt) ?? pickPoolSelection(prompt);
+}
+
+/**
+ * 把某个池子标记行之后的段落解成 `PoolEntry[]`。**整餐与换菜两条路只有标记行不同**：
+ * 池子段的形状是同一套（`poolLine` 落的形状），所以解析也只有一份——两份逐行相同的拷贝
+ * 一旦漂移，fake 对一条路读出来的池子就与另一条不一样了。
+ */
+function parsePoolSection(prompt: string, mark: string): PoolEntry[] {
+  const block = sectionAfter(prompt, mark);
+  if (!block) return [];
+  try {
+    const raw = JSON.parse(block) as { id: string; name: string; kind: RecipeKind; main?: string; source?: string }[];
+    return raw.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      kind: entry.kind,
+      mains: entry.main ? entry.main.split('/') : [],
+      origin: entry.source === '外部（没做过）' ? 'external' : 'family',
+      times30d: 0,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 /** 取标记行之后的那一段（到下一个标记行或空行为止） */

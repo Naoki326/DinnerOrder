@@ -4,6 +4,9 @@ import { useIdentity } from '../identity';
 import { useRecipes, type Recipe } from '../api/recipes';
 import { usePortionPreview, type MenuPortion } from '../api/portion';
 import { useBookSlot, useCancelSlot, useSlot, type MealEvent, type MealSlot } from '../api/meals';
+import { useAcceptRecommendation, useRecommendation } from '../api/recommendations';
+import { useUndoSet } from '../api/replacements';
+import { CandidateList } from '../components/CandidateList';
 import styles from './SlotView.module.css';
 
 /**
@@ -23,6 +26,20 @@ export function SlotView() {
   const { slotId } = useParams<{ slotId: string }>();
   const slotQuery = useSlot(slotId);
   const recipesQuery = useRecipes('all');
+
+  // 换菜会话的排除集（被换掉的 + 已出示过的候选）挂在外层：`key` 重挂载 SlotEditor
+  // （保存/换套/撤销后服务端菜单变了）时它不跟着丢——被换掉的那道菜不该因为一次保存
+  // 又回到候选里（spec §2.3 的累积排除）。草稿（dishes/dinersDraft）的重挂载重置仍留在
+  // SlotEditor 里，那是有意的。会话的生命周期 = 这个餐槽页面的生命周期。
+  // 状态里带上槽位 id：客户端路由在两个餐槽页之间往返会复用这个组件实例，换槽即新会话、不串台。
+  const [session, setSession] = useState({ slotId, excludes: [] as string[] });
+  const sessionExcludes = session.slotId === slotId ? session.excludes : [];
+  const excludeDishes = (recipeIds: string[]): void => {
+    setSession((current) => ({
+      slotId,
+      excludes: [...new Set([...(current.slotId === slotId ? current.excludes : []), ...recipeIds])],
+    }));
+  };
 
   if (slotQuery.isPending || recipesQuery.isPending) {
     return (
@@ -47,8 +64,20 @@ export function SlotView() {
     );
   }
 
-  // 数据到位后才挂载编辑器：hooks 不必为「还没数据」的空态分叉
-  return <SlotEditor slot={slotQuery.data.slot} history={slotQuery.data.history} recipes={recipesQuery.data ?? []} />;
+  // 数据到位后才挂载编辑器：hooks 不必为「还没数据」的空态分叉。
+  // `key` 用最后一条事件的 seq：保存/换一整套/撤销之后服务端状态变了，整份草稿要跟着重挂载
+  // ——编辑器里的 useState 只在挂载时取一次初值，不重挂就会把旧草稿留在屏幕上报销掉服务端的新菜单。
+  // 会话排除集不走这条路：它由上面这层持有，重挂载不会清空。
+  return (
+    <SlotEditor
+      key={slotQuery.data.history.at(-1)?.seq ?? 'new'}
+      slot={slotQuery.data.slot}
+      history={slotQuery.data.history}
+      recipes={recipesQuery.data ?? []}
+      sessionExcludes={sessionExcludes}
+      onExclude={excludeDishes}
+    />
+  );
 }
 
 interface DraftDish {
@@ -56,7 +85,24 @@ interface DraftDish {
   keepLeftover: boolean;
 }
 
-function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealEvent[]; recipes: Recipe[] }) {
+function SlotEditor({
+  slot,
+  history,
+  recipes,
+  sessionExcludes,
+  onExclude,
+}: {
+  slot: MealSlot;
+  history: MealEvent[];
+  recipes: Recipe[];
+  /**
+   * 本换菜会话的排除集，由外层 `SlotView` 持有（spec §2.3 的累积排除跨保存/换套/撤销仍然有效）。
+   * 面板一关一开（组件卸载重挂）不能把「被换掉的 + 已出示过的」弄丢。
+   */
+  sessionExcludes: string[];
+  /** 把菜并进会话排除集（被换掉的 + 面板已出示过的候选） */
+  onExclude: (recipeIds: string[]) => void;
+}) {
   const navigate = useNavigate();
   const { members } = useIdentity();
   const book = useBookSlot();
@@ -68,6 +114,14 @@ function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealE
   const [dishes, setDishes] = useState<DraftDish[]>(
     () => slot.menu?.dishes.map((dish) => ({ recipeId: dish.recipeId, keepLeftover: dish.keepLeftover })) ?? [],
   );
+
+  // 换菜（spec S2）：只记「正在换哪一道」；候选本身由 CandidateList 取，
+  // 而**本会话的排除集**（被换掉的 + 已出示过的）在 SlotView 那一层——「换它」即关面板，
+  // 状态留在面板组件里就随 unmount 丢了，同一会话里换掉的那道菜会重新进候选（spec §2.3）。
+  const [swapping, setSwapping] = useState<string | null>(null);
+  const undo = useUndoSet(slot.id);
+  const recommend = useRecommendation(slot.id);
+  const accept = useAcceptRecommendation(slot.id);
 
   // 首次定餐的默认用餐者是**全员**（总纲 §3）；家人列表可能晚于餐槽到位，所以默认值现算而不是初值快照
   const diners = dinersDraft ?? (slot.menu ? slot.menu.diners.map((diner) => diner.memberId) : members.map((m) => m.id));
@@ -102,6 +156,52 @@ function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealE
     );
   };
 
+  /** 「换它」：只改本地草稿——保存由用户按下「保存改动」时发生（一次提交 = 一条留痕事件） */
+  const applyCandidate = (replacingId: string, recipeId: string): void => {
+    setDishes((current) => current.map((dish) => (dish.recipeId === replacingId ? { ...dish, recipeId } : dish)));
+    // 被换掉的那道菜进本会话排除集（spec §2.3）：不单靠「当前菜单」挡——草稿菜单会变，
+    // 而且刚换掉的那道确实不在候选里没有任何意义（要换回来就直接去「加菜」里挑）。
+    onExclude([replacingId]);
+    setSwapping(null);
+  };
+
+  /**
+   * 「换一整套」（spec §2.3）：重新生成整餐并**立即应用**（source='recommendation' → replace_set）。
+   * 与单道换菜不同，它不走本地草稿：整餐重新生成本来就是「把这一套整套换掉」，
+   * 而且它必须立刻落库才有可撤销的上一套（服务端从事件流推导上一套，草稿里没有留痕）。
+   */
+  const replaceSet = (): void => {
+    setError(undefined);
+    recommend.mutate(
+      { diners },
+      {
+        onSuccess: (result) => {
+          accept.mutate(
+            {
+              booking: {
+                diners: result.diners.map((diner) => diner.memberId),
+                dishes: result.dishes.map((dish) => dish.recipeId),
+              },
+              recommendation: result,
+            },
+            {
+              onSuccess: () => setSwapping(null),
+              onError: (cause) => setError(cause instanceof Error ? cause.message : '换一整套没换成功'),
+            },
+          );
+        },
+        onError: (cause) => setError(cause instanceof Error ? cause.message : '这一套没生成出来'),
+      },
+    );
+  };
+
+  const doUndoSet = (): void => {
+    setError(undefined);
+    undo.mutate(undefined, {
+      onError: (cause) => setError(cause instanceof Error ? cause.message : '撤销失败'),
+    });
+  };
+
   const save = (): void => {
     setError(undefined);
     book.mutate(
@@ -131,7 +231,19 @@ function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealE
             <div className={styles.title}>
               {slot.date} · {slot.meal === 'lunch' ? '午餐' : '晚餐'}
             </div>
-            <div className="sub">{slot.editable ? (decided ? '已定，可改可取消' : '未定') : '这一餐已经过了，只能看'}</div>
+            <div className="sub">
+              {/* 过了截止时刻的文案要跟屏幕上的按钮对上：`undo-set` 只由 decided && canUndoSet 决定，
+                  没有可撤销的换套时页上只有「取消这一餐」，副标题就不该承诺一个不存在的按钮 */}
+              {slot.editable
+                ? decided
+                  ? '已定，可改可取消'
+                  : '未定'
+                : decided
+                  ? slot.canUndoSet
+                    ? '这一餐已经过了：菜单改不了，但可以取消或撤销换套'
+                    : '这一餐已经过了：菜单改不了，但可以取消'
+                  : '这一餐已经过了，只能看'}
+            </div>
           </div>
           <span className={decided ? 'badge ok' : 'badge'} data-testid="slot-status">
             {decided ? '已定' : '未定'}
@@ -185,6 +297,18 @@ function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealE
                   <div className={styles.chosenRow}>
                     <span className={`${styles.kind} ${styles[recipe.kind]}`}>{KIND_LABEL[recipe.kind]}</span>
                     <span className={styles.chosenName}>{recipe.name}</span>
+                    {/* 换菜（spec S2）：只对已定的菜给入口——未定时「挑一道」就是加菜，不需要先有再换 */}
+                    {slot.editable && slot.menu ? (
+                      <button
+                        type="button"
+                        className={styles.swap}
+                        data-testid={`swap-${dish.recipeId}`}
+                        aria-expanded={swapping === dish.recipeId}
+                        onClick={() => setSwapping(swapping === dish.recipeId ? null : dish.recipeId)}
+                      >
+                        换
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className={dish.keepLeftover ? `${styles.keep} ${styles.keepOn}` : styles.keep}
@@ -204,6 +328,19 @@ function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealE
                       ✕
                     </button>
                   </div>
+                  {/* 候选面板：只挂在正在被换的那道菜下面；草稿菜单与名单一起带过去 */}
+                  {swapping === dish.recipeId ? (
+                    <CandidateList
+                      slotId={slot.id}
+                      replacing={{ recipeId: dish.recipeId, name: recipe.name }}
+                      diners={diners}
+                      dishes={dishes.map((item) => item.recipeId)}
+                      sessionExcludes={sessionExcludes}
+                      onShown={onExclude}
+                      onSwap={(candidate) => applyCandidate(dish.recipeId, candidate.recipeId)}
+                      onClose={() => setSwapping(null)}
+                    />
+                  ) : null}
                   {/* 本餐生重：逐食材克数 + 合计（份量引擎算的，界面不自己乘） */}
                   {dishPortion ? (
                     <div className={styles.portion} data-testid={`portion-${dish.recipeId}`}>
@@ -272,6 +409,38 @@ function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealE
       {error ? (
         <div className="card" data-testid="slot-error-message">
           <span className={styles.error}>{error}</span>
+        </div>
+      ) : null}
+
+      {/* 「换一整套」受 `slot.editable` 门控：它走 bookSlot（source='recommendation'），
+          过了截止时刻服务端会 400——存量的「不应期」在服务端，界面不该放一个注定失败的口子进来；
+          而「撤销换一整套」与「取消这一餐」是同一口径（撤销一条手滑的换套不需赶时间，
+          domain/slots.ts 的 undoSet 刻意不查 hasMealPassed），所以它只由 decided && canUndoSet 决定。
+          这个不对称是有意的：两者一个改菜单内容（要截止），一个只是退回上一套/取消（不要）。 */}
+      {slot.editable || (decided && slot.canUndoSet) ? (
+        <div className={styles.actions} data-testid="set-actions">
+          {slot.editable ? (
+            <button
+              type="button"
+              className="btn ghost block"
+              data-testid="replace-set"
+              disabled={recommend.isPending || accept.isPending}
+              onClick={replaceSet}
+            >
+              {recommend.isPending || accept.isPending ? '正在换一整套…' : '🔄 换一整套'}
+            </button>
+          ) : null}
+          {decided && slot.canUndoSet ? (
+            <button
+              type="button"
+              className="btn ghost block"
+              data-testid="undo-set"
+              disabled={undo.isPending}
+              onClick={doUndoSet}
+            >
+              {undo.isPending ? '撤销中…' : '↩ 撤销，回到上一套'}
+            </button>
+          ) : null}
         </div>
       ) : null}
 

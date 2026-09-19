@@ -79,8 +79,10 @@ e2e/                    Playwright 冒烟 + 家人与当前身份
 | `GET /api/recipes?status=` | 家庭菜谱库（缺省只给转正态，`all` 一次拿齐） |
 | `GET /api/slots?days=` · `GET /api/slots/:id` | 餐槽与菜单；单餐响应内嵌 `portion`（本餐每道菜的生重） |
 | `PUT /api/slots/:id` · `DELETE /api/slots/:id` | 定餐 = 改餐（整份菜单一次提交）· 取消（留痕只增不改） |
+| `POST /api/slots/:id/undo-set` | **撤销换一整套**：把这一餐退回上一次「换一整套」之前那一套（恢复上一条事件的快照，撤销本身也是一条留痕）；没有可撤的就 409 `nothing_to_undo` |
 | `GET /api/history/recent-dishes?days=` | 最近吃过的菜（去重窗口，走事件流） |
 | `POST /api/slots/:id/recommendation` | **整餐推荐**（总纲 §4）：规则硬过滤与时令检索 → LLM 从池中选 → 降级链。不落库、不缓存，接受与否由下一次 `PUT` 决定 |
+| `POST /api/slots/:id/candidates` | **换菜候选**（spec S2）：给一道菜要 3 个同位替换选项（各带理由、忌口排除原因、「没做过」标记）；`exclude` = 本换菜会话累积排除的菜（被换掉的 + 已出示过的候选），池干按 `none→dedupe→session` 放宽（忌口永不 relax）。不落库 |
 | `GET /api/portion/rules` | 份量规则表：成人能量锚点 + WS/T 554 分带折算系数 + 各人群推荐量 + 餐次占比（逐条带来源） |
 | `POST /api/portion/preview` | 草稿菜单的份量（编辑期即时重算；年龄按服务端时钟现算） |
 | `GET /api/portion/exchange` | WS/T 554 附录 A 生熟/同类互换表（七组，带基准与口径） |

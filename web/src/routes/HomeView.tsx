@@ -8,6 +8,7 @@ import {
   useRecommendation,
   type MealRecommendation,
 } from '../api/recommendations';
+import { CandidateList, type SwapCandidate } from '../components/CandidateList';
 import styles from './HomeView.module.css';
 
 /**
@@ -84,6 +85,13 @@ export function HomeView() {
 function HeroCard({ slot, today }: { slot: SlotWithPortion; today: string | undefined }) {
   const decided = slot.status === 'decided';
   const [recommendation, setRecommendation] = useState<MealRecommendation | null>(null);
+  // 「换一整套」前那一份**草稿**推荐：草稿没落库（总纲 §4），所以「上一套」只能在前端留住。
+  // 这与已定餐槽的 `undo-set` 是两条路：那边的上一套是服务端从 append-only 留痕推导的
+  // （domain/slots.ts 的 undoSet），这边的草稿里没有留痕可推。
+  const [previousRecommendation, setPreviousRecommendation] = useState<MealRecommendation | null>(null);
+  // 换菜会话序号：整份草稿被换掉（换一整套 / 撤销）就是新会话，会话内的累积排除要跟着清空。
+  // 用 `key` 重挂载面板而不是从外面递 sessionExcludes 进去：面板本来就是一个会话的自然载体。
+  const [sessionSeq, setSessionSeq] = useState(0);
   const recommend = useRecommendation(slot.id);
   const accept = useAcceptRecommendation(slot.id);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -93,10 +101,26 @@ function HeroCard({ slot, today }: { slot: SlotWithPortion; today: string | unde
     recommend.mutate(
       {},
       {
-        onSuccess: (result) => setRecommendation(result),
+        onSuccess: (result) => {
+          // 有旧草稿才记「上一份」：首次推荐没有可撤销的东西（撤销按钮只在真有上一份时出现）
+          setPreviousRecommendation(recommendation);
+          setRecommendation(result);
+          setSessionSeq((current) => current + 1);
+        },
         onError: (cause) => setError(cause instanceof Error ? cause.message : '推荐失败'),
       },
     );
+  };
+
+  /**
+   * 撤销「换一整套」：回到换之前那一份草稿（spec §2.3 的「可反悔」）。
+   * 只走一步：恢复之后没有更早的草稿可退（与已定餐槽的 `canUndoSet` 同一口径，不做 ping-pong）。
+   */
+  const undoRecommendation = (): void => {
+    if (!previousRecommendation) return;
+    setRecommendation(previousRecommendation);
+    setPreviousRecommendation(null);
+    setSessionSeq((current) => current + 1);
   };
 
   const acceptRecommendation = (): void => {
@@ -111,8 +135,12 @@ function HeroCard({ slot, today }: { slot: SlotWithPortion; today: string | unde
         recommendation,
       },
       {
-        // 接受成功后收起面板：菜单已经落库，卡片上会直接显示它（面板再挂在那儿是重复的）
-        onSuccess: () => setRecommendation(null),
+        // 接受成功后收起面板：菜单已经落库，卡片上会直接显示它（面板再挂在那儿是重复的）；
+        // 草稿被接受，上一份也就没有可撤销的意义了
+        onSuccess: () => {
+          setRecommendation(null);
+          setPreviousRecommendation(null);
+        },
         onError: (cause) => setError(cause instanceof Error ? cause.message : '保存失败'),
       },
     );
@@ -153,10 +181,39 @@ function HeroCard({ slot, today }: { slot: SlotWithPortion; today: string | unde
 
       {recommendation ? (
         <RecommendationPanel
+          key={sessionSeq}
+          slotId={slot.id}
           recommendation={recommendation}
+          canUndo={previousRecommendation !== null}
           pending={accept.isPending}
           onAccept={acceptRecommendation}
-          onDiscard={() => setRecommendation(null)}
+          onUndo={undoRecommendation}
+          onDiscard={() => {
+            setRecommendation(null);
+            setPreviousRecommendation(null);
+          }}
+          onSwap={(recipeId, candidate) =>
+            setRecommendation((current) =>
+              current
+                ? {
+                    ...current,
+                    // 换掉的不只是 id：菜名、荤素位、来源与理由都换成新候选的——
+                    // 留着上一道菜的理由去描述这一道，界面与留痕里都是假证据
+                    dishes: current.dishes.map((dish) =>
+                      dish.recipeId === recipeId
+                        ? {
+                            recipeId: candidate.recipeId,
+                            name: candidate.name,
+                            kind: candidate.kind,
+                            origin: candidate.origin,
+                            reason: candidate.reason,
+                          }
+                        : dish,
+                    ),
+                  }
+                : current,
+            )
+          }
         />
       ) : null}
 
@@ -199,20 +256,42 @@ function HeroCard({ slot, today }: { slot: SlotWithPortion; today: string | unde
  * 两处「显著标记」是 spec 的硬要求，不是装饰：
  *   * 外部补位菜标「没做过」（spec S6）——家人要知道这盘菜家里没做过；
  *   * 简化推荐标警示条（spec S7）——LLM 没参与时必须说清，否则家人会以为那是模型配的。
+ *
+ * 还带一个「换」入口（spec §2.3：**整餐推荐或已定菜单**下钻换单道）：候选走同一条
+ * `/candidates` 接口与同一个候选面板，只是整份推荐还没落库——所以把草稿菜单原样传过去
+ * （服务端此刻手里没有它）。换掉的只是本地草稿，接受时提交的是换过之后的那一份。
+ *
+ * **换菜会话**：面板打开着就是同一个会话（同样的 `key` 重挂载 = 新草稿 = 新会话），
+ * 排除集（被换掉的 + 已出示过的候选）留在面板这一层（spec §2.3 的累积排除）。
+ *
+ * **「上一套」**（spec §2.3「可反悔」）：这块草稿没落库，所以只能在内存里留住上一份，
+ * 由 `canUndo`/`onUndo` 交给持有两份草稿的 `HeroCard`——与已定餐槽的 `undo-set`（服务端
+ * 从 append-only 留痕推导）是两条实现路，但用户看到的语义都是「退回上一套」。
  */
 function RecommendationPanel({
+  slotId,
   recommendation,
+  canUndo,
   pending,
   onAccept,
+  onUndo,
   onDiscard,
+  onSwap,
 }: {
+  slotId: string;
   recommendation: MealRecommendation;
+  /** 存在上一份草稿时才给撤销入口（首次推荐没有可撤销的东西） */
+  canUndo: boolean;
   pending: boolean;
   onAccept: () => void;
+  onUndo: () => void;
   onDiscard: () => void;
+  onSwap: (recipeId: string, candidate: SwapCandidate) => void;
 }) {
   const simplified = recommendation.llm.format === 'rules_only';
   const structure = recommendation.structure;
+  const [swapping, setSwapping] = useState<{ recipeId: string; name: string } | null>(null);
+  const [sessionExcludes, setSessionExcludes] = useState<string[]>([]);
 
   return (
     <div className={styles.recommendPanel} data-testid="recommendation-panel">
@@ -236,17 +315,44 @@ function RecommendationPanel({
 
       <div className={styles.dishList} data-testid="recommendation-dishes">
         {recommendation.dishes.map((dish) => (
-          <div key={dish.recipeId} className={styles.recommendDish} data-testid={`recommend-dish-${dish.recipeId}`}>
-            <span className={`${styles.kind} ${styles[dish.kind]}`}>{KIND_LABEL[dish.kind]}</span>
-            <span className={styles.recommendName}>
-              {dish.name}
-              {dish.origin === 'external' ? (
-                <span className="badge" data-testid={`recommend-external-${dish.recipeId}`}>
-                  没做过
-                </span>
-              ) : null}
-            </span>
-            <span className={styles.recommendReason}>{dish.reason ?? '规则直接拼的，没有理由'}</span>
+          <div key={dish.recipeId} data-testid={`recommend-dish-${dish.recipeId}`}>
+            <div className={styles.recommendDish}>
+              <span className={`${styles.kind} ${styles[dish.kind]}`}>{KIND_LABEL[dish.kind]}</span>
+              <span className={styles.recommendName}>
+                {dish.name}
+                {dish.origin === 'external' ? (
+                  <span className="badge" data-testid={`recommend-external-${dish.recipeId}`}>
+                    没做过
+                  </span>
+                ) : null}
+              </span>
+              <button
+                type="button"
+                className={styles.recommendSwap}
+                data-testid={`recommend-swap-${dish.recipeId}`}
+                onClick={() => setSwapping(swapping?.recipeId === dish.recipeId ? null : dish)}
+              >
+                换
+              </button>
+              <span className={styles.recommendReason}>{dish.reason ?? '规则直接拼的，没有理由'}</span>
+            </div>
+            {swapping?.recipeId === dish.recipeId ? (
+              <CandidateList
+                slotId={slotId}
+                replacing={{ recipeId: dish.recipeId, name: dish.name }}
+                diners={recommendation.diners.map((diner) => diner.memberId)}
+                dishes={recommendation.dishes.map((item) => item.recipeId)}
+                sessionExcludes={sessionExcludes}
+                onShown={(ids) => setSessionExcludes((current) => [...new Set([...current, ...ids])])}
+                onSwap={(candidate) => {
+                  // 被换掉的那道进会话排除集（spec §2.3）：草稿菜单变了也仍然记得它被换过
+                  setSessionExcludes((current) => [...new Set([...current, dish.recipeId])]);
+                  onSwap(dish.recipeId, candidate);
+                  setSwapping(null);
+                }}
+                onClose={() => setSwapping(null)}
+              />
+            ) : null}
           </div>
         ))}
       </div>
@@ -261,6 +367,12 @@ function RecommendationPanel({
         >
           {pending ? '保存中…' : '✅ 就这一套，定下来'}
         </button>
+        {/* 撤销只在真有上一份草稿时出现：常亮的按钮会让人以为有东西可撤 */}
+        {canUndo ? (
+          <button type="button" className="btn ghost" data-testid="undo-recommendation" onClick={onUndo}>
+            ↩ 撤销，回到上一套
+          </button>
+        ) : null}
         <button type="button" className="btn ghost" data-testid="discard-recommendation" onClick={onDiscard}>
           先不要
         </button>

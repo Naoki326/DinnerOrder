@@ -141,3 +141,15 @@
   font-size: 13px;
   color: var(--warn);
 }
+
+/* 推荐面板里的「换」入口（spec §2.3：整餐推荐下钻换单道）：
+   与已定菜单里的换菜同一条路，只是这份菜单还是草稿（不落库） */
+.recommendSwap {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}

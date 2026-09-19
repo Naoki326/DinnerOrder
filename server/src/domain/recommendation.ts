@@ -1,7 +1,6 @@
 import type { Clock } from '../clock.js';
 import type { Db } from '../db/index.js';
 import type { LlmClient } from '../llm/types.js';
-import { LlmCallError } from '../llm/types.js';
 import { buildPrompt, PROMPT_VERSION, rankPool, type PoolEntry } from '../llm/prompt.js';
 import {
   checkSelection,
@@ -9,6 +8,7 @@ import {
   RECOMMENDATION_JSON_SCHEMA,
   type SelectionDish,
 } from '../llm/recommendation-schema.js';
+import { runSelectionChain } from '../llm/selection-chain.js';
 import type {
   MealRecommendation,
   MemberProfile,
@@ -19,7 +19,7 @@ import type {
   RecommendedDish,
   RecommendationStructure,
 } from '../wire-types.js';
-import { listMembers } from './members.js';
+import { listMembers, resolveMembers } from './members.js';
 import { seasonalIngredientIds } from './ingredients.js';
 import { listRecipes } from './recipes.js';
 import { parseDate } from './family-time.js';
@@ -29,7 +29,6 @@ import {
   parseSlotId,
   recentDishes,
   SlotPassedError,
-  UnknownMemberError,
 } from './slots.js';
 
 /**
@@ -54,27 +53,18 @@ import {
  * 把「将来的计划」也算进「最近吃过」，会让 prompt 里那句「近 7 天已吃」变成谎话。
  */
 
-/** 单次 LLM 调用超时（spec §4②：超时 30s） */
-const LLM_TIMEOUT_MS = 30_000;
-
-/** 采样温度（spec §4②：0.7——推荐要一点变化，否则同一餐永远推同样的菜） */
-const LLM_TEMPERATURE = 0.7;
-
-/** 每个档最多试 2 次：第 1 次失败后重试 1 次（网络/超时与形状不合一视同仁） */
-const MAX_ATTEMPTS_PER_FORMAT = 2;
-
 /** 家庭池每位最多取多少道进候选（总纲 §4①：每位 6–8 道） */
-const MAX_FAMILY_PER_POSITION = 8;
+export const MAX_FAMILY_PER_POSITION = 8;
 
 /** 家庭池某位候选少于这个数就用外部菜谱池补位（总纲 §4①、spec S6） */
-const MIN_FAMILY_PER_POSITION = 3;
+export const MIN_FAMILY_PER_POSITION = 3;
 
 /** 家规基线（总纲 §2.2：2 荤 1 素 1 汤，每 ±1 大人 → ±1 道菜）。家规表化见 #20 */
 const BASELINE = { meat: 2, veg: 1, soup: 1 } as const;
 const BASELINE_ADULTS = 2;
 
-/** 去重窗口（家规默认 7 天，总纲 §4）：窗口内上桌过的菜**硬排除** */
-const DEDUPE_DAYS = 7;
+/** 去重窗口（家规默认 7 天，总纲 §4）：窗口内上桌过的菜**硬排除**（换菜候选的池干放宽也用它） */
+export const DEDUPE_DAYS = 7;
 
 /** 候选池的位：荤 / 素 / 汤；`soup_meat` 与 `soup_veg` 都算汤位（总纲 §2.8 的汤分荤素只为忌口） */
 type Position = 'meat' | 'veg' | 'soup';
@@ -168,14 +158,9 @@ export async function recommendMeal(
 }
 
 function resolveDiners(db: Db, ids: string[] | undefined): MemberProfile[] {
-  const all = listMembers(db);
-  if (ids === undefined) return all;
-  const byId = new Map(all.map((member) => [member.id, member]));
-  return [...new Set(ids)].map((memberId) => {
-    const member = byId.get(memberId);
-    if (!member) throw new UnknownMemberError(memberId);
-    return member;
-  });
+  // 不传名单 = 全体家人（与定餐编辑器的默认同一口径）
+  if (ids === undefined) return listMembers(db);
+  return resolveMembers(db, ids);
 }
 
 export interface PoolPlan {
@@ -234,15 +219,14 @@ export function buildPool(
   for (const position of POSITIONS) {
     const kept = family.filter((recipe) => positionOf(recipe.kind) === position).slice(0, MAX_FAMILY_PER_POSITION);
     familyCounts[position] = kept.length;
-    pool.push(...kept.map((recipe) => toEntry(recipe, 'family', context.times30d.get(recipe.id) ?? 0)));
-
+    pool.push(...kept.map((recipe) => poolEntryOf(recipe, 'family', context.times30d.get(recipe.id) ?? 0)));
     if (kept.length < MIN_FAMILY_PER_POSITION) {
       const padding = external
         .filter((recipe) => positionOf(recipe.kind) === position)
         .slice(0, MIN_FAMILY_PER_POSITION - kept.length);
       externalCounts[position] = padding.length;
       // 补位菜恒 0 次：「没做过」是它的定义，不是统计结果
-      pool.push(...padding.map((recipe) => toEntry(recipe, 'external', 0)));
+      pool.push(...padding.map((recipe) => poolEntryOf(recipe, 'external', 0)));
     }
   }
 
@@ -253,8 +237,11 @@ export function buildPool(
  * 池子条目的紧凑形状（进 prompt 的那份，总纲 §4②：id/菜名/主料/位/近 30 天次数/来源）。
  * 主料取食材清单前 2 项并**剔掉调料**：糖醋里脊的主料是里脊，不是番茄酱——
  * 给 LLM 看调料只会增加「这道菜重样了」的误判。
+ *
+ * `poolEntryOf`（导出）：整餐推荐与换菜候选共用同一份形状——池子是同一个池子，
+ * 两处各有一套「菜谱 → 池子条目」的转换就是等它们漂移。
  */
-function toEntry(recipe: Recipe, origin: RecipeOrigin, times30d: number): PoolEntry {
+export function poolEntryOf(recipe: Recipe, origin: RecipeOrigin, times30d = 0): PoolEntry {
   return {
     id: recipe.id,
     name: recipe.name,
@@ -354,14 +341,14 @@ interface LlmSelection {
 }
 
 /**
- * 降级链（总纲 §4、spec S7）：strict `json_schema` 试 2 次 → `json_object` + Zod 试 2 次
+ * 整餐推荐的降级链（总纲 §4、spec S7）：strict `json_schema` 试 2 次 → `json_object` + Zod 试 2 次
  * → 简化推荐（返回空挑选，由调用方按规则拼）。
  *
  * 「试 2 次」把两种失败一视同仁：网络/超时（换一次可能就好）与形状/结构不合（模型这次没听话）
  * 都值得再给一次机会；两次都不行就换档。**每次失败都记一条 note**——家人要能看见
  * 「这次为什么是简化推荐」，而不是只看到一个标记。
  *
- * 不用缓存菜单（总纲 §4）：本次失败就是本次失败，不留一份过期菜单下次兜底。
+ * 链本身在 `llm/selection-chain.ts`（与换菜候选共用），这里只包上整餐特有的文案与校验。
  */
 async function selectWithLlm(
   llm: LlmClient,
@@ -370,52 +357,20 @@ async function selectWithLlm(
   pool: { id: string; kind: RecipeKind }[],
   structure: RecommendationStructure,
 ): Promise<LlmSelection> {
-  const notes: string[] = [];
-  let latencyMs = 0;
-  let model = llm.model;
-
-  for (const format of ['json_schema', 'json_object'] as const) {
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_FORMAT; attempt += 1) {
-      const label = format === 'json_schema' ? '严格 schema 档' : 'JSON 档';
-      try {
-        const result = await llm.complete({
-          system,
-          prompt,
-          responseFormat: format,
-          jsonSchema: format === 'json_schema' ? RECOMMENDATION_JSON_SCHEMA : undefined,
-          timeoutMs: LLM_TIMEOUT_MS,
-          temperature: LLM_TEMPERATURE,
-        });
-        latencyMs += result.latencyMs;
-        model = result.model || model;
-
-        const check = checkSelection(result.text, pool, structure);
-        if (check.ok) {
-          return {
-            dishes: check.dishes,
-            meta: { model, promptVersion: PROMPT_VERSION, latencyMs, degraded: format !== 'json_schema', format },
-            notes: format === 'json_object' ? [...notes, '端点未支持严格 schema，本餐改用 JSON 格式档完成。'] : notes,
-          };
-        }
-        notes.push(`${label}第 ${attempt} 次：${check.reason}`);
-      } catch (cause) {
-        notes.push(`${label}第 ${attempt} 次：${errorText(cause)}`);
-      }
-    }
-  }
-
-  notes.push('LLM 两次都没能给出合法结果，本餐由规则直接拼出（简化推荐）。');
-  return {
-    dishes: [],
-    meta: { model, promptVersion: PROMPT_VERSION, latencyMs, degraded: true, format: 'rules_only' },
-    notes,
-  };
-}
-
-function errorText(cause: unknown): string {
-  if (cause instanceof LlmCallError) return cause.message;
-  if (cause instanceof Error) return `${cause.name}: ${cause.message}`;
-  return String(cause);
+  const result = await runSelectionChain({
+    llm,
+    system,
+    prompt,
+    jsonSchema: RECOMMENDATION_JSON_SCHEMA,
+    promptVersion: PROMPT_VERSION,
+    jsonObjectNote: '端点未支持严格 schema，本餐改用 JSON 格式档完成。',
+    fallbackNote: 'LLM 两次都没能给出合法结果，本餐由规则直接拼出（简化推荐）。',
+    check: (text) => {
+      const outcome = checkSelection(text, pool, structure);
+      return outcome.ok ? { ok: true, value: outcome.dishes } : { ok: false, reason: outcome.reason };
+    },
+  });
+  return { dishes: result.value ?? [], meta: result.meta, notes: result.notes };
 }
 
 /**

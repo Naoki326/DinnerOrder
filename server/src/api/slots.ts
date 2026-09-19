@@ -17,12 +17,15 @@ import {
   listSlotEvents,
   listUpcomingSlots,
   LlmMetaWithoutRecommendationError,
+  NothingToUndoError,
   parseSlotId,
   recentDishes,
   SlotNotDecidedError,
   SlotPassedError,
   todayOf,
+  undoSet,
   UnknownMemberError,
+  UnknownPromptVersionError,
   UnknownRecipeError,
   RecipeRetiredError,
 } from '../domain/slots.js';
@@ -43,6 +46,8 @@ const bookingSchema = z.object({
   llm: z
     .object({
       model: z.string().min(1),
+      // 只校验形状；版本号是否真属于这个来源由领域层校验（promptVersionFor /
+      // PROMPT_VERSIONS_BY_SOURCE，见 server/src/llm/prompt.ts）
       promptVersion: z.string().min(1),
       latencyMs: z.number().int().min(0),
       degraded: z.boolean(),
@@ -138,6 +143,23 @@ export function registerSlotRoutes(api: Hono, deps: AppDeps): void {
       return bookingError(c, id, error);
     }
   });
+
+  /**
+   * 撤销换一整套（#18）：把这一餐恢复成 "换一整套" 之前那一套。
+   *
+   * 用 POST 而不是 PUT：它不改菜单的**内容**而是把餐槽退回上一个状态，语义上是「执行一个动作」
+   * （与 `DELETE /slots/:id` 的取消同族）；而且没有请求体，正好省掉「为什么空体还要 PUT」的解释。
+   * 成功返回整个 slot（与 PUT 同一形状），界面可直接用它刷新。
+   */
+  api.post('/slots/:id/undo-set', (c) => {
+    const id = c.req.param('id');
+    try {
+      const slot = undoSet(db, clock, id);
+      return c.json({ slot: withPortion(db, clock, slot) });
+    } catch (error) {
+      return bookingError(c, id, error);
+    }
+  });
 }
 
 /**
@@ -155,5 +177,9 @@ function bookingError(c: Context, id: string | undefined, error: unknown): Respo
   if (error instanceof EmptyDishesError) return c.json({ error: 'empty_dishes', id }, 400);
   if (error instanceof DuplicateDishError) return c.json({ error: 'duplicate_dish', recipeId: error.recipeId }, 400);
   if (error instanceof LlmMetaWithoutRecommendationError) return c.json({ error: 'llm_meta_without_recommendation', id }, 400);
+  if (error instanceof UnknownPromptVersionError) {
+    return c.json({ error: 'unknown_prompt_version', promptVersion: error.promptVersion }, 400);
+  }
+  if (error instanceof NothingToUndoError) return c.json({ error: 'nothing_to_undo', id }, 409);
   throw error;
 }

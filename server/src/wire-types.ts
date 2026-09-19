@@ -172,6 +172,11 @@ export interface MealSlot {
   menu: Menu | null;
   /** 这一餐还能不能改：过了餐次截止时刻（午 14:00 / 晚 21:00，家庭时区）就不能。服务端按注入时钟判定 */
   editable: boolean;
+  /**
+   * 这一餐的最后一次变化是不是「换一整套」（accept 一份整餐推荐）——是才给「撤销回上一套」。
+   * 服务端从事件流推导，前端不自己猜：撤销的可用性 = 留痕的形状，而不是界面记的一个标志位。
+   */
+  canUndoSet: boolean;
 }
 
 /**
@@ -289,6 +294,78 @@ export interface RecommendationRequest {
 /** `POST /api/slots/:id/recommendation` 的响应包装 */
 export interface RecommendationResponse {
   recommendation: MealRecommendation;
+}
+
+// ---------------------------------------------------------------- 换菜与候选（M1-06）
+
+/**
+ * 换菜候选里的一道菜：菜谱 id + 一句理由，份量照旧由份量引擎现算。
+ * 与 `RecommendedDish` 同形状，但来源语义不同（候选是同位替换，不需要结构），
+ * 所以分开定义——两者的字段一旦要分化（比如候选带「多久没做」），不必再拆一次。
+ */
+export interface SwapCandidate {
+  recipeId: string;
+  name: string;
+  kind: RecipeKind;
+  /** external = 外部补位池的草稿菜，界面标「没做过」（spec S6） */
+  origin: RecipeOrigin;
+  /** LLM 给的一句理由；降级为规则排序时为 null，界面不编造理由 */
+  reason: string | null;
+}
+
+/** 被本餐忌口硬过滤掉的同位菜：说清「为什么它不在候选里」（如「白灼虾 — 小宝忌虾」） */
+export interface SwapExcluded {
+  recipeId: string;
+  name: string;
+  /** 排除原因，如「小宝忌虾」；多位用餐者/多项忌口命中用「、」连 */
+  reason: string;
+}
+
+/**
+ * 池干放宽到了哪一档（spec §2.3：同一换菜会话内累积排除，池干后放宽）：
+ * `none` = 严格池；`dedupe` = 放回了近 7 天做过的菜（放宽去重）；
+ * `session` = 连本次会话排除掉的菜也重新拿出来了（放宽会话排除）。忌口永不 relax。
+ */
+export type SwapRelaxation = 'none' | 'dedupe' | 'session';
+
+/** `POST /api/slots/:id/candidates` 的响应：一次换菜的候选与它旁边那份「为什么没选它」 */
+export interface SwapCandidates {
+  slotId: string;
+  /** 正在被换掉的那道菜（界面面板标题用） */
+  replacing: { recipeId: string; name: string; kind: RecipeKind };
+  /** 同位候选，最多 3 个（池子不够就少给，不编造） */
+  candidates: SwapCandidate[];
+  /** 同位、被本餐忌口排除的菜及原因（忌口是硬过滤，永不进候选） */
+  excluded: SwapExcluded[];
+  /** 本次取的池放宽到了哪一档 */
+  relaxed: SwapRelaxation;
+  llm: RecommendationLlmMeta;
+  /** 降级链与放宽的痕迹（界面把原因说清楚，而不是只标一个「简化」） */
+  notes: string[];
+}
+
+/** `POST /api/slots/:id/candidates` 的入参 */
+export interface SwapCandidatesRequest {
+  /** 要换掉的那道菜（recipe id），必须在当前菜单/草稿里 */
+  replacing: string;
+  /** 这餐谁吃；不传 = 已定菜单的用餐者快照（未定餐槽必须给） */
+  diners?: string[];
+  /**
+   * 当前菜单（recipe id，按界面上的顺序）。**推荐面板的草稿菜单**用它：
+   * 推荐不落库（总纲 §4），那一刻服务端没有「这一套是哪几道菜」的记忆，只能由客户端把它带回来。
+   * 已定餐槽不传 = 用服务端快照；两边都拿不到菜单就没有可换的菜（409）。
+   */
+  dishes?: string[];
+  /**
+   * 本换菜会话**累积排除**的菜（spec §2.3：被换掉的 + 已出示过的候选）。
+   * 服务端把它当软排除：池子还够就不出现，池干时按 relaxed 档放回来。
+   */
+  exclude?: string[];
+}
+
+/** `POST /api/slots/:id/candidates` 的响应包装 */
+export interface SwapCandidatesResponse {
+  candidates: SwapCandidates;
 }
 
 /** 菜单里一道菜的入参 */

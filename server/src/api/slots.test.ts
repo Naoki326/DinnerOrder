@@ -42,6 +42,13 @@ async function cancel(id: string) {
   return await harness.json<{ ok?: boolean; error?: string }>(`/api/slots/${id}`, { method: 'DELETE' });
 }
 
+/** 撤销换一整套（#18）：无请求体，成功返回整个 slot */
+async function undoSet(id: string) {
+  return await harness.json<{ slot?: SlotJson; error?: string; id?: string }>(`/api/slots/${id}/undo-set`, {
+    method: 'POST',
+  });
+}
+
 const DINNERS = ['hongshaopaigu', 'suanrongcaixin', 'dongguapaigutang'];
 const ALL = ['mom', 'dad', 'dabao', 'xiaobao'];
 
@@ -434,5 +441,181 @@ describe('最近吃过', () => {
     const { status, body } = await harness.json<{ error: string }>('/api/history/recent-dishes?days=999');
     expect(status).toBe(400);
     expect(body.error).toBe('invalid_request');
+  });
+});
+
+/**
+ * 换一整套与撤销（#18、spec §2.3：「换一整套」重新生成且**可反悔**回上一套）。
+ *
+ * 语义归属的决定（#17 审查留下的欠账）：`replace_set` 同时承接「接受整餐推荐」（#17）
+ * 与「换一整套」（#18），两者在语义上本来就是同一件事——整餐重新生成；区别只在
+ * **这一套是怎么来的**，那正是 `source` 的含义：
+ *   * `replace_set` + `recommendation` = 换一整套（可撤销）；
+ *   * `replace_set` + `manual` = 撤销本身（撤销之后不可再撤销：没有 ping-pong）。
+ * 用 source 而不是新造事件类型：`replace_set` 在 002 的 CHECK 里已备好，加枚举要重建
+ * append-only 表（#15 特意为此预留过枚举）。
+ */
+describe('换一整套的撤销', () => {
+  async function acceptSet(dishes: string[], slotId = '2025-06-01:dinner'): Promise<void> {
+    const { status } = await book(slotId, {
+      diners: ALL,
+      dishes: dishes.map((recipeId) => ({ recipeId })),
+      source: 'recommendation',
+    });
+    expect(status).toBe(200);
+  }
+
+  it('撤销把菜单恢复成「换一整套」之前那一套，并留痕（append-only：不删中间那条）', async () => {
+    harness = createTestHarness();
+    await book('2025-06-01:dinner', { diners: ALL, dishes: DINNERS.map((recipeId) => ({ recipeId })) });
+    expect((await getSlot('2025-06-01:dinner')).slot.canUndoSet).toBe(false);
+
+    await acceptSet(['kelejichi', 'culutudousi']);
+    const afterSet = await getSlot('2025-06-01:dinner');
+    expect(afterSet.history.map((event) => event.type)).toEqual(['decide', 'replace_set']);
+    expect(afterSet.slot.canUndoSet).toBe(true);
+
+    const { status, body } = await undoSet('2025-06-01:dinner');
+    expect(status).toBe(200);
+    expect(body.slot?.menu?.dishes.map((dish) => dish.recipeId)).toEqual(DINNERS);
+    expect(body.slot?.menu?.diners.map((diner) => diner.memberId)).toEqual(ALL);
+
+    const undone = await getSlot('2025-06-01:dinner');
+    // 撤销是一条 replace_set + manual 的新事件，历史继续变长
+    expect(undone.history.map((event) => event.type)).toEqual(['decide', 'replace_set', 'replace_set']);
+    expect(undone.history[2]?.source).toBe('manual');
+    // 撤销后不再可撤销（没有 ping-pong）
+    expect(undone.slot.canUndoSet).toBe(false);
+  });
+
+  it('连着撤销两次 → 第二次 409 nothing_to_undo（撤销只走一步）', async () => {
+    harness = createTestHarness();
+    await book('2025-06-01:dinner', { diners: ALL, dishes: DINNERS.map((recipeId) => ({ recipeId })) });
+    await acceptSet(['kelejichi', 'culutudousi']);
+
+    expect((await undoSet('2025-06-01:dinner')).status).toBe(200);
+    const second = await undoSet('2025-06-01:dinner');
+    expect(second.status).toBe(409);
+    expect(second.body.error).toBe('nothing_to_undo');
+    // 第二次失败不该留下第三条事件
+    expect((await getSlot('2025-06-01:dinner')).history).toHaveLength(3);
+  });
+
+  it('没有「换一整套」可撤的场景都返回 409：没定过、只定过一次、手动改过餐', async () => {
+    harness = createTestHarness();
+
+    // 没定过
+    expect((await undoSet('2025-06-01:dinner')).status).toBe(409);
+
+    // 只有一条预定事件（decide 不是 replace_set）
+    await book('2025-06-01:dinner', { diners: ALL, dishes: DINNERS.map((recipeId) => ({ recipeId })) });
+    expect((await undoSet('2025-06-01:dinner')).status).toBe(409);
+
+    // 手动改餐（replace + manual）也不算「换一整套」
+    await book('2025-06-01:dinner', { diners: ALL, dishes: [{ recipeId: 'kelejichi' }] });
+    expect((await getSlot('2025-06-01:dinner')).history.map((event) => event.type)).toEqual(['decide', 'replace']);
+    expect((await undoSet('2025-06-01:dinner')).status).toBe(409);
+  });
+
+  it('撤销之后菜单能被正常读出来（份量也跟着回来）', async () => {
+    harness = createTestHarness();
+    await book('2025-06-01:dinner', { diners: ALL, dishes: DINNERS.map((recipeId) => ({ recipeId })) });
+    await acceptSet(['kelejichi', 'culutudousi']);
+    await undoSet('2025-06-01:dinner');
+
+    const { status, body } = await harness.json<{ slot: { portion: { dishes: { recipeId: string }[] } } }>(
+      '/api/slots/2025-06-01:dinner',
+    );
+    expect(status).toBe(200);
+    expect(body.slot.portion.dishes.map((dish) => dish.recipeId)).toEqual(DINNERS);
+  });
+
+  it('已过截止时刻的餐仍可撤销（撤掉一次手滑的换套不需要赶时间，与取消同一口径）', async () => {
+    harness = createTestHarness();
+    harness.clock.set('2025-06-01T02:00:00.000Z'); // 家庭时区 10:00，晚餐还没过
+    await book('2025-06-01:dinner', { diners: ALL, dishes: DINNERS.map((recipeId) => ({ recipeId })) });
+    await acceptSet(['kelejichi', 'culutudousi']);
+
+    harness.clock.set('2025-06-01T14:30:00.000Z'); // 家庭时区 22:30，晚餐早过了
+    const { status, body } = await undoSet('2025-06-01:dinner');
+    expect(status).toBe(200);
+    expect(body.slot?.editable).toBe(false);
+    expect(body.slot?.canUndoSet).toBe(false);
+  });
+
+  it('撤销后的菜单与更早的历史都在：撤销不改写任何一条旧事件', async () => {
+    harness = createTestHarness();
+    await book('2025-06-01:dinner', { diners: ALL, dishes: DINNERS.map((recipeId) => ({ recipeId })) });
+    await acceptSet(['kelejichi', 'culutudousi']);
+    await undoSet('2025-06-01:dinner');
+
+    const { history } = await getSlot('2025-06-01:dinner');
+    expect(history[0]?.dishes.map((dish) => dish.name)).toEqual(['红烧排骨', '蒜蓉菜心', '冬瓜排骨汤']);
+    expect(history[1]?.dishes.map((dish) => dish.name)).toEqual(['可乐鸡翅', '醋溜土豆丝']);
+    expect(history[2]?.dishes.map((dish) => dish.name)).toEqual(['红烧排骨', '蒜蓉菜心', '冬瓜排骨汤']);
+  });
+
+  it('accept 一份整餐推荐（#17 的路径）之后也能撤销——两条路共用 replace_set', async () => {
+    harness = createTestHarness();
+    await book('2025-06-01:dinner', { diners: ALL, dishes: DINNERS.map((recipeId) => ({ recipeId })) });
+
+    // 整餐推荐 → 一键接受（source='recommendation' + llm 元数据）
+    const accepted = await harness.json<{ slot: SlotJson }>('/api/slots/2025-06-01:dinner', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        diners: ALL,
+        dishes: [{ recipeId: 'kelejichi' }, { recipeId: 'culutudousi' }],
+        source: 'recommendation',
+        llm: { model: 'fake-llm', promptVersion: '2026-09-rec-v1', latencyMs: 3, degraded: false },
+      }),
+    });
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.slot.canUndoSet).toBe(true);
+
+    const { body } = await undoSet('2025-06-01:dinner');
+    expect(body.slot?.menu?.dishes.map((dish) => dish.recipeId)).toEqual(DINNERS);
+  });
+});
+
+/**
+ * `promptVersion` 收紧（#17 审查欠账）：`llm` 元数据由客户端回传（推荐不落库，总纲 §4），
+ * 只校验形状的话任何字符串都能写进 append-only 的留痕——而留痕的全部价值是可信回溯。
+ * 两条都要：版本号①在代码库里存在，②**是产生它的那条路该用的模板**。
+ * 候选模板的版本号即使真实存在也不能写进整餐推荐的留痕：那会让历史推荐对回另一张模板。
+ */
+describe('LLM 元数据的 prompt 版本校验', () => {
+  async function acceptWithVersion(promptVersion: string) {
+    return await book('2025-06-01:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      source: 'recommendation',
+      llm: { model: 'fake-llm', promptVersion, latencyMs: 1, degraded: false },
+    });
+  }
+
+  it('已知版本（整餐推荐模板）通过并进留痕', async () => {
+    harness = createTestHarness();
+    const { status } = await acceptWithVersion('2026-09-rec-v1');
+    expect(status).toBe(200);
+    const { history } = await getSlot('2025-06-01:dinner');
+    expect(history[0]?.llm?.promptVersion).toBe('2026-09-rec-v1');
+  });
+
+  it('伪造的版本号 → 400 unknown_prompt_version，且一行都不落库', async () => {
+    harness = createTestHarness();
+    const { status, body } = await acceptWithVersion('v-我自己编的');
+    expect(status).toBe(400);
+    expect(body.error).toBe('unknown_prompt_version');
+    expect((await getSlot('2025-06-01:dinner')).history).toEqual([]);
+  });
+
+  it('换菜候选模板的版本号 → 400：模板与来源绑定，候选模板不产生这条留痕', async () => {
+    harness = createTestHarness();
+    const { status, body } = await acceptWithVersion('2026-09-candidate-v1');
+    expect(status).toBe(400);
+    expect(body.error).toBe('unknown_prompt_version');
+    // 拒收就是一行不落：留痕里不能出现「整餐推荐用了候选模板」这条假证据
+    expect((await getSlot('2025-06-01:dinner')).history).toEqual([]);
   });
 });

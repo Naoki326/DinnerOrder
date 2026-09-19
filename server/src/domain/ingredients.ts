@@ -138,6 +138,18 @@ export function seasonalIngredientIds(db: Db, month: number): Set<string> {
 }
 
 /**
+ * 食材规范名（「小宝忌虾」里的那个「虾」）：字典是唯一受控表，界面上说人话全靠它。
+ * 查不到就回落到 id——这里排掉的菜只会是字典里存在的食材（忌口条目也是按字典校验落库的），
+ * 回落只是让一个不该出现的脏数据不至于把整个候选列表弄成空白。
+ */
+export function ingredientLabel(db: Db, ingredientId: string): string {
+  const row = db.prepare('SELECT name FROM ingredients WHERE id = ?').get(ingredientId) as
+    | { name: string }
+    | undefined;
+  return row?.name ?? ingredientId;
+}
+
+/**
  * 隐性忌口「含」指针的递归展开（蚝油含贝类、贝类若还含什么就继续）。
  * 表里只存直接指针，展开在这里做一次、给全体调用方用（菜谱忌口推导与推荐期硬过滤同一口径）。
  * 深度优先 + visited：指针表理论上能有环（A 含 B、B 含 A），展开不能因此死循环。

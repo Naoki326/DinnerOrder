@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildCandidatePrompt,
   buildPrompt,
+  CANDIDATE_PROMPT_VERSION,
+  parsePromptCandidates,
   parsePromptPool,
   parsePromptStructure,
+  parsePromptSwap,
+  pickCandidateSelection,
+  pickLlmSelection,
   pickPoolSelection,
   PROMPT_VERSION,
+  promptVersionFor,
   rankPool,
   STRUCTURE_MARK,
   SYSTEM_PROMPT,
@@ -237,5 +244,114 @@ describe('近 7 天已吃的窗口（软避让用）', () => {
       recentDishes: [recent],
     });
     expect(prompt).toContain('可乐鸡翅（晚餐，2025-05-30）');
+  });
+});
+
+/**
+ * 换菜候选 prompt（spec §2.3）：与整餐推荐同一条「模板是接口」的纪律——
+ * 【换菜请求】与【同位候选池】两段是 fake LLM 与 E2E 的解析对象，形状有测试兜住。
+ */
+describe('换菜候选 prompt', () => {
+  const candidateInput = {
+    slot: { date: '2025-06-01', meal: 'dinner' as const },
+    replacing: { recipeId: 'hongshaopaigu', name: '红烧排骨', kind: 'meat' as const },
+    count: 3,
+    diners: [member()],
+    pool: [
+      { id: 'kelejichi', name: '可乐鸡翅', kind: 'meat' as const, mains: ['鸡翅'], origin: 'family' as const, times30d: 2 },
+      { id: 'gongbaojiding', name: '宫保鸡丁', kind: 'meat' as const, mains: ['鸡腿'], origin: 'external' as const, times30d: 0 },
+    ],
+    recentDishes: [
+      {
+        recipeId: 'qingzhengluyu',
+        name: '清蒸鲈鱼',
+        kind: 'meat' as const,
+        slotId: '2025-05-30:dinner',
+        date: '2025-05-30',
+        meal: 'dinner' as const,
+        times: 1,
+      },
+    ],
+  };
+
+  it('用独立的候选模板与版本号（与整餐推荐分开，留痕才说得清是哪张模板）', () => {
+    const { system, prompt } = buildCandidatePrompt(candidateInput);
+    expect(CANDIDATE_PROMPT_VERSION).toMatch(/^\d{4}-\d{2}/);
+    expect(CANDIDATE_PROMPT_VERSION).not.toBe(PROMPT_VERSION);
+    expect(system).toContain('JSON');
+    expect(system).toContain('不要 markdown 代码块');
+    // 候选是「替换一道」不是「配一整餐」：prompt 里说清了这一点
+    expect(system).toContain('替一道菜');
+    // 换菜请求没有结构约束，不该把【本餐结构】段搬进来
+    expect(prompt).not.toContain(STRUCTURE_MARK);
+  });
+
+  it('【换菜请求】与【同位候选池】是机器可读段落，都能解回来', () => {
+    const { prompt } = buildCandidatePrompt(candidateInput);
+    expect(parsePromptSwap(prompt)).toEqual({
+      date: '2025-06-01',
+      meal: 'dinner',
+      replacing: { recipeId: 'hongshaopaigu', name: '红烧排骨', kind: 'meat' },
+      count: 3,
+    });
+    const pool = parsePromptCandidates(prompt);
+    expect(pool.map((entry) => entry.id)).toEqual(['kelejichi', 'gongbaojiding']);
+    expect(pool[1]).toMatchObject({ origin: 'external', mains: ['鸡腿'] });
+  });
+
+  it('近 7 天已吃与画像仍然进 prompt（软避让 + 爱吃），忌口不进（硬过滤已在池外）', () => {
+    const { prompt } = buildCandidatePrompt(candidateInput);
+    expect(prompt).toContain('清蒸鲈鱼');
+    expect(prompt).toContain('鲈鱼');
+    expect(prompt).not.toContain('动物内脏');
+    // 做法步骤与克数绝不进 prompt（ADR-0004）
+    expect(prompt).not.toContain('这是做法步骤');
+    expect(prompt).not.toContain('adultGrams');
+  });
+
+  it('假的确定性挑选：按池子前 N 个出（N = 请求的候选数），每道一句理由', () => {
+    const { prompt } = buildCandidatePrompt(candidateInput);
+    const selection = JSON.parse(pickCandidateSelection(prompt)!) as {
+      candidates: { recipeId: string; reason: string }[];
+    };
+    expect(selection.candidates.map((candidate) => candidate.recipeId)).toEqual(['kelejichi', 'gongbaojiding']);
+    expect(selection.candidates.every((candidate) => candidate.reason.length > 0)).toBe(true);
+  });
+
+  it('池子不够就只给池子里那几个（不编造池外的菜）', () => {
+    const { prompt } = buildCandidatePrompt({
+      ...candidateInput,
+      pool: [candidateInput.pool[0]!],
+    });
+    const selection = JSON.parse(pickCandidateSelection(prompt)!) as { candidates: { recipeId: string }[] };
+    expect(selection.candidates.map((candidate) => candidate.recipeId)).toEqual(['kelejichi']);
+  });
+
+  it('两条路共用一个分发入口：候选 prompt 走候选、推荐 prompt 走整餐', () => {
+    const { prompt: swapPrompt } = buildCandidatePrompt(candidateInput);
+    expect(pickLlmSelection(swapPrompt)).toContain('"candidates"');
+
+    const { prompt: recPrompt } = buildPrompt({
+      slot: { date: '2025-06-01', meal: 'dinner' },
+      structure: STRUCTURE,
+      diners: [member()],
+      pool: [{ id: 'fanqiechaodan', name: '番茄炒蛋', kind: 'veg', mains: ['番茄'], origin: 'family', times30d: 0 }],
+      recentDishes: [],
+    });
+    expect(pickLlmSelection(recPrompt)).toContain('"dishes"');
+
+    expect(pickLlmSelection('随便一段没有标记的文本')).toBeUndefined();
+  });
+
+  /**
+   * 模板版本与产生它的那条路**绑定**。留痕只收它自己那张模板的版本号——
+   * 「在已知集合里」不够（候选模板也是已知的，但它不产生 `PUT /api/slots/:id` 的留痕）。
+   */
+  it('模板版本按来源绑定：整餐推荐只认整餐模板，候选模板不落在任何来源下', () => {
+    expect(promptVersionFor('recommendation')).toBe(PROMPT_VERSION);
+    expect(promptVersionFor('recommendation')).not.toBe(CANDIDATE_PROMPT_VERSION);
+    // 未知来源没有可接受的模板（旧客户端/未来新路：宁可拒收）
+    expect(promptVersionFor('candidate')).toBeUndefined();
+    expect(promptVersionFor('v-我自己编的')).toBeUndefined();
   });
 });

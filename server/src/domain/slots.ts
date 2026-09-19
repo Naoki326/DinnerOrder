@@ -15,6 +15,7 @@ import type {
 } from '../wire-types.js';
 import { findRecipe } from './recipes.js';
 import { addDays, familyDate, familyInstant, MEAL_CUTOFF_HOUR, parseDate } from './family-time.js';
+import { promptVersionFor } from '../llm/prompt.js';
 
 // 线上形状定义在 wire-types.ts（前端也从那里取）
 export type { DinerRef, MealEvent, MealSlot, MenuDish, RecentDish };
@@ -97,7 +98,24 @@ function toSlot(clock: Clock, date: string, meal: MealKind, history: MealEvent[]
     status: decided ? 'decided' : 'undecided',
     menu: decided ? { diners: last.diners, dishes: last.dishes } : null,
     editable: !hasMealPassed(clock, date, meal),
+    canUndoSet: canUndoSet(history),
   };
+}
+
+/**
+ * 现在能不能「撤销换一整套」（#18：换一整套重新生成且可反悔回上一套）。
+ *
+ * 规则：最后一条事件必须是 `replace_set` + `source='recommendation'`——那正是「换一整套」
+ * （接受一份整餐推荐）的留痕。撤销之后末事件变成 `replace_set` + `manual`（撤销本身也是一条留痕），
+ * 于是 `canUndoSet` 自然变成 false：**不能连着撤销两次**（没有 ping-pong）。
+ *
+ * 为何用 `source` 而不是新造一个事件类型：`replace_set` 在 002 的 CHECK 里已备好、
+ * ADR-0007 特意把「换单道」与「换一整套」分开记，接受整餐推荐与「换一整套」在语义上
+ * 本来就是同一件事（整餐重新生成）；两者的区别是**这一套是怎么来的**，那正是 `source` 的含义。
+ */
+function canUndoSet(history: MealEvent[]): boolean {
+  const last = history[history.length - 1];
+  return last !== undefined && last.type === 'replace_set' && last.source === 'recommendation';
 }
 
 /** 某餐槽的全部留痕（按发生顺序）——「为什么推这道 / 为什么没推」的回溯入口 */
@@ -224,6 +242,29 @@ export class InvalidSlotIdError extends Error {
 }
 
 /**
+ * 回传的 LLM 元数据里 `promptVersion` 不是**这个来源**该用的模板版本（#17 审查欠账，#18 收紧）。
+ *
+ * 为什么领域层也要拦一道：`llm` 元数据是**客户端回传**的（推荐接口刻意不落库，总纲 §4），
+ * 形状对不代表内容真：任何字符串都能写进 append-only 的留痕，而留痕的全部价值是能回溯到
+ * 「当时用的是哪张模板」（ADR-0007）。所以版本号不但要在代码库里，还得**与产生它的那条路绑定**
+ * （`source='recommendation'` 只接受整餐推荐模板；换菜候选模板不产生这种留痕）。
+ */
+export class UnknownPromptVersionError extends Error {
+  constructor(readonly promptVersion: string) {
+    super(`这不是代码库里已知的 prompt 模板版本：${promptVersion}`);
+    this.name = 'UnknownPromptVersionError';
+  }
+}
+
+/** 没有「换一整套」可撤销（末事件不是 replace_set + recommendation） */
+export class NothingToUndoError extends Error {
+  constructor(readonly id: string) {
+    super(`这一餐没有可撤销的换套：${id}`);
+    this.name = 'NothingToUndoError';
+  }
+}
+
+/**
  * 定餐 = 改餐（总纲 §2.1：同一个编辑器）：把整份菜单一次性落成一条事件。
  * 未定 → 第一条是「预定」；已定 → 后续每条都是「改餐」。事件只追加，不改写历史。
  *
@@ -242,6 +283,10 @@ export function bookSlot(db: Db, clock: Clock, id: string, booking: SlotBooking)
   // 而留痕的全部价值就是可回溯——宁可 400 也别写一条解释不了的记录。
   if (booking.llm !== undefined && source !== 'recommendation') {
     throw new LlmMetaWithoutRecommendationError(id);
+  }
+  // 回传的版本号必须是**这个来源**该用的模板（ADR-0007：模板进代码库 git 管版本）
+  if (booking.llm !== undefined && promptVersionFor(source) !== booking.llm.promptVersion) {
+    throw new UnknownPromptVersionError(booking.llm.promptVersion);
   }
 
   const append = db.transaction((): void => {
@@ -283,6 +328,43 @@ export function cancelSlot(db: Db, clock: Clock, id: string): void {
     });
   });
   append();
+}
+
+/**
+ * 撤销「换一整套」（#18：换一整套重新生成且可反悔回上一套）。
+ *
+ * 实现是**再追加一条事件**（append-only：历史不删）。恢复的内容就是「上一条事件」的
+ * diners + dishes 快照——这正是事件流模型里「上一套」的准确含义：不是另存一份快照，
+ * 而是问留痕「在这条之前这一餐长什么样」。
+ *
+ * 事件类型用 `replace_set` + `source='manual'`：语义是「又换了一整套，但这次是手工的（撤销）」；
+ * 它顺带把 `canUndoSet` 从 true 变成 false——撤销只走一步，不能无限来回。
+ */
+export function undoSet(db: Db, clock: Clock, id: string): MealSlot {
+  const parsed = parseSlotId(id);
+  if (!parsed) throw new InvalidSlotIdError(id);
+
+  const append = db.transaction((): void => {
+    const history = listSlotEvents(db, id);
+    const last = history[history.length - 1];
+    if (!last || !canUndoSet(history)) throw new NothingToUndoError(id);
+
+    // 「上一套」= 这条 replace_set 之前的那条事件（它可能也是 replace_set，也可能是 decide/replace）
+    const previous = history[history.length - 2];
+    if (!previous || previous.type === 'cancel') throw new NothingToUndoError(id);
+
+    insertEvent(db, clock, {
+      id,
+      date: parsed.date,
+      meal: parsed.meal,
+      type: 'replace_set',
+      source: 'manual',
+      diners: previous.diners,
+      dishes: previous.dishes,
+    });
+  });
+  append();
+  return foldSlot(db, clock, parsed.date, parsed.meal);
 }
 
 interface NewEvent {

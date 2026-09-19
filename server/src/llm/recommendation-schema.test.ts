@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { RECOMMENDATION_JSON_SCHEMA, checkSelection, positionOf } from './recommendation-schema.js';
+import {
+  CANDIDATE_JSON_SCHEMA,
+  checkCandidates,
+  checkSelection,
+  MAX_CANDIDATES,
+  RECOMMENDATION_JSON_SCHEMA,
+  positionOf,
+} from './recommendation-schema.js';
 import type { RecipeKind, RecommendationStructure } from '../wire-types.js';
 
 /**
@@ -118,5 +125,87 @@ describe('LLM 挑选校验', () => {
     expect(schema.required).toEqual(['dishes']);
     expect(schema.properties.dishes.items.required).toEqual(['recipeId', 'reason']);
     expect(Object.keys(schema.properties.dishes.items.properties).sort()).toEqual(['reason', 'recipeId']);
+  });
+});
+
+/**
+ * 换菜候选的出参校验（spec §2.3）。与整餐挑选同一条纪律（ADR-0001），
+ * 不同的一点是**条数**：池子只剩 2 道时选 3 个必然幻觉，必须当场拦下。
+ */
+describe('换菜候选校验', () => {
+  const POOL = [{ id: 'kelejichi' }, { id: 'qingzhengluyu' }, { id: 'tudouniuniu' }];
+
+  it('合法候选通过：池内 + 不重复 + 条数 = min(3, 池子大小)', () => {
+    const check = checkCandidates(
+      JSON.stringify({
+        candidates: [
+          { recipeId: 'kelejichi', reason: '小孩爱吃' },
+          { recipeId: 'qingzhengluyu', reason: '清蒸不油' },
+          { recipeId: 'tudouniuniu', reason: '换个炖菜' },
+        ],
+      }),
+      POOL,
+    );
+    expect(check.ok).toBe(true);
+    if (check.ok) expect(check.candidates).toHaveLength(3);
+  });
+
+  it('池子只有 2 道时给 3 个 → 判失败（池子不够就该少给，不编造）', () => {
+    const check = checkCandidates(
+      JSON.stringify({
+        candidates: [
+          { recipeId: 'kelejichi', reason: 'a' },
+          { recipeId: 'qingzhengluyu', reason: 'b' },
+          { recipeId: 'mianfeidewucan', reason: 'c' },
+        ],
+      }),
+      POOL.slice(0, 2),
+    );
+    expect(check.ok).toBe(false);
+    if (!check.ok) expect(check.reason).toContain('候选池里没有的菜');
+  });
+
+  it('池子够却少给也判失败（重试一次也许就够了）', () => {
+    const check = checkCandidates(JSON.stringify({ candidates: [{ recipeId: 'kelejichi', reason: 'a' }] }), POOL);
+    expect(check.ok).toBe(false);
+    if (!check.ok) expect(check.reason).toContain('候选条数不符');
+  });
+
+  it('池子只有 1 道时给 1 个就是合法（按池子收敛）', () => {
+    const check = checkCandidates(JSON.stringify({ candidates: [{ recipeId: 'kelejichi', reason: 'a' }] }), [
+      { id: 'kelejichi' },
+    ]);
+    expect(check.ok).toBe(true);
+  });
+
+  it('池外幻觉、重复、非 JSON、空数组都被拦下', () => {
+    expect(
+      checkCandidates(JSON.stringify({ candidates: [{ recipeId: 'mianfeidewucan', reason: 'a' }] }), POOL).ok,
+    ).toBe(false);
+    expect(
+      checkCandidates(
+        JSON.stringify({
+          candidates: [
+            { recipeId: 'kelejichi', reason: 'a' },
+            { recipeId: 'kelejichi', reason: 'b' },
+          ],
+        }),
+        POOL.slice(0, 2),
+      ).ok,
+    ).toBe(false);
+    expect(checkCandidates('我推荐可乐鸡翅。', POOL).ok).toBe(false);
+    expect(checkCandidates(JSON.stringify({ candidates: [] }), POOL).ok).toBe(false);
+    expect(checkCandidates(JSON.stringify({ dishes: [] }), POOL).ok).toBe(false);
+  });
+
+  it('给端点的候选 JSON Schema 与本地 Zod 对齐', () => {
+    const schema = CANDIDATE_JSON_SCHEMA as {
+      required: string[];
+      properties: { candidates: { maxItems: number; items: { required: string[]; properties: Record<string, unknown> } } };
+    };
+    expect(schema.required).toEqual(['candidates']);
+    expect(schema.properties.candidates.maxItems).toBe(MAX_CANDIDATES);
+    expect(schema.properties.candidates.items.required).toEqual(['recipeId', 'reason']);
+    expect(Object.keys(schema.properties.candidates.items.properties).sort()).toEqual(['reason', 'recipeId']);
   });
 });
