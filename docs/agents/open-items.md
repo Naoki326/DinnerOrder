@@ -405,6 +405,12 @@
 - **`uplift` 占位**（来源：#16 审查，判定「轻度 Speculative Generality，可接受」）。理由：留一个位置让 #22 只改一处。**保留至 #22。**
   ✅ 已由 #22 兑现：`uplift` 现在报**实际生效**的系数（标记 ∧ 引用），不再是恒 1 的占位；
   家规配置值经 `/api/portion/rules` 的 `rules.uplift` 读出，每份菜单的读数看 `portion.uplift`。
+- **重复删家人报 404 而不是幂等 200**（来源：家人管理票审查）。`deleteMember` 对已删的家人抛
+  `MemberNotFoundError` → 404。评审判为「可接受取舍」并征询实施者意见，**定为保留**：
+  与读口（`GET /members/:id` 对已删家人也是 404）及仓库其余删除（取消未定的餐槽 404 `not_decided`、
+  撤回已撤回的反馈 404 `feedback_not_found`）同一口径；重复删的真实形态是「另一台设备拿着过期列表」，
+  这时「这位家人不在了」恰好是要告诉用户的事。理由已写在 `server/src/domain/members.ts` 的
+  `deleteMember` 注释里。**若日后要做幂等删除，三处应一起改，不要只改这一处。**
 
 ---
 

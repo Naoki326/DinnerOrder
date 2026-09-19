@@ -65,6 +65,38 @@ export interface ProfilePatch {
   loves?: LoveTarget[];
 }
 
+/**
+ * 新增家人的入参（本票）。
+ *
+ * 名字 + 头像 + 大人/小孩 + 性别**都必填**，小孩另需出生年月：
+ *   * `gender` 对大人看似无用（成人折算档是 `any`、不分性别），但 **6–17 岁小孩的系数按性别
+ *     相差约 14%**（6–8 岁：男 0.756 / 女 0.861，WS/T 554 表 1），而库里 `gender` 是 NOT NULL。
+ *     与其给一个「反正大人用不上」的默认值，不如录入时就问清楚——两栏必填比一栏必填更好解释。
+ *   * `birthMonth` 只在 `kind:'child'` 时必须（001 的 CHECK 也这么要求，且在表单层就先拦住）。
+ *
+ * 忌口/爱吃/掌勺者标记**不在这里**：新增后在同一张卡上用现有的画像编辑入口添加（`ProfilePatch`），
+ * 不重做那套 UI，也不给一个「还没画完像就能提交」的半成品形状。`isCook` 因此恒为 false。
+ */
+export interface MemberCreate {
+  name: string;
+  emoji: string;
+  kind: 'adult' | 'child';
+  gender: 'male' | 'female';
+  /** 'YYYY-MM'；小孩必填、大人可选（留空即 null） */
+  birthMonth?: string | null;
+}
+
+/** `POST /api/members` 的响应包装（201）：落库后的完整画像，调用方不必再查一次 */
+export interface MemberCreateResponse {
+  member: MemberProfile;
+}
+
+/** `DELETE /api/members/:id` 的响应：软删除生效后的画像（`deleted_at` 已打，界面不再展示它） */
+export interface MemberDeleteResponse {
+  ok: boolean;
+  member: MemberProfile;
+}
+
 /** 食材字典里的一条：规范名 + 别名 + 时令月份 + 隐性忌口「含」指针（总纲 §3） */
 export interface Ingredient {
   id: string;

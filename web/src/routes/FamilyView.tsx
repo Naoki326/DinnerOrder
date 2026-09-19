@@ -1,7 +1,15 @@
 import { useState } from 'react';
 import { useIngredients, type Ingredient } from '../api/ingredients';
 import { useRecipes, type Recipe } from '../api/recipes';
-import { useUpdateMember, type LoveEntry, type LoveTarget, type Member, type ProfilePatch } from '../api/members';
+import {
+  useCreateMember,
+  useDeleteMember,
+  useUpdateMember,
+  type LoveEntry,
+  type LoveTarget,
+  type Member,
+  type ProfilePatch,
+} from '../api/members';
 import { useIdentity } from '../identity';
 import { memberSubtitle } from '../components/memberLabel';
 import styles from './FamilyView.module.css';
@@ -13,9 +21,12 @@ import styles from './FamilyView.module.css';
  *   * 忌口是**硬过滤**——条目只能指向食材字典（推荐期命中即排除，含隐性忌口展开）；
  *   * 爱吃是**软加分**——条目可以是食材也可以是具体菜（#15 接通了菜粒度的存取）。
  * 改动即时落库（手机上改完即生效），不做「保存」按钮那种容易忘按的中间态。
+ *
+ * 家人管理（本票）：顶部可**新增**（一级表单，填完即存）、每张卡可**删除**（软删除，带确认）。
  */
 export function FamilyView() {
   const { members, current, isPending, isError } = useIdentity();
+  const [adding, setAdding] = useState(false);
 
   return (
     <div data-testid="family-view">
@@ -27,12 +38,24 @@ export function FamilyView() {
         <div className="sub" style={{ marginTop: 6 }}>
           忌口从推荐里排除（硬过滤）；爱吃给推荐加分（软加分）——爱吃可以是食材，也可以是具体某道菜。
         </div>
+        {/* 新增入口就在家人页顶部（一级表单，不是分步向导）：点开填写即存 */}
+        <button
+          type="button"
+          className={`btn block ${styles.addButton}`}
+          data-testid="add-member"
+          aria-expanded={adding}
+          onClick={() => setAdding((value) => !value)}
+        >
+          {adding ? '收起' : '+ 新增家人'}
+        </button>
       </div>
+
+      {adding ? <NewMemberForm onClose={() => setAdding(false)} /> : null}
 
       {isPending ? <div className={`card sub`}>读取中…</div> : null}
       {isError ? <div className={`card sub`}>家人列表没读回来——检查一下网络或服务是不是停了。</div> : null}
       {!isPending && !isError && members.length === 0 ? (
-        <div className="card sub">还没有家人——种子数据随迁移落库，检查一下数据库。</div>
+        <div className="card sub">还没有家人——点上面的「+ 新增家人」把家里人加进来。</div>
       ) : null}
 
       <div className={styles.list}>
@@ -44,10 +67,227 @@ export function FamilyView() {
   );
 }
 
+/** 头像的快速选择：家人多半就点这几个（也可以自己打一个 emoji） */
+const EMOJI_PICKS = ['👩', '👨', '👵', '👴', '👦', '👧', '👶', '🧑'] as const;
+
+const BIRTH_MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+/**
+ * 新增家人（本票）：一级表单——名字 + 头像 + 大人/小孩 + 性别都必填，小孩再加出生年月。
+ *
+ * 为什么大人也要必填性别（用户已确认）：**6–17 岁小孩的折算系数按性别相差 14%**
+ * （6–8 岁：男 0.756 / 女 0.861），而库里 `gender` 是 NOT NULL。不靠默认值，录入时就问清楚；
+ * 两栏必填比「一栏必填 + 一栏悄悄取默认」更好解释。
+ *
+ * 忌口/爱吃不上表（用户已确认：可选/后补）——新增后在同一张卡上用现有的画像编辑入口加，
+ * 那套 UI 已经是「改完即存」，不重做也不需要「保存」按钮。掌勺者标记同样不在表单里（用户没要求）。
+ */
+function NewMemberForm({ onClose }: { onClose(): void }) {
+  const create = useCreateMember();
+  const [name, setName] = useState('');
+  const [emoji, setEmoji] = useState('');
+  const [kind, setKind] = useState<'adult' | 'child' | null>(null);
+  const [gender, setGender] = useState<'male' | 'female' | null>(null);
+  const [birthMonth, setBirthMonth] = useState('');
+  const [error, setError] = useState<string | undefined>(undefined);
+
+  /**
+   * 提交前的本地校验（服务端还有一道，两道都要有）：
+   * 客户端这一道是为了**当场给一句人话**，不为了「拦住」——绕过界面直接打接口的路径由服务端兜底。
+   * 校验顺序按表单从上到下，报出来的永远是第一个没填对的那一栏。
+   */
+  const validate = (): string | undefined => {
+    if (name.trim() === '') return '名字不能为空';
+    if (emoji.trim() === '') return '选一个头像（也可以自己打一个 emoji）';
+    if (kind === null) return '选一下是大人还是小孩';
+    if (gender === null) return '选一下性别（小孩的份量按性别分带折算）';
+    // 小孩必须有出生年月：份量按年龄分带查表，没有它就没有依据（001 的 CHECK 也这么要求）
+    if (kind === 'child' && !BIRTH_MONTH_PATTERN.test(birthMonth)) {
+      return '小孩必须有出生年月（份量按年龄分带折算）';
+    }
+    return undefined;
+  };
+
+  const submit = (): void => {
+    const problem = validate();
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    setError(undefined);
+    create.mutate(
+      {
+        name,
+        emoji,
+        kind: kind!,
+        gender: gender!,
+        // 大人留空 = null（画像里「大人可空」是合法状态，不是没填）
+        birthMonth: birthMonth === '' ? null : birthMonth,
+      },
+      {
+        onSuccess: () => onClose(),
+        // 服务端的错因（400 带 issues，readErrorDetail 已翻成中文）原样上屏
+        onError: (cause) => setError(cause instanceof Error ? cause.message : '新增失败'),
+      },
+    );
+  };
+
+  return (
+    <div className={`card ${styles.form}`} data-testid="new-member-form">
+      <div className={styles.blockLabel}>新增家人</div>
+
+      <div className={styles.field}>
+        <label className={styles.fieldLabel} htmlFor="new-member-name">
+          名字（必填）
+        </label>
+        <input
+          id="new-member-name"
+          className={styles.input}
+          type="text"
+          value={name}
+          placeholder="如 姥姥"
+          data-testid="new-member-name"
+          onChange={(event) => setName(event.target.value)}
+        />
+      </div>
+
+      <div className={styles.field}>
+        <label className={styles.fieldLabel} htmlFor="new-member-emoji">
+          头像（必填 · emoji）
+        </label>
+        <input
+          id="new-member-emoji"
+          className={styles.input}
+          type="text"
+          value={emoji}
+          placeholder="点下面的，或自己打一个"
+          data-testid="new-member-emoji"
+          onChange={(event) => setEmoji(event.target.value)}
+        />
+        <div className={styles.emojiRow}>
+          {EMOJI_PICKS.map((pick) => (
+            <button
+              key={pick}
+              type="button"
+              className={emoji === pick ? `${styles.emojiPick} ${styles.emojiPickOn}` : styles.emojiPick}
+              aria-label={`用 ${pick} 作头像`}
+              aria-pressed={emoji === pick}
+              data-testid={`new-member-emoji-${pick}`}
+              onClick={() => setEmoji(pick)}
+            >
+              {pick}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={styles.field}>
+        <div className={styles.fieldLabel}>大人 / 小孩（必填）</div>
+        <div className={styles.choices}>
+          <Choice
+            testId="new-member-kind-adult"
+            label="大人"
+            on={kind === 'adult'}
+            onClick={() => setKind('adult')}
+          />
+          <Choice
+            testId="new-member-kind-child"
+            label="小孩"
+            on={kind === 'child'}
+            onClick={() => setKind('child')}
+          />
+        </div>
+      </div>
+
+      <div className={styles.field}>
+        <div className={styles.fieldLabel}>性别（必填 · 小孩的份量按它分带）</div>
+        <div className={styles.choices}>
+          <Choice
+            testId="new-member-gender-male"
+            label="男"
+            on={gender === 'male'}
+            onClick={() => setGender('male')}
+          />
+          <Choice
+            testId="new-member-gender-female"
+            label="女"
+            on={gender === 'female'}
+            onClick={() => setGender('female')}
+          />
+        </div>
+      </div>
+
+      <div className={styles.field}>
+        <label className={styles.fieldLabel} htmlFor="new-member-birth">
+          出生年月{kind === 'child' ? '（小孩必填）' : '（选填）'}
+        </label>
+        <input
+          id="new-member-birth"
+          className={styles.input}
+          type="month"
+          value={birthMonth}
+          min="1900-01"
+          max="2100-12"
+          data-testid="new-member-birth"
+          onChange={(event) => setBirthMonth(event.target.value)}
+        />
+      </div>
+
+      {error ? (
+        <div className={styles.error} data-testid="new-member-error">
+          {error}
+        </div>
+      ) : null}
+
+      <div className={styles.formActions}>
+        <button
+          type="button"
+          className="btn block"
+          data-testid="new-member-submit"
+          disabled={create.isPending}
+          onClick={submit}
+        >
+          {create.isPending ? '保存中…' : '保存'}
+        </button>
+        <button
+          type="button"
+          className="btn ghost block"
+          data-testid="new-member-cancel"
+          disabled={create.isPending}
+          onClick={onClose}
+        >
+          取消
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 二选一的按钮（大人/小孩、男/女）：手机上一拍就选中，选中后台面上看得出来 */
+function Choice({ testId, label, on, onClick }: { testId: string; label: string; on: boolean; onClick(): void }) {
+  return (
+    <button
+      type="button"
+      className={on ? `${styles.choice} ${styles.choiceOn}` : styles.choice}
+      data-testid={testId}
+      aria-pressed={on}
+      onClick={onClick}
+    >
+      {on ? '✓ ' : ''}
+      {label}
+    </button>
+  );
+}
+
 function MemberCard({ member, isCurrent }: { member: Member; isCurrent: boolean }) {
   const { switchIdentity } = useIdentity();
   const update = useUpdateMember();
+  const remove = useDeleteMember();
   const [error, setError] = useState<string | undefined>(undefined);
+  // 删除要有确认（不能一点就删）：两步式——先点「删除」，卡片上就地展开确认条，再点一次才真的删。
+  // 用内联确认而不是 window.confirm：手机上弹窗会被浏览器拦掉或长得不像这个 app，
+  // 而且确认文案要能写清「历史保留」这件事（删除是软删除，家人会问「那以前吃的还算吗」）。
+  const [confirming, setConfirming] = useState(false);
 
   const save = (patch: ProfilePatch): void => {
     setError(undefined);
@@ -55,6 +295,15 @@ function MemberCard({ member, isCurrent }: { member: Member; isCurrent: boolean 
       { id: member.id, patch },
       { onError: (cause) => setError(cause instanceof Error ? cause.message : '保存失败') },
     );
+  };
+
+  const doDelete = (): void => {
+    setError(undefined);
+    remove.mutate(member.id, {
+      onError: (cause) => setError(cause instanceof Error ? cause.message : '删除失败'),
+      // 成功后不必手动作什么：`useDeleteMember` invalidate 了 `['members']`，
+      // 这一张卡随新列表一起消失（当前身份若正是他，identity.tsx 的兜底会回退到掌勺者）
+    });
   };
 
   const avoidIds = member.avoid.map((entry) => entry.ingredientId);
@@ -139,6 +388,47 @@ function MemberCard({ member, isCurrent }: { member: Member; isCurrent: boolean 
 
       <div className={styles.blockLabel}>出生年月{member.kind === 'child' ? '（小孩必填 · 份量按年龄分带折算）' : '（选填）'}</div>
       <BirthMonthField member={member} onSave={(birthMonth) => save({ birthMonth })} />
+
+      {/* 删除（本票）：破坏性操作，两步确认。文案说清是**软删除**——家人会问「那以前吃的还算吗」 */}
+      <div className={styles.dangerRow}>
+        {confirming ? (
+          <div className={styles.confirm} data-testid={`member-delete-confirm-${member.id}`}>
+            <div className="sub">
+              把 {member.name} 从家人列表移除？他不会再进用餐者名单，忌口与爱吃也随之失效；
+              吃过那些餐的历史与反馈都保留。
+            </div>
+            <div className={styles.confirmActions}>
+              <button
+                type="button"
+                className={`btn ${styles.dangerButton}`}
+                data-testid={`member-delete-confirmed-${member.id}`}
+                disabled={remove.isPending}
+                onClick={doDelete}
+              >
+                {remove.isPending ? '删除中…' : '确认删除'}
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                data-testid={`member-delete-cancel-${member.id}`}
+                disabled={remove.isPending}
+                onClick={() => setConfirming(false)}
+              >
+                不删了
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className={styles.dangerLink}
+            data-testid={`member-delete-${member.id}`}
+            onClick={() => setConfirming(true)}
+          >
+            删除这位家人
+          </button>
+        )}
+      </div>
 
       {update.isPending ? <div className={`sub ${styles.saved}`}>保存中…</div> : null}
       {error ? (

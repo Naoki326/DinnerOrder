@@ -41,6 +41,33 @@
   opacity: 0.75;
 }
 
+/* 已删家人（软删除，010）：菜单快照里还留着，但家人列表里已经没有他。
+   虚线框 + 「已删」标签：看着就不是「在用的家人」，点一下就清掉。 */
+.dinerGhost {
+  border: 1px dashed var(--sub);
+  opacity: 0.9;
+}
+
+.ghostTag {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 99px;
+  background: var(--card);
+  color: var(--sub);
+}
+
+.ghostNote {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--sub);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
 .chosen {
   display: flex;
   flex-direction: column;

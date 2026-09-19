@@ -121,8 +121,10 @@ e2e/                    Playwright 冒烟 + 家人与当前身份
 | --- | --- |
 | `GET /api/health` | 冒烟：时钟/LLM/basePath 的注入证明 |
 | `GET /api/ingredients?q=` | 食材字典（规范名 + 别名；`q` 两者都匹配） |
-| `GET /api/members` · `GET /api/members/:id` | 家人画像（大人/小孩、性别、出生年月、忌口、爱吃） |
+| `GET /api/members` · `GET /api/members/:id` | 家人画像（大人/小孩、性别、出生年月、忌口、爱吃）。**已删的家人不出现**（软删除，`GET /members/:id` 也一样 404） |
+| `POST /api/members` | 新增家人：`name` / `emoji` / `kind` / `gender` 必填，小孩另需 `birthMonth`（201 + 落库后的画像） |
 | `PATCH /api/members/:id` | 改画像：`birthMonth` / `avoid[]` / `loves[]`，传了的块整体替换 |
+| `DELETE /api/members/:id` | **软删除**家人（打 `deleted_at`，不删行）：从列表与用餐者名单里消失、忌口/爱吃不再生效，但餐历史快照与 `dish_feedback` 一行不丢 |
 | `GET /api/recipes?status=` | 家庭菜谱库（缺省只给转正态，`all` 一次拿齐） |
 | `GET /api/recipes/:id` | 单道菜谱（含食材克数、口味、菜系、状态） |
 | `POST /api/recipes/:id/promotion` | **转正**（总纲 §2.8、spec S6）：草稿 → LLM 改写成家里版本（可口述差异、校对菜系）→ 状态 `active` 进家庭库与推荐池。门槛：只转**已经上桌**的草稿（ADR-0006）；LLM 失败就整次失败（502），草稿原样留着 |

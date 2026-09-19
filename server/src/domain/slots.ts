@@ -15,6 +15,7 @@ import type {
   SlotBooking,
 } from '../wire-types.js';
 import { findRecipe } from './recipes.js';
+import { ACTIVE_MEMBERS_PREDICATE } from './members.js';
 import { addDays, familyDate, familyInstant, parseDate } from './family-time.js';
 import { familyRules } from './family-rules.js';
 import { promptVersionFor } from '../llm/prompt.js';
@@ -621,13 +622,17 @@ function insertEvent(db: Db, clock: Clock, event: NewEvent): void {
 /**
  * 用餐者名单快照：按请求给的顺序存当时**姓名与头像**（家人后来改名/删号也不改写历史）。
  * 空名单拒收——忌口、家规、份量全以它为基数，空名单没有意义（宁可报错也别折出 0 份量的餐）。
+ *
+ * 已删的家人（010）与「从来没有过」同一语义：报 `UnknownMemberError`。
+ * 软删除是「从此不再参与」，所以新写的名单里不该出现他；
+ * 而**已经写过**的历史名单照旧读得出来（快照存在本表里，不回头查 members）。
  */
 function resolveDiners(db: Db, memberIds: string[]): DinerRef[] {
   const unique = [...new Set(memberIds)];
   if (unique.length === 0) throw new EmptyDinersError();
   const placeholders = unique.map(() => '?').join(', ');
   const rows = db
-    .prepare(`SELECT id, name, emoji FROM members WHERE id IN (${placeholders})`)
+    .prepare(`SELECT id, name, emoji FROM members WHERE id IN (${placeholders}) AND ${ACTIVE_MEMBERS_PREDICATE}`)
     .all(...unique) as { id: string; name: string; emoji: string }[];
   const byId = new Map(rows.map((row) => [row.id, row]));
   return unique.map((memberId) => {

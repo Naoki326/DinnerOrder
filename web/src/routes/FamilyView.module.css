@@ -134,3 +134,112 @@
   background: rgba(0, 0, 0, 0.08);
   color: var(--sub);
 }
+
+/* 新增入口：小一号的字重，不抢「忌口/爱吃」那几块的注意力 */
+.addButton {
+  margin-top: 10px;
+  font-size: 14px;
+  padding: 8px 12px;
+}
+
+.form {
+  margin: 12px;
+}
+
+.field {
+  margin-top: 10px;
+}
+
+.fieldLabel {
+  display: block;
+  color: var(--sub);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.field .input {
+  width: 100%;
+}
+
+/* 头像快选：一行放得下（390 px 视口减去卡片内边距，8 个 emoji 各 34px） */
+.emojiRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.emojiPick {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--chip);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.emojiPickOn {
+  background: var(--accent-soft);
+  outline: 1.5px solid var(--accent);
+}
+
+.choices {
+  display: flex;
+  gap: 6px;
+}
+
+.choice {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--chip);
+  font-size: 13px;
+}
+
+.choiceOn {
+  background: var(--accent-soft);
+  outline: 1.5px solid var(--accent);
+  font-weight: 600;
+}
+
+.formActions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+/* 删除入口：平时是一条小字链接（不抢眼），确认展开后就地摆两个按钮 */
+.dangerRow {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.dangerLink {
+  color: var(--hun);
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+.confirm {
+  background: #fff5f5;
+  border-radius: 12px;
+  padding: 10px;
+}
+
+.confirmActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.dangerButton {
+  background: var(--hun);
+  color: #fff;
+  flex: 1;
+}
+
+.confirmActions .btn.ghost {
+  flex: 1;
+}

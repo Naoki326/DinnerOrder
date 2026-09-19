@@ -16,6 +16,7 @@ import type {
 } from '../wire-types.js';
 import { familyDate } from './family-time.js';
 import { familyRules } from './family-rules.js';
+import { ACTIVE_MEMBERS_PREDICATE } from './members.js';
 import { EmptyDinersError, leftoverReferenceActive, resolveDishes, UnknownMemberError } from './slots.js';
 
 /**
@@ -196,7 +197,16 @@ interface DinerProfile {
   missing: boolean;
 }
 
-/** 用餐者画像：空名单拒收、未知成员拒收（与定餐同一套语义，复用同一批错误类型） */
+/**
+ * 用餐者画像：空名单拒收、未知成员拒收（与定餐同一套语义，复用同一批错误类型）。
+ *
+ * **软删除的家人**（010）：两种路径两种语义，与 `resolveMembers` 的「显式名单 vs 历史快照」同构——
+ *   * `error`（新菜单/草稿）：已删的家人按「不在家人列表里」处理，报 `UnknownMemberError`。
+ *     他是被删的人，不能再被选进这一餐；给他一份「画像还在所以照算」的克数，界面会以为他还参与。
+ *   * `assumeAdult`（读历史菜单）：**含已删的行**——软删除保留画像的意义正在这里：
+ *     小宝被删了，但那份旧菜单里他的 0.408 折算系数仍然算得出来，历史读数一字不改。
+ *     真查不到的行（硬删/手改库）才落到成人份兜底。
+ */
 function resolveDinerProfiles(
   db: Db,
   memberIds: string[],
@@ -205,8 +215,15 @@ function resolveDinerProfiles(
   const unique = [...new Set(memberIds)];
   if (unique.length === 0) throw new EmptyDinersError();
   const placeholders = unique.map(() => '?').join(', ');
+  // 两条路要的 WHERE 不一样，所以先算好谓词再拼（原来写成内联三元，读的时候要在引号里找分支）：
+  // 「读历史菜单」连已删的行一起读（软删除保留的画像正是历史读数的依据），
+  // 「草稿/新菜单」只要在用的家人。谓词本身与其余四处共用同一份来源。
+  const activeOnly = missingMembers !== 'assumeAdult' ? ` AND ${ACTIVE_MEMBERS_PREDICATE}` : '';
   const rows = db
-    .prepare(`SELECT id, name, emoji, kind, gender, birth_month FROM members WHERE id IN (${placeholders})`)
+    .prepare(
+      `SELECT id, name, emoji, kind, gender, birth_month FROM members
+        WHERE id IN (${placeholders})${activeOnly}`,
+    )
     .all(...unique) as MemberRow[];
   const byId = new Map(rows.map((row) => [row.id, row]));
   return unique.map((memberId) => {

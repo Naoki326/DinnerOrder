@@ -51,6 +51,11 @@ export function isFeedbackTag(value: string): value is FeedbackTag {
  *
  * 冷却的是**菜**不是人：任一本餐用餐者点踩即触发（ADR-0005 的布尔语义），
  * 所以这里只按 recipe_id 聚合，不看是谁点的。
+ *
+ * **已删的家人照样算**（软删除，010 迁移）：冷藏期的全部价值是「那道菜确实被一家人否决过」，
+ * 而删家人删掉的是「这个人从此不再参与点餐」，不是「那一顿饭没发生过」。
+ * 何况 `dish_feedback` 的行本来就该保留（硬删的 CASCADE 会把它带走，那正是选软删除的原因），
+ * 行在而不生效只会让「为什么这道还没解冻」变成查不清的谜。
  */
 export function coolingDishes(db: Db, clock: Clock, days = coolOffDays(db)): Map<string, string> {
   const today = familyDate(clock.now());

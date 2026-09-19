@@ -25,6 +25,11 @@ export type {
  *
  * 每次改动名单/菜品都会换掉 queryKey，所以 TanStack Query 自动重算、自动取消上一次请求
  * （`signal` 一路传到 fetch）。
+ *
+ * `ready`：调用方还没拿到「谁还在家人列表里」时先别算。已定菜单的名单是**当时的快照**，
+ * 可能含已删的家人——份量引擎对显式名单里的他们报 `unknown_member`。名单没到位时算一次，
+ * 只会得到一个注定 400 的请求，然后在家人到位后重算（本票修复的正是这个空窗：
+ * 编辑器要把名单里的已删家人剔给份量引擎看，而「谁已删」要先知道家人在册的那一份）。
  */
 export function usePortionPreview(
   diners: string[],
@@ -34,10 +39,12 @@ export function usePortionPreview(
    * 不传 = 草稿（新定的一餐还没有引用），上浮恒不生效——界面据此决定显不显示倍数。
    */
   slotId?: string,
+  options: { ready?: boolean } = {},
 ) {
+  const ready = options.ready ?? true;
   return useQuery({
     queryKey: ['portion-preview', diners, dishes.map((dish) => [dish.recipeId, dish.keepLeftover]), slotId],
-    enabled: diners.length > 0 && dishes.length > 0,
+    enabled: ready && diners.length > 0 && dishes.length > 0,
     queryFn: async ({ signal }): Promise<MenuPortion> => {
       const payload: PortionPreviewRequest = {
         diners,

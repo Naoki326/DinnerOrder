@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { useIdentity } from '../identity';
+import { useMembers } from '../api/members';
 import { useRecipes, type Recipe } from '../api/recipes';
 import { usePortionPreview, type MenuPortion } from '../api/portion';
-import { useBookLeftover, useBookSlot, useCancelSlot, useSlot, type MealEvent, type MealSlot } from '../api/meals';
+import { useBookLeftover, useBookSlot, useCancelSlot, useSlot, type DinerRef, type MealEvent, type MealSlot } from '../api/meals';
 import { useAcceptRecommendation, useRecommendation } from '../api/recommendations';
 import { useUndoSet } from '../api/replacements';
 import { CandidateList } from '../components/CandidateList';
@@ -105,6 +106,11 @@ function SlotEditor({
 }) {
   const navigate = useNavigate();
   const { members } = useIdentity();
+  // 编辑一份**旧菜单**时，上面的 `members` 只是「在用的家人」（已删的不在其中），而菜单里的
+  // 用餐者名单是**当时的快照**，可能含已删的家人。两者的差集就是本票要处理的那个洞。
+  // 这里再取一次同一个 `['members']` 查询（TanStack 会去重、共用缓存）：要的是它的
+  // `isSuccess`——「名单到没到位」不能靠 `members.length > 0` 猜。
+  const membersQuery = useMembers();
   const book = useBookSlot();
   const cancel = useCancelSlot();
   const leftover = useBookLeftover();
@@ -135,9 +141,51 @@ function SlotEditor({
   // 首次定餐的默认用餐者是**全员**（总纲 §3）；家人列表可能晚于餐槽到位，所以默认值现算而不是初值快照
   const diners = dinersDraft ?? (slot.menu ? slot.menu.diners.map((diner) => diner.memberId) : members.map((m) => m.id));
 
+  /**
+   * 名单里**已不在家人列表**的那些人（含姓名与头像，来自菜单快照）。
+   *
+   * 为什么要有他们自己的一组 chip，而不是直接过滤掉：份量引擎对**显式名单**里的已删家人报
+   * `unknown_member`（对「新写的名单里不该出现他」这个口径是对的），所以一份含 ghost 的旧菜单
+   * 在编辑器里会同时坏掉「算份量」与「保存」两件事——而界面上原本没有那个人的chip可点。
+   * 用户唯一的出路是放弃这一餐（`SlotView.tsx` 修复前的实际处境）。
+   *
+   * 现在的做法：家人名单**到位之后**（`membersQuery.isSuccess`）才分辨谁是 ghost——那之前不猜
+   * （把「还没加载」当成「已删」会白打一次注定 400 的份量请求）；到位后仍不在名单里的，渲染成
+   * 一张标了「已删」的 chip，用户可以自己点掉。**不静默剔除**：草稿一旦私下改写，界面上的份量
+   * 就对不上菜单快照，而且「这份菜单里原来还有谁」这件事就被抹掉了——排除的可见性是本仓纪律。
+   */
+  const knownIds = useMemo(() => new Set(members.map((member) => member.id)), [members]);
+  const ghosts = useMemo(
+    () => (membersQuery.isSuccess ? (slot.menu?.diners ?? []).filter((diner) => !knownIds.has(diner.memberId)) : []),
+    [membersQuery.isSuccess, slot.menu, knownIds],
+  );
+  const cleanup = useMemo(() => removeGhosts(diners, ghosts), [diners, ghosts]);
+  /**
+   * 「谁还在家人列表里」拿到之前，已定菜单的名单先别往外发（见 `usePortionPreview` 的 `ready`）：
+   * 那一段空窗里发出去的请求会把快照里的已删家人当成未知成员，白得一个 400。
+   */
+  const rosterKnown = membersQuery.isSuccess;
+  /** 还在草稿名单里的 ghost：提示文案与保存拦截都看它（全被点掉后就不再拦了） */
+  const draftGhosts = useMemo(() => ghosts.filter((ghost) => diners.includes(ghost.memberId)), [ghosts, diners]);
+  /**
+   * 名单里还留着已删的家人时，一切**会落库**的动作先停在本地并说清下一步。
+   * 不去打一个注定 400 的请求（服务端只报一个 memberId，那一串 id 对家人没有意义），
+   * 但也不静默把 ghost 从名单里抹掉——草稿是用户的东西，点掉那个 chip 才是他按下的一步。
+   */
+  const ghostBlockMessage = (): string | undefined =>
+    draftGhosts.length === 0
+      ? undefined
+      : `${draftGhosts.map((ghost) => ghost.name).join('、')} 已不在家人列表里（这份名单是定这一餐时的快照）。` +
+        '点一下上面标了「已删」的名字把他从这一餐移除，再继续。';
+
   // 份量随草稿名单/菜品即时重算（服务端算，前端只显示）。带上餐槽 id：留量上浮要问
   // 「这一餐有没有被『吃剩的』引用」（#22）。
-  const portionQuery = usePortionPreview(diners, dishes, slot.id);
+  //
+  // 算的时候先剔掉已知的 ghost：份量引擎对显式名单里的已删家人报 `unknown_member`，带着 ghost 打
+  // 过去就是一个注定 400 的请求——份量区整个空白，用户连别的菜都改不了。剔掉是**纯展示口径**
+  // （克数少一个人，屏幕上那张「已删」chip 同时在说为什么少），保存时提交的仍是上面那个 `diners`：
+  // 草稿不被偷改，用户点掉 chip 之前，保存会被 `ghostBlockMessage` 挡在本地并给出一句人话。
+  const portionQuery = usePortionPreview(cleanup, dishes, slot.id, { ready: rosterKnown });
   const portion = portionQuery.data;
   const factorOf = useMemo(
     () => new Map((portion?.diners ?? []).map((diner) => [diner.memberId, diner])),
@@ -150,6 +198,11 @@ function SlotEditor({
 
   const toggleDiner = (memberId: string): void => {
     setDinersDraft(diners.includes(memberId) ? diners.filter((id) => id !== memberId) : [...diners, memberId]);
+  };
+
+  /** 一键清掉全部「已删家人」——一个按钮比让用户在几个 chip 之间逐个点更省事，且动作完全一样 */
+  const dropGhosts = (): void => {
+    setDinersDraft(cleanup);
   };
 
   const toggleDish = (recipeId: string): void => {
@@ -182,6 +235,11 @@ function SlotEditor({
    */
   const replaceSet = (): void => {
     setError(undefined);
+    const blocked = ghostBlockMessage();
+    if (blocked !== undefined) {
+      setError(blocked);
+      return;
+    }
     recommend.mutate(
       { diners },
       {
@@ -214,6 +272,11 @@ function SlotEditor({
 
   const save = (): void => {
     setError(undefined);
+    const blocked = ghostBlockMessage();
+    if (blocked !== undefined) {
+      setError(blocked);
+      return;
+    }
     book.mutate(
       { slotId: slot.id, booking: { diners, dishes, source: 'manual' } },
       {
@@ -284,7 +347,6 @@ function SlotEditor({
             type="button"
             className="btn ghost block"
             data-testid="book-leftover"
-            disabled={leftover.isPending}
             onClick={() => {
               setError(undefined);
               leftover.mutate(
@@ -292,6 +354,7 @@ function SlotEditor({
                 { onError: (cause) => setError(cause instanceof Error ? cause.message : '预定「吃剩的」失败') },
               );
             }}
+            disabled={leftover.isPending}
           >
             {leftover.isPending
               ? '预定中…'
@@ -337,7 +400,44 @@ function SlotEditor({
               </button>
             );
           })}
+          {/* 已经不在家人列表里、却还留在这份菜单快照里的用餐者（软删除的家人）。
+              渲染出来才能点掉——否则这份菜单既算不出份量也存不回去，界面上却没有路可走。 */}
+          {ghosts.map((ghost) => {
+            const on = diners.includes(ghost.memberId);
+            return (
+              <button
+                key={ghost.memberId}
+                type="button"
+                className={on ? `${styles.diner} ${styles.on} ${styles.dinerGhost}` : `${styles.diner} ${styles.dinerGhost}`}
+                data-testid={`diner-ghost-${ghost.memberId}`}
+                aria-pressed={on}
+                onClick={() => toggleDiner(ghost.memberId)}
+              >
+                {ghost.emoji} {ghost.name}
+                <span className={styles.ghostTag}>已删</span>
+              </button>
+            );
+          })}
         </div>
+        {ghosts.length > 0 ? (
+          <div className={styles.ghostNote} data-testid="diner-ghost-note">
+            <span>
+              {ghosts.map((ghost) => ghost.name).join('、')} 已不在家人列表里（名单是定这一餐时的快照）。
+              {draftGhosts.length > 0
+                ? cleanup.length > 0
+                  ? '点一下他的名字把他从这一餐移除——在那之前，份量按剩下来的人算，保存与换一整套都会先拦住。'
+                  : '点一下他的名字把他从这一餐移除，再从上面在册的家人里点一位——这一餐至少要有一位用餐者才能保存。'
+                : diners.length === 0
+                  ? '已经从这一餐移除了。名单现在是空的——从上面在册的家人里点一位，才能保存。'
+                  : '已经从这一餐的草稿里移除了，保存后这份菜单就不再包含他（留痕里看得到这次改动）。'}
+            </span>
+            {draftGhosts.length > 0 ? (
+              <button type="button" className="btn ghost" data-testid="diner-ghost-remove-all" onClick={dropGhosts}>
+                移除已删的家人
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       {/* 已选的菜 */}
@@ -394,7 +494,9 @@ function SlotEditor({
                     <CandidateList
                       slotId={slot.id}
                       replacing={{ recipeId: dish.recipeId, name: recipe.name }}
-                      diners={diners}
+                      // 候选的忌口过滤用**剔掉 ghost 后**的名单：这与上面份量预览同一口径，
+                      // 也是保存时真正会落库的那份名单（候选接口对已删家人同样报 unknown_member）。
+                      diners={cleanup}
                       dishes={dishes.map((item) => item.recipeId)}
                       sessionExcludes={sessionExcludes}
                       onShown={onExclude}
@@ -454,6 +556,18 @@ function SlotEditor({
       </div>
 
       {/* 份量小结：这餐总共做多少（Σ系数 × 成人份基准；留量上浮要等 #22 的引用） */}
+      {portionQuery.isError ? (
+        <div className="card" data-testid="portion-error">
+          <span className={styles.error}>
+            {portionQuery.error instanceof Error ? portionQuery.error.message : '份量没算出来'}
+          </span>
+          {draftGhosts.length > 0 ? (
+            <div className="sub" style={{ marginTop: 6 }}>
+              名单里还有已删的家人——点掉上面标了「已删」的名字，份量就会重新算。
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {portion && dishes.length > 0 ? (
         <div className="card" data-testid="portion-summary">
           <div className={styles.blockLabel}>这餐的份量（生重）</div>
@@ -555,6 +669,20 @@ function SlotEditor({
       </div>
     </div>
   );
+}
+
+/**
+ * 从草稿名单里剔掉已知的「已删家人」，供**份量预览与候选名单**使用；原始草稿不动，
+ * 调用方拿 `draftGhosts` 决定要不要在界面上说一句、要不要拦住保存。
+ *
+ * 只处理 `ghosts` 里点名的那几个：不在 `ghosts` 里、也不在 `members` 里的 id（家人列表还没
+ * 到位、或名单里本就混进了一个不明的 id）原样留下——那种情况下界面没有可解释的信息，
+ * 交给服务端的 `unknown_member` 报出来比静默剔除更诚实。
+ */
+function removeGhosts(diners: string[], ghosts: DinerRef[]): string[] {
+  if (ghosts.length === 0) return diners;
+  const ghostIds = new Set(ghosts.map((ghost) => ghost.memberId));
+  return diners.filter((id) => !ghostIds.has(id));
 }
 
 /**

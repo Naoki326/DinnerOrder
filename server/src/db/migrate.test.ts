@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { closeDatabase, openDatabase, type Db } from './index.js';
 import { listMigrations, runMigrations } from './migrate.js';
@@ -56,6 +57,29 @@ describe('listMigrations', () => {
     writeMigration('001_a.sql', 'SELECT 1;');
     writeMigration('001_b.sql', 'SELECT 1;');
     expect(() => listMigrations(tmpDir)).toThrow(/重复/);
+  });
+
+  /**
+   * 仓库自带的迁移目录必须**无重复版本号**且能整体跑起来。
+   *
+   * 上面那条验的是执行器的行为，用的是临时 fixture；这一条验的是**实际随库的那份目录**：
+   * 并行开发的多个票各自新增迁移时，撞号是最容易发生、也最贵的一种集成故障
+   * （`runMigrations` 会直接抛「版本号重复」，应用启动即失败）。
+   */
+  it('仓库 migrations 目录无版本号重复，且能按序全部执行', () => {
+    const repoMigrations = fileURLToPath(new URL('../../migrations', import.meta.url));
+
+    const versions = listMigrations(repoMigrations).map((m) => m.version);
+    expect(versions.length).toBeGreaterThan(0);
+    // 升序且无重复（重复会让 listMigrations 先抛错，这里显式钉住「无重复」这条不变量）
+    expect(versions).toEqual([...new Set(versions)].sort());
+
+    const result = runMigrations(db, repoMigrations);
+    expect(result.applied.map((m) => m.version)).toEqual(versions);
+    expect(appliedVersions(db)).toEqual(versions);
+    // 家人软删除那一列确实由迁移落的（本票改号后仍要真的执行到）
+    const columns = db.prepare('PRAGMA table_info(members)').all() as { name: string }[];
+    expect(columns.map((column) => column.name)).toContain('deleted_at');
   });
 });
 
