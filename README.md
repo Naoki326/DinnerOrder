@@ -70,6 +70,14 @@ e2e/                    Playwright 冒烟 + 家人与当前身份
 | `GET /api/ingredients?q=` | 食材字典（规范名 + 别名；`q` 两者都匹配） |
 | `GET /api/members` · `GET /api/members/:id` | 家人画像（大人/小孩、性别、出生年月、忌口、爱吃） |
 | `PATCH /api/members/:id` | 改画像：`birthMonth` / `avoid[]` / `loves[]`，传了的块整体替换 |
+| `GET /api/recipes?status=` | 家庭菜谱库（缺省只给转正态，`all` 一次拿齐） |
+| `GET /api/slots?days=` · `GET /api/slots/:id` | 餐槽与菜单；单餐响应内嵌 `portion`（本餐每道菜的生重） |
+| `PUT /api/slots/:id` · `DELETE /api/slots/:id` | 定餐 = 改餐（整份菜单一次提交）· 取消（留痕只增不改） |
+| `GET /api/history/recent-dishes?days=` | 最近吃过的菜（去重窗口，走事件流） |
+| `GET /api/portion/rules` | 份量规则表：成人能量锚点 + WS/T 554 分带折算系数 + 各人群推荐量 + 餐次占比（逐条带来源） |
+| `POST /api/portion/preview` | 草稿菜单的份量（编辑期即时重算；年龄按服务端时钟现算） |
+| `GET /api/portion/exchange` | WS/T 554 附录 A 生熟/同类互换表（七组，带基准与口径） |
+| `GET /api/portion/exchange/convert?from=&grams=` | 互换换算：`grams` 的 `from` 等价于组内各条的多少克 |
 
 **错误响应形状统一为 `{error: '<代码>'}`**（可能附指认字段，如 `unknown_ingredient` 带 `ingredientId`）。
 入参校验失败是 `{error:'invalid_request', issues:[{path,message}]}`，**不是** `@hono/zod-validator` 的缺省形状；

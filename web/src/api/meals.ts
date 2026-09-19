@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { MealSlot, RecentDish, SlotBooking, SlotResponse, SlotsResponse } from '@dinnerorder/server/types';
+import type { RecentDish, SlotBooking, SlotResponse, SlotsResponse, SlotWithPortion } from '@dinnerorder/server/types';
 import { apiUrl } from '../config';
 
 // 线上形状来自 server（ADR-0002「共享类型由 server 导出」），前端不手抄
@@ -16,6 +16,7 @@ export type {
   SlotBooking,
   SlotResponse,
   SlotsResponse,
+  SlotWithPortion,
 } from '@dinnerorder/server/types';
 
 /** 主界面要的「下一餐优先」列表：今天起 n 天，已过截止时刻的餐次服务端已经滤掉 */
@@ -63,7 +64,7 @@ export function useRecentDishes(days = 7) {
   });
 }
 
-async function putSlot(slotId: string, booking: SlotBooking): Promise<MealSlot> {
+async function putSlot(slotId: string, booking: SlotBooking): Promise<SlotWithPortion> {
   const response = await fetch(apiUrl(`/slots/${slotId}`), {
     method: 'PUT',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
@@ -73,7 +74,7 @@ async function putSlot(slotId: string, booking: SlotBooking): Promise<MealSlot> 
     const detail = await readErrorDetail(response);
     throw new Error(detail ?? `保存失败：HTTP ${response.status}`);
   }
-  return ((await response.json()) as { slot: MealSlot }).slot;
+  return ((await response.json()) as { slot: SlotWithPortion }).slot;
 }
 
 async function deleteSlot(slotId: string): Promise<void> {

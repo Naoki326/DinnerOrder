@@ -29,6 +29,58 @@
   box-shadow: none;
 }
 
+/* 首屏大卡上的菜单行：菜名 + 本餐生重克数（S3 要求「每道菜」都看得见读数） */
+.dishList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+
+.dishRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.grams {
+  margin-left: auto;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.dish {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 荤 / 素 / 汤 三色标记（与 SlotView 同一套 token：--hun / --su / --tang） */
+.kind {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 22px;
+  text-align: center;
+  color: #fff;
+}
+
+.meat {
+  background: var(--hun);
+}
+
+.veg {
+  background: var(--su);
+}
+
+.soup_meat,
+.soup_veg {
+  background: var(--tang);
+}
+
 .footnote {
   text-align: center;
   color: var(--sub);

@@ -1,7 +1,7 @@
 import { Link } from 'react-router';
 import { apiBaseUrl } from '../config';
 import { useHealth } from '../api/health';
-import { useSlots, type MealSlot } from '../api/meals';
+import { useSlots, type MealSlot, type SlotWithPortion } from '../api/meals';
 import styles from './HomeView.module.css';
 
 /**
@@ -13,6 +13,9 @@ import styles from './HomeView.module.css';
  *
  * 「给我推荐」还是禁用态：整餐推荐是 #17 的活，本票只打通手动定餐这条路。
  * 「吃中午剩的」也是（留量引用 #22），先占位。
+ *
+ * 已定的卡直接显示**每道菜的本餐生重**（`slot.portion` 由列表接口内嵌，份量已随时钟现算）；
+ * 逐食材的拆解在定餐编辑器里（大卡只给每道菜的合计——手机首屏容不下逐食材列表）。
  */
 export function HomeView() {
   const health = useHealth();
@@ -71,7 +74,7 @@ export function HomeView() {
 }
 
 /** 最近的一餐：定餐的入口（未定）或查看/改餐的入口（已定） */
-function HeroCard({ slot, today }: { slot: MealSlot; today: string | undefined }) {
+function HeroCard({ slot, today }: { slot: SlotWithPortion; today: string | undefined }) {
   const decided = slot.status === 'decided';
 
   return (
@@ -84,13 +87,26 @@ function HeroCard({ slot, today }: { slot: MealSlot; today: string | undefined }
 
       {decided && slot.menu ? (
         <div className={styles.dishList} data-testid="hero-dishes">
-          {slot.menu.dishes.map((dish) => (
-            <div key={dish.recipeId} className={styles.dish}>
-              <span className={`${styles.kind} ${styles[dish.kind]}`}>{KIND_LABEL[dish.kind]}</span>
-              <span>{dish.name}</span>
-              {dish.keepLeftover ? <span className="badge">留量 ×1.5</span> : null}
-            </div>
-          ))}
+          {slot.menu.dishes.map((dish) => {
+            // 份量按菜品 index 对齐：列表接口内嵌的 portion.dishes 与 menu.dishes 同序同长
+            // （都由 resolveDishes 按提交顺序产出），所以这里用下标取本餐生重
+            const grams = slot.portion?.dishes.find((item) => item.recipeId === dish.recipeId)?.totalGrams;
+            return (
+              <div key={dish.recipeId} className={styles.dishRow}>
+                <span className={`${styles.kind} ${styles[dish.kind]}`}>{KIND_LABEL[dish.kind]}</span>
+                <span>{dish.name}</span>
+                {/* 只标「留量」不标倍数：上浮要等 #22 的「吃剩的」引用就位（总纲 §2.6：
+                    上浮生效 = 留量标记 ∧ 有效引用）。现在写 ×1.5 会让家长以为买菜要多买 50%，
+                    而引擎此刻恒不上浮（uplift=1）——标一个没兑现的倍数比不标更糟 */}
+                {dish.keepLeftover ? <span className="badge">留量</span> : null}
+                {grams !== undefined ? (
+                  <span className={styles.grams} data-testid={`hero-dish-grams-${dish.recipeId}`}>
+                    {grams} g
+                  </span>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       ) : null}
 
@@ -114,10 +130,12 @@ function HeroCard({ slot, today }: { slot: MealSlot; today: string | undefined }
 }
 
 /** 往下的餐槽：未定/已定都列出来，点了就进编辑器 */
-function GhostCard({ slot, today }: { slot: MealSlot; today: string | undefined }) {
+function GhostCard({ slot, today }: { slot: SlotWithPortion; today: string | undefined }) {
   const decided = slot.status === 'decided';
   const dishes = slot.menu?.dishes ?? [];
   const preview = dishes.slice(0, 3).map((dish) => dish.name).join('、');
+  // 后面的餐卡只给本餐合计：买菜前扫一眼就够（每道菜/逐食材的读数在大卡与编辑器里）
+  const totalGrams = slot.portion?.dishes.reduce((sum, dish) => sum + dish.totalGrams, 0) ?? 0;
 
   return (
     <Link
@@ -131,7 +149,10 @@ function GhostCard({ slot, today }: { slot: MealSlot; today: string | undefined 
           <b>
             {dayLabel(slot, today)} · {slot.meal === 'lunch' ? '午餐' : '晚餐'}
           </b>{' '}
-          <span className="sub">{decided ? preview || '已定' : '未定'}</span>
+          <span className="sub">
+            {decided ? preview || '已定' : '未定'}
+            {decided && totalGrams > 0 ? ` · 共 ${totalGrams} g` : ''}
+          </span>
         </span>
         <span className={decided ? 'badge ok' : 'badge'}>{decided ? '已定' : '点这定'}</span>
       </div>

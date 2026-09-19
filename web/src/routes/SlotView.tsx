@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { useIdentity } from '../identity';
 import { useRecipes, type Recipe } from '../api/recipes';
+import { usePortionPreview, type MenuPortion } from '../api/portion';
 import { useBookSlot, useCancelSlot, useSlot, type MealEvent, type MealSlot } from '../api/meals';
 import styles from './SlotView.module.css';
 
@@ -11,6 +12,10 @@ import styles from './SlotView.module.css';
  * 一屏里三件事：挑菜（按荤/素/汤分组，点一下加/减）、改用餐者名单（默认全员，可临时改）、
  * 保存为已定 / 取消。菜单是**整份提交**的：服务端把每次提交记成一条留痕事件，
  * 前端不做「加一道菜就发一次接口」的增量同步——半份状态就有地方藏。
+ *
+ * 份量（总纲 §3 决议 2）跟着名单与菜单**即时重算**：勾掉小宝，排骨的克数当场就变。
+ * 算的规则只有服务端一份（年龄要按服务端时钟现算），所以这里打 `/api/portion/preview`
+ * 而不是自己乘——前端各算各的就会在小孩生日、跨零点时与服务端打架。
  *
  * 下面还列着这一餐的留痕（append-only）：改过什么、什么时候改的，翻历史看得到。
  */
@@ -66,6 +71,14 @@ function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealE
 
   // 首次定餐的默认用餐者是**全员**（总纲 §3）；家人列表可能晚于餐槽到位，所以默认值现算而不是初值快照
   const diners = dinersDraft ?? (slot.menu ? slot.menu.diners.map((diner) => diner.memberId) : members.map((m) => m.id));
+
+  // 份量随草稿名单/菜品即时重算（服务端算，前端只显示）
+  const portionQuery = usePortionPreview(diners, dishes);
+  const portion = portionQuery.data;
+  const factorOf = useMemo(
+    () => new Map((portion?.diners ?? []).map((diner) => [diner.memberId, diner])),
+    [portion],
+  );
 
   const byId = useMemo(() => new Map(recipes.map((recipe) => [recipe.id, recipe])), [recipes]);
   const chosen = useMemo(() => new Set(dishes.map((dish) => dish.recipeId)), [dishes]);
@@ -132,6 +145,7 @@ function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealE
         <div className={styles.diners} data-testid="diner-picker">
           {members.map((member) => {
             const on = diners.includes(member.id);
+            const factor = factorOf.get(member.id);
             return (
               <button
                 key={member.id}
@@ -142,6 +156,11 @@ function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealE
                 onClick={() => toggleDiner(member.id)}
               >
                 {member.emoji} {member.name}
+                {on && factor ? (
+                  <span className={styles.dinerFactor} data-testid={`diner-factor-${member.id}`}>
+                    ×{factor.factor}
+                  </span>
+                ) : null}
               </button>
             );
           })}
@@ -160,28 +179,46 @@ function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealE
             {dishes.map((dish) => {
               const recipe = byId.get(dish.recipeId);
               if (!recipe) return null;
+              const dishPortion = portionOfDish(portion, dish.recipeId);
               return (
-                <div key={dish.recipeId} className={styles.chosenRow} data-testid={`chosen-${dish.recipeId}`}>
-                  <span className={`${styles.kind} ${styles[recipe.kind]}`}>{KIND_LABEL[recipe.kind]}</span>
-                  <span className={styles.chosenName}>{recipe.name}</span>
-                  <button
-                    type="button"
-                    className={dish.keepLeftover ? `${styles.keep} ${styles.keepOn}` : styles.keep}
-                    data-testid={`keep-${dish.recipeId}`}
-                    aria-pressed={dish.keepLeftover}
-                    onClick={() => toggleKeep(dish.recipeId)}
-                  >
-                    留量
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.remove}
-                    aria-label={`去掉 ${recipe.name}`}
-                    data-testid={`remove-${dish.recipeId}`}
-                    onClick={() => toggleDish(dish.recipeId)}
-                  >
-                    ✕
-                  </button>
+                <div key={dish.recipeId} className={styles.chosenItem} data-testid={`chosen-${dish.recipeId}`}>
+                  <div className={styles.chosenRow}>
+                    <span className={`${styles.kind} ${styles[recipe.kind]}`}>{KIND_LABEL[recipe.kind]}</span>
+                    <span className={styles.chosenName}>{recipe.name}</span>
+                    <button
+                      type="button"
+                      className={dish.keepLeftover ? `${styles.keep} ${styles.keepOn}` : styles.keep}
+                      data-testid={`keep-${dish.recipeId}`}
+                      aria-pressed={dish.keepLeftover}
+                      onClick={() => toggleKeep(dish.recipeId)}
+                    >
+                      留量
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.remove}
+                      aria-label={`去掉 ${recipe.name}`}
+                      data-testid={`remove-${dish.recipeId}`}
+                      onClick={() => toggleDish(dish.recipeId)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  {/* 本餐生重：逐食材克数 + 合计（份量引擎算的，界面不自己乘） */}
+                  {dishPortion ? (
+                    <div className={styles.portion} data-testid={`portion-${dish.recipeId}`}>
+                      {dishPortion.ingredients.map((item) => (
+                        <span
+                          key={item.ingredientId}
+                          className={item.scaling === 'fixed' ? `${styles.grams} ${styles.fixed}` : styles.grams}
+                          data-testid={`grams-${dish.recipeId}-${item.ingredientId}`}
+                        >
+                          {item.name} {item.grams} g
+                        </span>
+                      ))}
+                      <span className={styles.total}>合计 {dishPortion.totalGrams} g</span>
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
@@ -217,6 +254,20 @@ function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealE
           );
         })}
       </div>
+
+      {/* 份量小结：这餐总共做多少（Σ系数 × 成人份基准；留量上浮要等 #22 的引用） */}
+      {portion && dishes.length > 0 ? (
+        <div className="card" data-testid="portion-summary">
+          <div className={styles.blockLabel}>这餐的份量（生重）</div>
+          <div className={styles.summaryLine}>
+            {portion.diners.length} 人合计 ×{roundSum(portion.factorSum)}
+            {portion.uplift !== 1 ? ` × 留量上浮 ${portion.uplift}` : ''}，共 {totalGrams(portion)} g
+          </div>
+          <div className="sub">
+            大人按菜谱的成人份，小孩按出生年月现算年龄查 WS/T 554 分带；改上面的人或菜，这里立刻重算。
+          </div>
+        </div>
+      ) : null}
 
       {error ? (
         <div className="card" data-testid="slot-error-message">
@@ -272,6 +323,24 @@ function SlotEditor({ slot, history, recipes }: { slot: MealSlot; history: MealE
       </div>
     </div>
   );
+}
+
+/**
+ * 某道菜在本餐份量里的读数；份量还没回来（或这道菜刚加上、服务端还没算完）时给 undefined，
+ * 界面就先不显示克数——显示上一次的旧数字比暂时空着更糟。
+ */
+function portionOfDish(portion: MenuPortion | undefined, recipeId: string) {
+  return portion?.dishes.find((item) => item.recipeId === recipeId);
+}
+
+/** 一餐所有菜的合计生重 */
+function totalGrams(portion: MenuPortion): number {
+  return portion.dishes.reduce((sum, dish) => sum + dish.totalGrams, 0);
+}
+
+/** Σ系数展示到 3 位小数，抹掉浮点尾巴（1.7560000000000002 这种） */
+function roundSum(value: number): string {
+  return String(Math.round(value * 1000) / 1000);
 }
 
 const KIND_LABEL: Record<string, string> = { meat: '荤', veg: '素', soup_meat: '汤', soup_veg: '汤' };

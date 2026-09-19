@@ -336,8 +336,15 @@ function resolveDiners(db: Db, memberIds: string[]): DinerRef[] {
  * 只拒退役：草稿可以是**外部菜谱池**的补位菜（spec S6：某荤素位候选 <3 时外部菜谱上桌、
  * 之后转正），拒掉它就等于把外部补位这条路提前堵死（#17 的活）。退役则是「家里不再做」，
  * 不该重新出现在菜单上——要吃就重新转正。
+ *
+ * `allowRetired` 给**份量引擎**用（#16）：历史菜单里可能有退役前的菜，份量算不出来
+ * 就等于把那一餐的读数一起废掉；定餐入口不传（保持「退役不进菜单」）。
  */
-function resolveDishes(db: Db, inputs: SlotBooking['dishes']): MenuDish[] {
+export function resolveDishes(
+  db: Db,
+  inputs: SlotBooking['dishes'],
+  options: { allowRetired?: boolean } = {},
+): MenuDish[] {
   if (inputs.length === 0) throw new EmptyDishesError();
   const seen = new Set<string>();
   return inputs.map((input) => {
@@ -345,7 +352,7 @@ function resolveDishes(db: Db, inputs: SlotBooking['dishes']): MenuDish[] {
     seen.add(input.recipeId);
     const recipe = findRecipe(db, input.recipeId);
     if (!recipe) throw new UnknownRecipeError(input.recipeId);
-    if (recipe.status === 'retired') throw new RecipeRetiredError(input.recipeId);
+    if (recipe.status === 'retired' && !options.allowRetired) throw new RecipeRetiredError(input.recipeId);
     return {
       recipeId: recipe.id,
       name: recipe.name,

@@ -223,16 +223,182 @@ export interface MenuDishInput {
   keepLeftover?: boolean;
 }
 
+/**
+ * 餐槽 + 本餐份量（列表与单餐接口都给这个形状，界面不必再打一次份量接口）。
+ *
+ * 份量**不落库**：年龄随时钟走（小孩生日当天份量就该变），与菜单一起现算。
+ * 未定就没有菜单，也就没有份量（null）。
+ */
+export interface SlotWithPortion extends MealSlot {
+  portion: MenuPortion | null;
+}
+
 /** `GET /api/slots` 的响应：`today` 是家庭时区的今天（前端按它算「今天/明天」标签） */
 export interface SlotsResponse {
   today: string;
-  slots: MealSlot[];
+  slots: SlotWithPortion[];
 }
 
-/** `GET /api/slots/:id` 的响应：当前状态 + 这一餐的全部留痕 */
+/** `GET /api/slots/:id` 的响应：当前状态（带份量）+ 这一餐的全部留痕 */
 export interface SlotResponse {
-  slot: MealSlot;
+  slot: SlotWithPortion;
   history: MealEvent[];
+}
+
+// ---------------------------------------------------------------- 份量引擎（M1-04、ADR-0004）
+
+/** 成人能量锚点（折算系数的分母）：轻活动成人全天能量 */
+export interface PortionAdultAnchor {
+  gender: 'male' | 'female';
+  dailyKcal: number;
+  source: string;
+}
+
+/** 年龄分带折算系数（一份数据资产，来源逐条注明） */
+export interface PortionAgeBand {
+  id: string;
+  label: string;
+  /** 周岁闭区间；maxAge 为 null = 成人档（不封顶） */
+  minAge: number;
+  maxAge: number | null;
+  /** male/female 为分性别档；any 为不分性别的档（学龄前 / 成人） */
+  gender: 'male' | 'female' | 'any';
+  /** 折算系数 = 儿童全天能量 ÷ 同性别成人锚点（派生列；权威量见 recommendationEnergyKcal 与推荐量表） */
+  coefficient: number;
+  /** 推导依据：WS/T 554 表 1 能量 / 学龄前宝塔推荐量篮比值 / 成人不折算 */
+  basis: 'wst554_energy' | 'preschool_basket' | 'adult_anchor';
+  /** WS/T 554—2017 表 1 的逐带全天能量（kcal）；非学龄儿童档为 null */
+  referenceEnergyKcal: number | null;
+  source: string;
+}
+
+/** 各人群每天各类食物推荐量（成人平衡膳食宝塔 2022 / 学龄前宝塔） */
+export interface PortionRecommendedAmount {
+  population: string;
+  populationLabel: string;
+  groupKey: string;
+  groupLabel: string;
+  /** 区间下限；只看上限的（盐）为 null */
+  minGrams: number | null;
+  maxGrams: number;
+  unit: string;
+  note: string | null;
+  source: string;
+}
+
+/**
+ * 餐次占比（总纲 §5-2，WS/T 554—2017 §3.3）：早 25–30% / 午 35–40% / 晚 30–35%。
+ * 「全天量 × 餐次占比」才是单餐量——#22 留量上浮与 #23 买菜清单从这里取。
+ */
+export interface PortionMealShare {
+  meal: 'breakfast' | 'lunch' | 'dinner';
+  /** 展示顺序（0=早、1=午、2=晚）。**不是钟点**——餐次钟点属家规（#20），两者语义不同 */
+  sortOrder: number;
+  /** 占比区间下限（0–1，如 0.35 = 35%） */
+  minShare: number;
+  /** 占比区间上限（0–1） */
+  maxShare: number;
+  source: string;
+}
+
+/** 折算与推荐量规则表（`GET /api/portion/rules`） */
+export interface PortionRules {
+  adults: PortionAdultAnchor[];
+  bands: PortionAgeBand[];
+  recommendedAmounts: PortionRecommendedAmount[];
+  /** 餐次占比（全天量 → 单餐量的换算，#22/#23 用） */
+  mealShares: PortionMealShare[];
+  /** 留量上浮系数（#22）：本票恒 1（没有留量引用就没有上浮，总纲 §2.6） */
+  uplift: number;
+}
+
+/** 一个用餐者在这份菜单里的折算明细（年龄按请求时刻现算，同一名单必然同结果） */
+export interface DinerPortion {
+  memberId: string;
+  name: string;
+  emoji: string;
+  kind: 'adult' | 'child';
+  /** 现算周岁；没录出生年月的大人为 null */
+  ageYears: number | null;
+  bandId: string;
+  bandLabel: string;
+  /** 折算系数（展示用 3 位小数；乘法用未舍入的库内原值） */
+  factor: number;
+  /** 该用餐者的档位说明（不满最幼档 / 画像标为大人 / 已满 18 岁等） */
+  note: string | null;
+}
+
+/** 一道菜里一项食材的本餐生重 */
+export interface DishIngredientPortion {
+  ingredientId: string;
+  name: string;
+  /** 菜谱的成人份生重基准（原值，便于界面解释「怎么算出来的」） */
+  adultGrams: number;
+  scaling: 'linear' | 'fixed';
+  /** 本餐克数（已取整；fixed 不随人数放大） */
+  grams: number;
+}
+
+/** 一道菜的本餐生重（逐食材克数 + 合计） */
+export interface DishPortion {
+  recipeId: string;
+  name: string;
+  kind: RecipeKind;
+  keepLeftover: boolean;
+  ingredients: DishIngredientPortion[];
+  /** 本菜合计生重 = 各项取整后之和 */
+  totalGrams: number;
+}
+
+/** 一份菜单的本餐份量（`GET /api/slots/:id` 内嵌、`POST /api/portion/preview` 直取） */
+export interface MenuPortion {
+  /** 年龄按这一天现算（家庭时区） */
+  asOf: string;
+  /** 用餐者折算明细（顺序同请求给的名单） */
+  diners: DinerPortion[];
+  dishes: DishPortion[];
+  /** Σ折算系数（未舍入；展示层自己决定保留几位） */
+  factorSum: number;
+  /** 留量上浮系数（#22）：本票恒 1 */
+  uplift: number;
+}
+
+/** 互换表里的一条：`grams` 的本品等价于同组 `anchorGrams` 的 `anchorName` */
+export interface ExchangeItem {
+  id: string;
+  groupId: string;
+  name: string;
+  /** 等价于组内基准量的本品克数（生重/熟重/市品重见 note） */
+  grams: number;
+  /** 口径提示（生重 / 熟重 / 市品重（含不可食部）…） */
+  note: string | null;
+  /** 能对上食材字典的条目（#23 买菜聚合复用）；对不上的是市品口径差异，为 null */
+  ingredientId: string | null;
+}
+
+/** 同类互换组（WS/T 554 附录 A）：主食、蔬菜、水果、鱼肉、肉、大豆、奶 */
+export interface ExchangeGroup {
+  id: string;
+  name: string;
+  anchorName: string;
+  anchorGrams: number;
+  source: string;
+  items: ExchangeItem[];
+}
+
+/** 一次换算：`grams` 的 `from` 等价于组内每一条的多少克 */
+export interface ExchangeConversion {
+  group: { id: string; name: string; anchorName: string; anchorGrams: number; source: string };
+  from: ExchangeItem;
+  grams: number;
+  /** 组内每一条的等价克数（含 from 自身，便于界面直接列一张对照） */
+  equivalents: { item: ExchangeItem; grams: number }[];
+}
+
+/** `POST /api/portion/preview` 的入参：编辑期的草稿菜单（还没落库也要看得见份量） */
+export interface PortionPreviewRequest {
+  diners: string[];
+  dishes: MenuDishInput[];
 }
 
 /** `GET /api/history/recent-dishes` 的一条：窗口内做过的菜（按菜谱去重） */
@@ -246,6 +412,26 @@ export interface RecentDish {
   meal: MealKind;
   /** 窗口内出现过几次 */
   times: number;
+}
+
+/** `GET /api/portion/rules` 的响应 */
+export interface PortionRulesResponse {
+  rules: PortionRules;
+}
+
+/** `GET /api/portion/exchange` 的响应 */
+export interface ExchangeTableResponse {
+  groups: ExchangeGroup[];
+}
+
+/** `GET /api/portion/exchange/convert` 的响应 */
+export interface ExchangeConversionResponse {
+  conversion: ExchangeConversion;
+}
+
+/** `POST /api/portion/preview` 的响应 */
+export interface PortionPreviewResponse {
+  portion: MenuPortion;
 }
 
 /** `/api/health` 的响应（#13 立的冒烟 API，web 首页页脚用它显示通道状态） */

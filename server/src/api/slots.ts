@@ -2,6 +2,10 @@ import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import { zodValidator } from './validation.js';
 import type { AppDeps } from '../app.js';
+import type { Clock } from '../clock.js';
+import type { Db } from '../db/index.js';
+import type { MealSlot, SlotWithPortion } from '../wire-types.js';
+import { portionOf } from '../domain/portion.js';
 import {
   bookSlot,
   cancelSlot,
@@ -46,12 +50,44 @@ const recentQuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(90).default(7),
 });
 
+/**
+ * 组装带份量的餐槽。份量**不落库、每次现算**（年龄随时钟走：小孩生日当天的份量就该变），
+ * 未定就没有菜单、也就没有份量。
+ *
+ * 名单里的用餐者是**当时的快照**：家人后来被删不改写历史，所以查不到的人按成人份算
+ * （`assumeAdult`）而不是让整张卡读取失败——为了一个已经删掉的家人把那一餐的份量
+ * 全部废掉，代价与收益完全不对等。
+ */
+function withPortion(db: Db, clock: Clock, slot: MealSlot): SlotWithPortion {
+  return {
+    ...slot,
+    portion: slot.menu
+      ? portionOf(
+          db,
+          clock,
+          { diners: slot.menu.diners.map((diner) => diner.memberId), dishes: slot.menu.dishes },
+          { missingMembers: 'assumeAdult' },
+        )
+      : null,
+  };
+}
+
 export function registerSlotRoutes(api: Hono, deps: AppDeps): void {
   const { db, clock } = deps;
 
   api.get('/slots', zodValidator('query', listQuerySchema), (c) => {
     const { days } = c.req.valid('query');
-    return c.json({ today: todayOf(clock), slots: listUpcomingSlots(db, clock, days) });
+    try {
+      return c.json({
+        today: todayOf(clock),
+        slots: listUpcomingSlots(db, clock, days).map((slot) => withPortion(db, clock, slot)),
+      });
+    } catch (error) {
+      // 存量脏数据（手改库 / 旧版本留下的空名单菜单）会让份量算不出来。
+      // 这里必须转成 JSON 错误：直接抛会得到 HTML 500，前端 parse 时报的是「JSON 语法错」
+      // 这种与真因无关的错，排查时先把人带偏。
+      return bookingError(c, undefined, error);
+    }
   });
 
   // 「最近吃过」（总纲 §3 决议 3：直接查事件流）。路径不放在 /slots/:id 下：
@@ -66,13 +102,18 @@ export function registerSlotRoutes(api: Hono, deps: AppDeps): void {
     const parsed = parseSlotId(id);
     if (!parsed) return c.json({ error: 'invalid_slot_id', id }, 400);
     const slot = foldSlot(db, clock, parsed.date, parsed.meal);
-    return c.json({ slot, history: listSlotEvents(db, id) });
+    try {
+      return c.json({ slot: withPortion(db, clock, slot), history: listSlotEvents(db, id) });
+    } catch (error) {
+      return bookingError(c, id, error);
+    }
   });
 
   api.put('/slots/:id', zodValidator('json', bookingSchema), (c) => {
     const id = c.req.param('id');
     try {
-      return c.json({ slot: bookSlot(db, clock, id, c.req.valid('json')) });
+      const slot = bookSlot(db, clock, id, c.req.valid('json'));
+      return c.json({ slot: withPortion(db, clock, slot) });
     } catch (error) {
       return bookingError(c, id, error);
     }
@@ -93,15 +134,15 @@ export function registerSlotRoutes(api: Hono, deps: AppDeps): void {
  * 领域错误 → 明确的 4xx：界面要能说清「是哪一条没救回来」（哪个人不在家人列表、哪道菜不在菜谱库），
  * 而不是笼统一句失败。
  */
-function bookingError(c: Context, id: string, error: unknown): Response {
+function bookingError(c: Context, id: string | undefined, error: unknown): Response {
   if (error instanceof SlotPassedError) return c.json({ error: 'slot_passed', id }, 400);
   if (error instanceof SlotNotDecidedError) return c.json({ error: 'not_decided', id }, 404);
   if (error instanceof InvalidSlotIdError) return c.json({ error: 'invalid_slot_id', id }, 400);
   if (error instanceof UnknownRecipeError) return c.json({ error: 'unknown_recipe', recipeId: error.recipeId }, 400);
   if (error instanceof RecipeRetiredError) return c.json({ error: 'recipe_retired', recipeId: error.recipeId }, 400);
   if (error instanceof UnknownMemberError) return c.json({ error: 'unknown_member', memberId: error.memberId }, 400);
-  if (error instanceof EmptyDinersError) return c.json({ error: 'empty_diners' }, 400);
-  if (error instanceof EmptyDishesError) return c.json({ error: 'empty_dishes' }, 400);
+  if (error instanceof EmptyDinersError) return c.json({ error: 'empty_diners', id }, 400);
+  if (error instanceof EmptyDishesError) return c.json({ error: 'empty_dishes', id }, 400);
   if (error instanceof DuplicateDishError) return c.json({ error: 'duplicate_dish', recipeId: error.recipeId }, 400);
   throw error;
 }

@@ -6,6 +6,7 @@ import type { LlmClient } from './llm/types.js';
 import { registerHealthRoutes } from './api/health.js';
 import { registerIngredientRoutes } from './api/ingredients.js';
 import { registerMemberRoutes } from './api/members.js';
+import { registerPortionRoutes } from './api/portion.js';
 import { registerRecipeRoutes } from './api/recipes.js';
 import { registerSlotRoutes } from './api/slots.js';
 import { createIndexHandler, createManifestHandler, createStaticMiddleware } from './static.js';
@@ -45,6 +46,7 @@ export function createApp(options: AppOptions): Hono {
   registerHealthRoutes(api, options);
   registerIngredientRoutes(api, options);
   registerMemberRoutes(api, options);
+  registerPortionRoutes(api, options);
   registerRecipeRoutes(api, options);
   registerSlotRoutes(api, options);
   app.route(joinBase(basePath, '/api'), api);
