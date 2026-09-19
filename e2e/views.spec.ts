@@ -532,6 +532,72 @@ test('C 长辈小孩极简：午餐没标留量时没有「吃剩的」大按钮
   await expect(page.getByTestId('simple-manual')).toBeVisible();
 });
 
+/**
+ * C 的回声要能区分「重拉还在飞」与「拉到了真是未定」（S4、S9）。
+ *
+ * 场景：定下留量 → 别处取消了被引用的午餐 → 服务端把这一餐联动画回未定（`released`）。
+ * 定完的那一刻 `invalidateQueries` 会重拉餐槽列表，而取消可能发生在那次重拉的路上；
+ * 两个时刻的缓存里都可能是「未定」，但语义完全相反：
+ *   * 重拉还没回来时，缓存里是**敲之前的旧读数**——不能把回声丢掉（否则家人刚按完大按钮，
+ *     屏上闪回「还没定」那一步、大按钮又冒出来）；
+ *   * 重拉回来（且带回了服务端联动画回未定的事实）后，未定是**真值**——必须丢掉回声。
+ *     留着它，C 就会显示过期的留量说明 + `simple-cancel-leftover`，点下去只会拿到
+ *     `not_decided`；而 A 此刻显示的是未定卡，两视图不一致。
+ *
+ * 这条就是那两格的判别性证据：先把定完后的那次重拉**按在网里**（断言回声仍在，即 a 不闪），
+ * 再在它达到之前取消午餐，然后放行——重拉带回真值，回声必须消失（b）。只看 `status` 的实现
+ * 过不了前半段（重拉在飞时它已经丢掉回声），完全不看 `isFetching` 的实现过不了后半段。
+ */
+test('C 长辈小孩极简：被引用的午餐取消后，回声不留在过期的留量读数上（S4、S9）', async ({ page }) => {
+  await clearDecidedSlots(page);
+  await page.goto(`${ROOT_URL}/`);
+  await switchView(page, 'C');
+  const { lunch, dinner } = await bookLeftoverLunch(page);
+  await page.reload();
+  await expect(page.getByTestId('simple-leftover')).toBeVisible();
+
+  // 卡住「定完留量」触发的那一次餐槽重拉（`GET /api/slots?days=3`），拿到它的放行权：
+  // 重拉没回来之前，缓存里还是旧读数——这一格就是 a（不能闪回未定）。
+  let arrived!: () => void;
+  const arrivedPromise = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
+  let release!: () => void;
+  const releasedPromise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const slotsListRequest = (url: URL): boolean =>
+    url.pathname === '/api/slots' && url.searchParams.get('days') === '3';
+  await page.route(slotsListRequest, async (route) => {
+    arrived();
+    await releasedPromise;
+    await route.continue();
+  });
+
+  // 定下留量：回声上屏，而重拉被按在网里
+  await page.getByTestId('simple-leftover').click();
+  await arrivedPromise;
+  await expect(page.getByTestId('simple-leftover-note')).toBeVisible();
+  await expect(page.getByTestId('simple-cancel-leftover')).toBeVisible();
+  // 重拉在飞：不能闪回「还没定」那一步（大按钮不该冒出来）
+  await expect(page.getByTestId('simple-leftover')).toBeHidden();
+
+  // 另一台设备取消被引用的午餐：服务端把晚餐联动画回未定，并在响应里点名（`released`）
+  const cancelled = await page.request.delete(`${ROOT_URL}/api/slots/${lunch}`);
+  expect(cancelled.ok(), `取消午餐失败：HTTP ${cancelled.status()}`).toBe(true);
+  expect(((await cancelled.json()) as { released: string[] }).released).toEqual([dinner]);
+  expect((await bookingSnapshot(page, dinner)).status, '服务端已经把晚餐联动画回未定').toBe('undecided');
+
+  // 放行重拉：它带回的是**真值**（晚餐已经未定）——回声必须丢掉，回一屏一事
+  release();
+  await expect(page.getByTestId('simple-leftover-note')).toBeHidden();
+  await expect(page.getByTestId('simple-cancel-leftover')).toBeHidden();
+  await expect(page.getByTestId('simple-recommend')).toBeVisible();
+  await expect(page.getByTestId('simple-manual')).toBeVisible();
+
+  await page.unroute(slotsListRequest);
+});
+
 test('B 掌勺者紧凑流：按天时间轴、行内展开看到份量与留量、可直接取消（S9）', async ({ page }) => {
   await clearDecidedSlots(page);
   const slotId = await nextUndecidedSlot(page);

@@ -56,7 +56,11 @@ export function SimpleView() {
 
   const isLeftover = (slot: SlotWithPortion): boolean => slot.menu !== null && slot.menu.leftoverSlotId !== null;
   const resumed = booked === null ? undefined : slots.find((slot) => slot.id === booked.id);
-  const echo = booked === null ? undefined : keepEcho(booked, resumed);
+  // 「查询还没落定」必须用查询自己的信号判：`status` 分不出「缓存里还是敲之前的旧未定」与
+  // 「已经拉到真值、真的未定了」——只看 status 会让前者闪回未定（见 `keepEcho` 的注释）。
+  // `isPaused` 也算没落定：刚定完就断网时，那次重拉会暂停在那里，缓存里仍是旧读数。
+  const refetchPending = slotsQuery.isFetching || slotsQuery.isPaused;
+  const echo = booked === null ? undefined : keepEcho(booked, resumed, refetchPending);
 
   /**
    * 「已定成吃剩的」的那一餐（等于 A 大卡的 `hero-leftover`）什么时候上屏：
@@ -222,16 +226,32 @@ export function SimpleView() {
 }
 
 /**
- * 回声该显示哪一份读数（刚在本屏定下的那一餐）：
+ * 回声该显示哪一份读数（刚在本屏定下的那一餐）。三段语义，按「服务端是否已经给出结论」分：
+ *   * 列表里**没有**它 → 用落库响应顶着（列表窗口里本该看得到刚定的这一餐；真没有时也不能闪）；
  *   * 列表里那一份**已定** → 服务端已经给出结论：还是留量就用它（菜名从被引用那一餐现推导，
- *     午餐改了菜这里跟着变）；不是留量了（午餐被改、这一餐被联动画回未定…）就丢掉回声；
- *   * 列表里还没有 / 还是敲之前那份未定数据 → 用落库响应顶着：否则家人刚按完大按钮，
- *     屏上会闪回「还没定」那一步（按钮又冒出来）。C 没有别的反馈渠道，闪一下比滞后更难理解。
- *     （与 A 同一局限：别人在另一台设备上取消午餐、而本页查询未重拉时，两边都会先显示旧的一份。）
+ *     午餐改了菜这里跟着变）；不是留量了（午餐被改回普通菜单…）就丢掉回声；
+ *   * 列表里那一份**还是未定** → 还要分「还没拉到」与「拉到了且真是未定」：
+ *       - `refetchPending`（`invalidateQueries` 触发的重拉还在飞，或断网被暂停）→ 缓存里是敲之前
+ *         的**旧**读数，先用落库响应顶住：否则家人刚按完大按钮，屏上会闪回「还没定」那一步
+ *         （按钮又冒出来）。C 没有别的反馈渠道，闪一下比滞后更难理解。
+ *       - 否则（重拉已经落定）→ 服务端确实把这一餐联动画回了未定（比如被引用的午餐被取消），
+ *         这是**真值**：丢掉回声。留着它会让 C 显示过期的留量说明 + `simple-cancel-leftover`，
+ *         点下去只会拿到 `not_decided`，而 A 此刻显示的是未定卡——两视图不一致。
+ *
+ * 为什么不能简单看 `status`：`status !== 'decided'` 同时落在上面那两种读数上（重拉在飞时缓存里
+ * 仍是旧的 `undecided`，拉到之后才是真的 `undecided`），只有查询自己的「还没落定」信号分得开。
+ * （与 A 同一局限：别人在另一台设备上取消午餐、而本页查询未重拉时，两边都会先显示旧的一份。）
  */
-function keepEcho(booked: SlotWithPortion, resumed: SlotWithPortion | undefined): SlotWithPortion | undefined {
-  if (resumed === undefined || resumed.status !== 'decided') return booked;
-  return resumed.menu !== null && resumed.menu.leftoverSlotId !== null ? resumed : undefined;
+function keepEcho(
+  booked: SlotWithPortion,
+  resumed: SlotWithPortion | undefined,
+  refetchPending: boolean,
+): SlotWithPortion | undefined {
+  if (resumed === undefined) return booked;
+  if (resumed.status === 'decided') {
+    return resumed.menu !== null && resumed.menu.leftoverSlotId !== null ? resumed : undefined;
+  }
+  return refetchPending ? booked : undefined;
 }
 
 /** 两步向导：1 谁吃（名单）→ 2 吃这些（每道可换、整套可换可撤销、就这么吃） */
