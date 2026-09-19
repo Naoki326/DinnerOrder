@@ -13,6 +13,7 @@ import {
   DuplicateDishError,
   EmptyDinersError,
   EmptyDishesError,
+  InvalidSlotIdError,
   UnknownMemberError,
   UnknownRecipeError,
 } from '../domain/slots.js';
@@ -43,7 +44,15 @@ const dishesSchema = z
   )
   .min(1, '菜单里至少要有一道菜');
 
-const previewSchema = z.object({ diners: dinersSchema, dishes: dishesSchema });
+const previewSchema = z.object({
+  diners: dinersSchema,
+  dishes: dishesSchema,
+  /**
+   * 正在编辑哪个餐槽（#22）：带上它，编辑器里才能看见留量上浮真的生效了
+   * （上浮要问「这一餐有没有被『吃剩的』引用」）。缺省 = 草稿（无引用）。
+   */
+  slotId: z.string().min(1).optional(),
+});
 
 const convertQuerySchema = z.object({
   /** 互换表条目 id（知道条目名时先打 GET /portion/exchange 找 id） */
@@ -72,7 +81,8 @@ export function registerPortionRoutes(api: Hono, deps: AppDeps): void {
 
   api.post('/portion/preview', zodValidator('json', previewSchema), (c) => {
     try {
-      return c.json({ portion: portionOf(db, clock, c.req.valid('json')) });
+      const { slotId, ...input } = c.req.valid('json');
+      return c.json({ portion: portionOf(db, clock, input, { slotId }) });
     } catch (error) {
       return portionError(c, error);
     }
@@ -82,8 +92,13 @@ export function registerPortionRoutes(api: Hono, deps: AppDeps): void {
 /**
  * 领域错误 → 明确的 4xx（与 slots 的 bookingError 同口径，各路由各自映射——
  * 依赖同一个领域错误类型，但对外报的字段名跟着本路由的入参走）。
+ *
+ * 这里的 `invalid_slot_id` 是**必须报**的：`slotId` 说了「我在算哪一餐」，传了一个不是餐槽的
+ * id 时只有两种选择——报错，或者当作「无引用」算出一份少乘系数的读数。后者看起来一切正常，
+ * 却会让调用方在几条数据之间对不上账。
  */
 function portionError(c: Context, error: unknown): Response {
+  if (error instanceof InvalidSlotIdError) return c.json({ error: 'invalid_slot_id', id: error.id }, 400);
   if (error instanceof UnknownRecipeError) return c.json({ error: 'unknown_recipe', recipeId: error.recipeId }, 400);
   if (error instanceof UnknownMemberError) return c.json({ error: 'unknown_member', memberId: error.memberId }, 400);
   if (error instanceof EmptyDinersError) return c.json({ error: 'empty_diners' }, 400);

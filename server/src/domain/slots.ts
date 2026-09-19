@@ -3,6 +3,7 @@ import type { Clock } from '../clock.js';
 import type {
   BookingSource,
   DinerRef,
+  LeftoverSource,
   LlmCallMeta,
   MealEvent,
   MealEventType,
@@ -45,6 +46,7 @@ interface EventRow {
   llm_prompt_version: string | null;
   llm_latency_ms: number | null;
   llm_degraded: number | null;
+  leftover_menu_slot_id: string | null;
 }
 
 interface DinersRow {
@@ -98,15 +100,27 @@ export function foldSlot(db: Db, clock: Clock, date: string, meal: MealKind): Me
 
 function toSlot(db: Db, clock: Clock, date: string, meal: MealKind, history: MealEvent[]): MealSlot {
   const last = history[history.length - 1];
-  const decided = last !== undefined && last.type !== 'cancel';
+  // 「吃剩的」那一餐没有自己的菜品快照（吃的就是被引用那一餐多做的那几道）：
+  // 菜单从被引用那一餐**现推导**，于是中午改了菜、晚餐跟着变，两边不会各说各的。
+  const declaresLeftover = last !== undefined && last.type !== 'cancel' && last.leftoverSlotId !== null;
+  const leftover = declaresLeftover ? leftoverSourceOf(db, date, meal) : null;
+  // 引用指不着东西的那一餐**当未定读**（而不是「已定但零道菜」）：一份菜单至少要有一道菜，
+  // 「已定 + 空菜单」是个自相矛盾的状态，下一站就是读接口报错。正常路径上走不到这里
+  // （取消联动会先把引用方退回未定），兜的是手改库/删库留下的悬空引用。
+  const decided = last !== undefined && last.type !== 'cancel' && (last.leftoverSlotId === null || leftover !== null);
   return {
     id: slotId(date, meal),
     date,
     meal,
     status: decided ? 'decided' : 'undecided',
-    menu: decided ? { diners: last.diners, dishes: last.dishes } : null,
+    menu: decided
+      ? leftover === null
+        ? { diners: last.diners, dishes: last.dishes, leftoverSlotId: null }
+        : { diners: last.diners, dishes: leftover.dishes, leftoverSlotId: leftover.slotId }
+      : null,
     editable: !hasMealPassed(db, clock, date, meal),
     canUndoSet: canUndoSet(history),
+    leftoverSource: leftoverSourceOf(db, date, meal),
   };
 }
 
@@ -131,7 +145,7 @@ export function listSlotEvents(db: Db, id: string): MealEvent[] {
   const rows = db
     .prepare(
       `SELECT seq, slot_id, slot_date, meal, type, source, occurred_at,
-              llm_model, llm_prompt_version, llm_latency_ms, llm_degraded
+              llm_model, llm_prompt_version, llm_latency_ms, llm_degraded, leftover_menu_slot_id
          FROM meal_events WHERE slot_id = ? ORDER BY seq`,
     )
     .all(id) as EventRow[];
@@ -178,8 +192,81 @@ export function listSlotEvents(db: Db, id: string): MealEvent[] {
     source: row.source,
     diners: diners.get(row.seq) ?? [],
     dishes: dishes.get(row.seq) ?? [],
+    leftoverSlotId: row.leftover_menu_slot_id,
     llm: llmMeta(row),
   }));
+}
+
+// ---------------------------------------------------------------- 「吃剩的」引用（#22）
+
+/**
+ * 一餐能被「吃剩的」引用的是**同日午餐**：晚餐吃中午剩的（总纲 §2.6）。
+ * 午餐没有可引用的上一餐（早餐不进模型），所以只有晚餐有这个形态。
+ */
+export function leftoverSlotOf(date: string, meal: MealKind): string | null {
+  return meal === 'dinner' ? slotId(date, 'lunch') : null;
+}
+
+/** 某餐槽当前有效的那条事件（最后一条，取消也算它就是当前状态）；没有事件返回 undefined */
+function lastEventOf(db: Db, id: string): MealEvent | undefined {
+  return listSlotEvents(db, id).at(-1);
+}
+
+/**
+ * 某一餐「吃剩的」来源：同日午餐**当前可吃**的留量菜品。
+ * 午餐还没定 / 已被取消 / 一道菜都没标留量 → null（没有可吃剩的）。
+ */
+function leftoverSourceOf(db: Db, date: string, meal: MealKind): LeftoverSource | null {
+  const sourceId = leftoverSlotOf(date, meal);
+  if (sourceId === null) return null;
+  const source = lastEventOf(db, sourceId);
+  if (!source || source.type === 'cancel') return null;
+  const dishes = source.dishes.filter((dish) => dish.keepLeftover);
+  if (dishes.length === 0) return null;
+  return { slotId: sourceId, dishes };
+}
+
+/** 当前有效事件里还引用着 `id` 的餐槽（按槽 id 排序） */
+function referencingSlots(
+  db: Db,
+  id: string,
+): { slot_id: string; slot_date: string; meal: MealKind }[] {
+  return db
+    .prepare(
+      `SELECT e.slot_id, e.slot_date, e.meal FROM meal_events e
+        WHERE e.leftover_menu_slot_id = ?
+          -- 只看每个餐槽的最后一条事件：改餐把引用改掉了就不算引用
+          AND e.seq = (SELECT MAX(e2.seq) FROM meal_events e2 WHERE e2.slot_id = e.slot_id)
+        ORDER BY e.slot_id`,
+    )
+    .all(id) as { slot_id: string; slot_date: string; meal: MealKind }[];
+}
+
+/** 这一餐当前事件里标了留量的菜（被引用方视角：有没有可吃剩的） */
+function keptDishCount(db: Db, id: string): number {
+  const last = lastEventOf(db, id);
+  if (!last || last.type === 'cancel') return 0;
+  return last.dishes.filter((dish) => dish.keepLeftover).length;
+}
+
+/**
+ * 这一餐此刻有没有「生效中的留量引用」（总纲 §2.6 的「有效引用」）——份量引擎据此决定上浮。
+ *
+ * 两个方向都算生效：
+ *   * 本餐是「吃剩的」引用方：它没有多买菜，但端的正是被引用那一餐多做的那几道，读数照上浮；
+ *   * 本餐是被引用方（同日午餐）：多做的那几道正是给它留的。
+ *
+ * 取消联动之后引用方退回未定、被引用方退回未定，两边都自然不再生效——不需要另存状态位。
+ */
+export function leftoverReferenceActive(db: Db, id: string): boolean {
+  const parsed = parseSlotId(id);
+  // 不合法的 id 没有「有没有引用」可言：当「无引用」静默返回 false 会让调用方拿到一个
+  // 看着正常、其实少乘了一个系数的读数。宁可明确报错（与餐槽路由同一种 400 形状）。
+  if (!parsed) throw new InvalidSlotIdError(id);
+  const mine = lastEventOf(db, id);
+  if (!mine || mine.type === 'cancel') return false;
+  if (mine.leftoverSlotId !== null) return leftoverSourceOf(db, parsed.date, parsed.meal) !== null;
+  return referencingSlots(db, id).length > 0;
 }
 
 function llmMeta(row: EventRow): LlmCallMeta | null {
@@ -276,6 +363,9 @@ export class NothingToUndoError extends Error {
  * 定餐 = 改餐（总纲 §2.1：同一个编辑器）：把整份菜单一次性落成一条事件。
  * 未定 → 第一条是「预定」；已定 → 后续每条都是「改餐」。事件只追加，不改写历史。
  *
+ * 「吃剩的」（#22、总纲 §2.6）：`booking.leftoverOf` 指名被引用那一餐时，本餐落成**引用形态**
+ * ——不存自己的菜品快照（吃什么从被引用那一餐现推导），留量上浮记在被引用那一餐的留量菜上。
+ *
  * 内容与当前状态完全相同时不追事件：ADR-0007 留痕的是「菜单的变化」，
  * 手机双击保存不该在历史里多出两条一模一样的记录。
  */
@@ -285,7 +375,13 @@ export function bookSlot(db: Db, clock: Clock, id: string, booking: SlotBooking)
   if (hasMealPassed(db, clock, parsed.date, parsed.meal)) throw new SlotPassedError(id);
 
   const diners = resolveDiners(db, booking.diners);
-  const dishes = resolveDishes(db, booking.dishes);
+  const leftoverOf = booking.leftoverOf ?? null;
+  // 「吃剩的」形态与自带菜单互斥：两份菜单（本餐的快照 vs 被引用那一餐的菜）一旦并存，
+  // 「这一餐到底吃什么」就有两个说得通、但会漂移的答案。宁可 400 也不存一个要自己解释的菜单。
+  if (leftoverOf !== null && booking.dishes.length > 0) throw new LeftoverWithDishesError(id);
+  const dishes = leftoverOf === null ? resolveDishes(db, booking.dishes) : [];
+  if (leftoverOf !== null) assertLeftoverSource(db, parsed.date, parsed.meal, id, leftoverOf);
+
   const source: BookingSource = booking.source ?? 'manual';
   // 元数据只在「接受推荐」时合法：手动挑菜却声称「这是 LLM 推的」会在留痕里变成假证据，
   // 而留痕的全部价值就是可回溯——宁可 400 也别写一条解释不了的记录。
@@ -300,27 +396,68 @@ export function bookSlot(db: Db, clock: Clock, id: string, booking: SlotBooking)
   const append = db.transaction((): void => {
     const now = listSlotEvents(db, id);
     const current = now[now.length - 1];
-    if (current && current.type !== 'cancel' && sameMenu(current, diners, dishes) && current.source === source) return;
-    insertEvent(db, clock, {
-      id,
-      date: parsed.date,
-      meal: parsed.meal,
-      type: eventTypeFor(current, source),
-      source,
-      diners,
-      dishes,
-      llm: booking.llm,
-    });
+    const changed =
+      !current ||
+      current.type === 'cancel' ||
+      !sameMenu(current, diners, dishes, leftoverOf) ||
+      current.source !== source;
+    if (changed) {
+      insertEvent(db, clock, {
+        id,
+        date: parsed.date,
+        meal: parsed.meal,
+        type: eventTypeFor(current, source),
+        source,
+        diners,
+        dishes,
+        leftoverOf,
+        llm: booking.llm,
+      });
+    }
+    // 改午餐把留量标记全拆了：引用它的晚餐就再没有可吃剩的菜了。留在「已定 + 零道菜」
+    // 不是一份说得通的菜单（菜单至少要有一道菜），所以在这里就把它退回去（同一条事务）。
+    // 引用还有效时晚餐照常跟着新菜单变（现推导的意义），不必动它。
+    if (parsed.meal === 'lunch' && keptDishCount(db, id) === 0) releaseReferencingSlots(db, clock, id);
   });
   append();
   return foldSlot(db, clock, parsed.date, parsed.meal);
 }
 
-/** 取消：已定 → 未定（历史留痕）。已经未定的餐槽没有可取消的东西，报 404。 */
-export function cancelSlot(db: Db, clock: Clock, id: string): void {
+/**
+ * 「吃剩的」引用必须指得着东西（总纲 §2.6 的「有效引用」）：
+ *   * 只接受**同日午餐**（晚餐吃中午剩的）；
+ *   * 那一餐得已定且当前有效（被取消过的不能再引用）；
+ *   * 而且至少有一道标了留量的菜——没有留量就没有可吃剩的，那一餐的语义是空的。
+ *
+ * 取消联动的另一半在 `cancelSlot`：午餐被取消时会把引用它的晚餐退回未定，
+ * 所以这里的检查只需面对「现在还没定过 / 已取消」这两种情况。
+ */
+function assertLeftoverSource(db: Db, date: string, meal: MealKind, id: string, referencedId: string): void {
+  // 只有晚餐有「吃剩的」形态：`leftoverSlotOf` 对午餐返回 null，于是一律拒掉
+  const expected = leftoverSlotOf(date, meal);
+  if (expected === null || referencedId !== expected) {
+    throw new InvalidLeftoverReferenceError(id, referencedId);
+  }
+  const referenced = parseSlotId(referencedId);
+  const source = referenced === undefined ? undefined : lastEventOf(db, referencedId);
+  if (!referenced || !source || source.type === 'cancel') throw new InvalidLeftoverReferenceError(id, referencedId);
+  if (!source.dishes.some((dish) => dish.keepLeftover)) {
+    throw new NothingToReheatError(id, referencedId);
+  }
+}
+
+/**
+ * 取消：已定 → 未定（历史留痕）。已经未定的餐槽没有可取消的东西，报 404。
+ *
+ * **联动**（总纲 §3 决议 4）：取消被「吃剩的」引用的那一餐时，引用方餐槽自动退回未定，
+ * 并返回被退回的槽 id（界面据此提示「晚餐已经跟着取消了」）。退回走的是**再追加一条取消事件**
+ * ——ADR-0007 没有可改的状态表，也不该有：联动本身也是一次「菜单的变化」，要留下痕迹。
+ */
+export function cancelSlot(db: Db, clock: Clock, id: string): string[] {
   const parsed = parseSlotId(id);
   if (!parsed) throw new InvalidSlotIdError(id);
 
+  let released: string[] = [];
   const append = db.transaction((): void => {
     const history = listSlotEvents(db, id);
     const current = history[history.length - 1];
@@ -333,9 +470,40 @@ export function cancelSlot(db: Db, clock: Clock, id: string): void {
       source: 'manual',
       diners: [],
       dishes: [],
+      leftoverOf: null,
     });
+    released = releaseReferencingSlots(db, clock, id);
   });
   append();
+  return released;
+}
+
+/**
+ * 把当前还引用着 `id` 的餐槽退回未定（一条 cancel 事件），返回被退回的槽 id。
+ *
+ * 两处触发（都是「被引用的那一餐没有可吃剩的了」）：
+ *   * `cancelSlot`：本餐被取消（总纲 §3 决议 4 明写的联动）；
+ *   * `bookSlot`：本餐被改得一道留量菜都没有了（引用失效；不是取消，但引用方同样不能再停
+ *     在「已定 + 零道菜」上）。
+ *
+ * 「还引用着」按每个餐槽的**最后一条事件**判：引用早被改餐改掉的餐槽不会被这一下误伤。
+ * 取消事件不带引用字段（取消就是没有这一餐，引用关系一并消失）。
+ */
+function releaseReferencingSlots(db: Db, clock: Clock, id: string): string[] {
+  const rows = referencingSlots(db, id);
+  for (const row of rows) {
+    insertEvent(db, clock, {
+      id: row.slot_id,
+      date: row.slot_date,
+      meal: row.meal,
+      type: 'cancel',
+      source: 'manual',
+      diners: [],
+      dishes: [],
+      leftoverOf: null,
+    });
+  }
+  return rows.map((row) => row.slot_id);
 }
 
 /**
@@ -361,6 +529,16 @@ export function undoSet(db: Db, clock: Clock, id: string): MealSlot {
     const previous = history[history.length - 2];
     if (!previous || previous.type === 'cancel') throw new NothingToUndoError(id);
 
+    // 上一套是「吃剩的」时，它得**现在还指得着**才回得去：
+    //   dinner 定成吃剩的 → 换成整套推荐（引用没了）→ 午餐被取消 → 这时撤销，
+    //   previous 里那个引用已经指向一餐不存在的午餐了。回不去不是 bug：那一套的菜
+    //   （多做的那几道）本来就不存在了，而「吃剩的」事件又不带菜品快照，恢复不出一份菜单。
+    //   （读侧把悬空引用当未定读作为兼底，但那条路不该被写出来。）
+    if (previous.leftoverSlotId !== null) {
+      const source = leftoverSourceOf(db, parsed.date, parsed.meal);
+      if (source === null || source.slotId !== previous.leftoverSlotId) throw new NothingToUndoError(id);
+    }
+
     insertEvent(db, clock, {
       id,
       date: parsed.date,
@@ -369,6 +547,9 @@ export function undoSet(db: Db, clock: Clock, id: string): MealSlot {
       source: 'manual',
       diners: previous.diners,
       dishes: previous.dishes,
+      // 撤销退回的是上一条事件的**内容**，连同它的「吃剩的」引用一起：
+      // 只退菜不退引用，会让一份「吃剩的」菜单失去它的由来（留痕就断了）。
+      leftoverOf: previous.leftoverSlotId,
     });
   });
   append();
@@ -383,6 +564,8 @@ interface NewEvent {
   source: BookingSource;
   diners: DinerRef[];
   dishes: MenuDish[];
+  /** 「吃剩的」引用（#22）：普通定餐（含改餐/撤销/取消）为空 */
+  leftoverOf: string | null;
   /** 接受推荐时带的 LLM 元数据（手动定餐为 undefined） */
   llm?: LlmCallMeta;
 }
@@ -405,8 +588,8 @@ function insertEvent(db: Db, clock: Clock, event: NewEvent): void {
     .prepare(
       `INSERT INTO meal_events
          (slot_id, slot_date, meal, type, source, occurred_at,
-          llm_model, llm_prompt_version, llm_latency_ms, llm_degraded)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          llm_model, llm_prompt_version, llm_latency_ms, llm_degraded, leftover_menu_slot_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       event.id,
@@ -420,6 +603,7 @@ function insertEvent(db: Db, clock: Clock, event: NewEvent): void {
       event.llm?.promptVersion ?? null,
       event.llm?.latencyMs ?? null,
       event.llm === undefined ? null : event.llm.degraded ? 1 : 0,
+      event.leftoverOf,
     );
   const seq = Number(result.lastInsertRowid);
 
@@ -485,7 +669,10 @@ export function resolveDishes(
   });
 }
 
-function sameMenu(event: MealEvent, diners: DinerRef[], dishes: MenuDish[]): boolean {
+function sameMenu(event: MealEvent, diners: DinerRef[], dishes: MenuDish[], leftoverOf: string | null): boolean {
+  // 引用形态变了就是菜单变了（同一份菜但引用关系不同 = 不同的餐）：
+  // 否则「吃剩的」与同菜单的普通定餐会互相短跑，留痕里看不出这一餐是怎么来的。
+  if (event.leftoverSlotId !== leftoverOf) return false;
   if (event.diners.length !== diners.length || event.dishes.length !== dishes.length) return false;
   const sameDiners = event.diners.every((diner, index) => diner.memberId === diners[index]!.memberId);
   const sameDishes = event.dishes.every(
@@ -540,6 +727,36 @@ export class LlmMetaWithoutRecommendationError extends Error {
   constructor(readonly id: string) {
     super(`只有 source='recommendation' 的定餐能携带 LLM 元数据：${id}`);
     this.name = 'LlmMetaWithoutRecommendationError';
+  }
+}
+
+/** 「吃剩的」引用指的不是同日午餐（午餐没有可引用的上一餐；跨日引用没有语义） */
+export class InvalidLeftoverReferenceError extends Error {
+  constructor(
+    readonly id: string,
+    readonly referencedId: string,
+  ) {
+    super(`「吃剩的」只能引用同一日的午餐：${id} → ${referencedId}`);
+    this.name = 'InvalidLeftoverReferenceError';
+  }
+}
+
+/** 被引用的那一餐没有一道标了留量的菜（没有可吃剩的，「吃剩的」这句话是空的） */
+export class NothingToReheatError extends Error {
+  constructor(
+    readonly id: string,
+    readonly referencedId: string,
+  ) {
+    super(`被引用的那一餐没有标记留量的菜：${referencedId}`);
+    this.name = 'NothingToReheatError';
+  }
+}
+
+/** 「吃剩的」形态不接受自带菜单（吃什么从被引用那一餐推导，两个来源会打架） */
+export class LeftoverWithDishesError extends Error {
+  constructor(readonly id: string) {
+    super(`「吃剩的」那一餐不接受自带菜单（吃的是被引用那一餐多做的那几道）：${id}`);
+    this.name = 'LeftoverWithDishesError';
   }
 }
 

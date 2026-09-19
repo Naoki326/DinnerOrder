@@ -115,6 +115,17 @@
   color: var(--warn);
 }
 
+/* 「吃剩的」的那条提示（#22）：是**说明**而不是警告（没有出错，只是不另采购），
+   所以用强调色的浅底，不借用 .recommendNote 的警示色。 */
+.leftoverNote {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .recommendDish {
   display: flex;
   align-items: baseline;

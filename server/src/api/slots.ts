@@ -13,10 +13,13 @@ import {
   EmptyDinersError,
   EmptyDishesError,
   foldSlot,
+  InvalidLeftoverReferenceError,
   InvalidSlotIdError,
+  LeftoverWithDishesError,
   listSlotEvents,
   listUpcomingSlots,
   LlmMetaWithoutRecommendationError,
+  NothingToReheatError,
   NothingToUndoError,
   parseSlotId,
   recentDishes,
@@ -40,7 +43,11 @@ const bookingSchema = z.object({
         keepLeftover: z.boolean().optional(),
       }),
     )
-    .min(1, '菜单里至少要有一道菜'),
+    // 「吃剩的」那一餐自带菜单必须为空，所以「至少一道」不能在这里拦（那是普通形态的规矩）；
+    // 两种形态的取舍由领域层判定，它才知道这一条请求是哪种。
+    .default([]),
+  /** 「吃剩的」引用（#22）：填同日午餐的槽 id；`superRefine` 把「引用 ⟺ 不带菜单」说清 */
+  leftoverOf: z.string().min(1).optional(),
   source: z.enum(['manual', 'recommendation']).optional(),
   /** 接受推荐时回传的 LLM 元数据（形状见 wire-types；服务端只用它留痕，不参与判定） */
   llm: z
@@ -53,6 +60,15 @@ const bookingSchema = z.object({
       degraded: z.boolean(),
     })
     .optional(),
+}).superRefine((booking, ctx) => {
+  // 普通定餐没有菜、与「吃剩的」还带了菜，都是「这一餐吃什么」说不清的情况。
+  // 在形状层就把话说满，两条错误各自指认字段（领域层再拦一道，防直接调域的调用方）。
+  if (booking.leftoverOf === undefined && booking.dishes.length === 0) {
+    ctx.addIssue({ code: 'custom', path: ['dishes'], message: '菜单里至少要有一道菜' });
+  }
+  if (booking.leftoverOf !== undefined && booking.dishes.length > 0) {
+    ctx.addIssue({ code: 'custom', path: ['dishes'], message: '「吃剩的」那一餐不带菜单（吃的是被引用那一餐多做的那几道）' });
+  }
 });
 
 const listQuerySchema = z.object({
@@ -81,7 +97,8 @@ function withPortion(db: Db, clock: Clock, slot: MealSlot): SlotWithPortion {
           db,
           clock,
           { diners: slot.menu.diners.map((diner) => diner.memberId), dishes: slot.menu.dishes },
-          { missingMembers: 'assumeAdult' },
+          // 带上餐槽 id：留量上浮要问「这一餐有没有生效中的『吃剩的』引用」（#22）
+          { missingMembers: 'assumeAdult', slotId: slot.id },
         )
       : null,
   };
@@ -137,8 +154,10 @@ export function registerSlotRoutes(api: Hono, deps: AppDeps): void {
   api.delete('/slots/:id', (c) => {
     const id = c.req.param('id');
     try {
-      cancelSlot(db, clock, id);
-      return c.json({ ok: true });
+      // 联动（#22、总纲 §3 决议 4）：取消被「吃剩的」引用的那一餐时，引用方餐槽自动退回未定。
+      // 退回的槽 id 一并下发（界面据此提示「晚餐已经跟着取消了」），而不是让前端自己再查一次。
+      const released = cancelSlot(db, clock, id);
+      return c.json({ ok: true, released });
     } catch (error) {
       return bookingError(c, id, error);
     }
@@ -181,5 +200,13 @@ function bookingError(c: Context, id: string | undefined, error: unknown): Respo
     return c.json({ error: 'unknown_prompt_version', promptVersion: error.promptVersion }, 400);
   }
   if (error instanceof NothingToUndoError) return c.json({ error: 'nothing_to_undo', id }, 409);
+  // 「吃剩的」（#22）的三种拒绝：各自指认得着对象，界面才能说清是哪一步不对
+  if (error instanceof InvalidLeftoverReferenceError) {
+    return c.json({ error: 'invalid_leftover_reference', id, referencedId: error.referencedId }, 400);
+  }
+  if (error instanceof NothingToReheatError) {
+    return c.json({ error: 'nothing_to_reheat', id, referencedId: error.referencedId }, 400);
+  }
+  if (error instanceof LeftoverWithDishesError) return c.json({ error: 'leftover_with_dishes', id }, 400);
   throw error;
 }

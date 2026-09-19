@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { useIdentity } from '../identity';
 import { useRecipes, type Recipe } from '../api/recipes';
 import { usePortionPreview, type MenuPortion } from '../api/portion';
-import { useBookSlot, useCancelSlot, useSlot, type MealEvent, type MealSlot } from '../api/meals';
+import { useBookLeftover, useBookSlot, useCancelSlot, useSlot, type MealEvent, type MealSlot } from '../api/meals';
 import { useAcceptRecommendation, useRecommendation } from '../api/recommendations';
 import { useUndoSet } from '../api/replacements';
 import { CandidateList } from '../components/CandidateList';
@@ -107,6 +107,7 @@ function SlotEditor({
   const { members } = useIdentity();
   const book = useBookSlot();
   const cancel = useCancelSlot();
+  const leftover = useBookLeftover();
   const [error, setError] = useState<string | undefined>(undefined);
 
   // 本地草稿：编辑期间不动服务端，一次提交才是「菜单变了」的那个瞬间
@@ -123,11 +124,20 @@ function SlotEditor({
   const recommend = useRecommendation(slot.id);
   const accept = useAcceptRecommendation(slot.id);
 
+  // 引用失效的通知（#22）：本餐是「吃剩的」引用方、而上一条取消事件就是联动退回——
+  // 历史里「引用预定 → 取消」这个形状说明这一餐是因为被引用的那一餐没了才回到未定的。
+  const revertedByReference = useMemo(() => {
+    const last = history[history.length - 1];
+    if (!last || last.type !== 'cancel') return false;
+    return history.some((event) => event.leftoverSlotId !== null);
+  }, [history]);
+
   // 首次定餐的默认用餐者是**全员**（总纲 §3）；家人列表可能晚于餐槽到位，所以默认值现算而不是初值快照
   const diners = dinersDraft ?? (slot.menu ? slot.menu.diners.map((diner) => diner.memberId) : members.map((m) => m.id));
 
-  // 份量随草稿名单/菜品即时重算（服务端算，前端只显示）
-  const portionQuery = usePortionPreview(diners, dishes);
+  // 份量随草稿名单/菜品即时重算（服务端算，前端只显示）。带上餐槽 id：留量上浮要问
+  // 「这一餐有没有被『吃剩的』引用」（#22）。
+  const portionQuery = usePortionPreview(diners, dishes, slot.id);
   const portion = portionQuery.data;
   const factorOf = useMemo(
     () => new Map((portion?.diners ?? []).map((diner) => [diner.memberId, diner])),
@@ -216,7 +226,12 @@ function SlotEditor({
   const doCancel = (): void => {
     setError(undefined);
     cancel.mutate(slot.id, {
-      onSuccess: () => navigate('/'),
+      onSuccess: (result) => {
+        // 取消被「吃剩的」引用的那一餐时，服务端把引用方一起退回未定（#22）。这件事必须在
+        // 首页说清楚（这一页马上要离开），所以经路由 state 带过去——否则家人只会看到晚餐
+        // 莫名其妙变回未定。
+        navigate('/', { state: result.released.length > 0 ? { released: result.released } : null });
+      },
       onError: (cause) => setError(cause instanceof Error ? cause.message : '取消失败'),
     });
   };
@@ -250,6 +265,52 @@ function SlotEditor({
           </span>
         </div>
       </div>
+
+      {/* 「吃剩的」（#22、总纲 §2.6）：晚餐可以预定成吃同日午餐剩的。
+          入口的可用性由服务端下发（`leftoverSource`，午餐得已定且有留量菜）；
+          已定成「吃剩的」的那一餐把这一层说出来——它没有自己的菜单快照，菜是从午餐现推导的。 */}
+      {slot.menu?.leftoverSlotId ? (
+        <div className="card" data-testid="leftover-banner">
+          <div className={styles.blockLabel}>🌙 这一餐吃中午剩的</div>
+          <div className="sub">
+            引用 {slot.menu.leftoverSlotId.slice(0, 10)} 的午餐：这边不另采购，菜是从午餐标了留量的那几道
+            现推导的（午餐改了菜，这一餐跟着变）。
+          </div>
+        </div>
+      ) : slot.editable && slot.leftoverSource && !decided ? (
+        <div className="card" data-testid="leftover-entry">
+          <div className={styles.blockLabel}>这一餐要不要吃中午剩的？</div>
+          <button
+            type="button"
+            className="btn ghost block"
+            data-testid="book-leftover"
+            disabled={leftover.isPending}
+            onClick={() => {
+              setError(undefined);
+              leftover.mutate(
+                { slotId: slot.id, leftoverOf: slot.leftoverSource!.slotId, diners },
+                { onError: (cause) => setError(cause instanceof Error ? cause.message : '预定「吃剩的」失败') },
+              );
+            }}
+          >
+            {leftover.isPending
+              ? '预定中…'
+              : `🌙 吃中午剩的（${slot.leftoverSource.dishes.map((dish) => dish.name).join('、')}）`}
+          </button>
+          <div className="sub" style={{ marginTop: 8 }}>
+            选它就不另采购；中午那几道多做的那份已按留量上浮算进去。
+          </div>
+        </div>
+      ) : null}
+
+      {/* 引用没了（#22）：这一餐是被联动画回来的，得说清原因，不能默默变回未定 */}
+      {slot.status === 'undecided' && revertedByReference ? (
+        <div className="card" data-testid="leftover-reverted-notice">
+          <span className={styles.error}>
+            中午那餐取消了，这一餐也不会再做 —— 已自动退回未定（留痕里看得到）。
+          </span>
+        </div>
+      ) : null}
 
       {/* 用餐者名单：默认全员，可临时改（忌口、份量都按它算） */}
       <div className="card">
@@ -398,6 +459,8 @@ function SlotEditor({
           <div className={styles.blockLabel}>这餐的份量（生重）</div>
           <div className={styles.summaryLine}>
             {portion.diners.length} 人合计 ×{roundSum(portion.factorSum)}
+            {/* 倍数从 `portion.uplift` 动态读（#22 台账：不再硬编码 ×1.5）。它是**实际生效**的
+                那个值（留量标记 ∧ 有效引用），为 1 时不标——标一个没兑现的倍数比不标更糟。 */}
             {portion.uplift !== 1 ? ` × 留量上浮 ${portion.uplift}` : ''}，共 {totalGrams(portion)} g
           </div>
           <div className="sub">

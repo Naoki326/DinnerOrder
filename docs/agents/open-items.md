@@ -184,8 +184,44 @@
 
 ## 归属 #22（留量）
 
-- **留量上浮的家规化**：`LEFTOVER_UPLIFT`（`server/src/domain/portion.ts`）现为常量恒 1，上浮真实系数（默认 1.5×）与家规配置由本票接。
-- **UI 不得显示未兑现的倍数**（来源：#15 审查、#16 已修一半）。`HomeView` 曾硬编码「留量 ×1.5」而引擎 `uplift=1`——已改为只标「留量」。**#22 上浮真正生效后，才可以把倍数显示回来（且应从 `portion.uplift` 动态读，不要再硬编码）。**
+- ✅ **留量上浮的家规化**（来源：本票实施）。`LEFTOVER_UPLIFT` 常量已删除，系数改为读
+  `family_rules`（迁移 007 给 006 的表加列，`leftover_uplift` 默认 1.5，CHECK 1–5），读取口在
+  `server/src/domain/family-rules.ts`（`familyRules(db)` / `updateFamilyRules(db, clock, patch)`；
+  只读单个字段就用 `familyRules(db).leftoverUplift`，不为它单留一个转发壳），写入口是 `PATCH /api/family-rules`。
+  份量引擎（`domain/portion.ts`）在算每道菜时读它。
+  ✅ **集成注记（已处理）**：#20 并行实施时也建了 `family_rules` 表与同名的 `/family-rules` 路由
+  （冷藏期 + 餐次截止），两条分支互为不可见（都基于 `01b6766`）。**合入 main 时已由调度层合并成
+  一张表、一个读取口、一个路由**（列求并集，仍是 id=1 单行）：007 **不再建 `family_rules`**，
+  改为 `ALTER TABLE ... ADD COLUMN leftover_uplift` 给 006 那张表补列（006 仍建表种行，两个文件都
+  没改历史）。
+
+- ✅ **UI 不得显示未兑现的倍数**（来源：本票实施）。上浮现在真的会生效了，所以倍数可以显示回来
+  ——但**从线上数据动态读**，不硬编码：`web/src/routes/HomeView.tsx` 与 `SlotView.tsx` 都读
+  `portion.uplift` / `dish.uplift`。这两个字段报的是**实际生效**的系数（留量标记 ∧ 有效引用
+  两道门都过了才是家规系数，否则恒 1），所以界面不会标的数比算术大。
+  家规的**配置值**另有 `GET /api/portion/rules` 的 `rules.uplift`（未兑现也能看见配置是多少，
+  但界面不拿它当读数用）。
+
+- **本票实现的两条不变量与联动**（同属 #22 本体，记在这里便于日后回归时对齐）：
+  - 上浮生效 = 留量标记 ∧ 有效引用（总纲 §2.6）；四个组合见 `server/src/api/leftover.test.ts`
+    的「留量上浮的不变量」describe。
+  - 取消被引用的午餐 → 引用方晚餐槽**追加一条 cancel 事件**退回未定，`DELETE /api/slots/:id`
+    响应里的 `released[]` 报出被退回的槽（总纲 §3 决议 4）。另补了一条对称的情形：
+    改午餐把留量标记**全拆了**时引用同样失效，晚餐也会被退回（否则它会停在「已定 + 零道菜」）。
+  - 「吃剩的」那一餐**没有自己的菜品快照**，菜从被引用那一餐的 `keep_leftover` 现推导
+    ——中午改了菜，晚餐跟着变。
+  - `POST /api/portion/preview` 的 `slotId` **必须是个真餐槽**：非法/不存在的 id 一律 400
+    `invalid_slot_id`（不是静默按「无引用」算一份少乘系数的读数）。不传仍是草稿（无引用）。
+
+- ⚠️ **「绿叶菜不留」未落地，等口径**（来源：本票评审）。spec §2.6 与 `CONTEXT.md` 的「留量」
+  词条都写着「**绿叶菜不留**」，但数据模型里**没有任何「绿叶菜」属性**：唯一相关的字段是
+  `meal_event_dishes.keep_leftover`（一个布尔列），而 `leftoverSourceOf` / `resolveDishes`
+  只对它做过滤与透传，**不看菜谱的 `kind`**。于是素位与汤位的菜（如蒜蓉菜心、冬瓜排骨汤）
+  现在都能被标留量并上浮。两条候选口径各有代价：按 `RecipeKind` 的素/汤位一律不可留
+  （`veg` / `soup_veg`，无需迁移）**过宽**——红烧土豆也是 `veg`，而「午餐的汤留到晚上热一热」
+  是这个家的正常做法；引入真正的绿叶菜标记（迁移加列/关联表 + 初始名单）则精确但要有产品输入。
+  **本票不自行决定**（那是菜谱库的属性扩充，超出 #22 的 AC 粒度），等用户定口径后再开工。
+  届时还需一件配套：不可留的菜在界面上要**看得见原因**（照仓库既有纪律）。
 
 ## 归属 #23（买菜清单）
 
@@ -223,6 +259,8 @@
 - **`PortionInput` 与 `SlotBooking` 形状重复**（来源：#16 审查）。两者同形状（`PortionInput` 少一个 `source?`），`portion.ts` 处还强转一次。判断：都在 `server` 包内、由类型检查兜住，提取共享类型收益小、改动面大于收益。**若后续票要动这两个形状，一并合并。**
 - **`portionError` 与 `bookingError` 的映射重复**（来源：#16 审查）。五项相同，作者注释已承认是有意的（错误体字段随路由而变：`recipeId` / `memberId` / `id`）。**保留。**
 - **`uplift` 占位**（来源：#16 审查，判定「轻度 Speculative Generality，可接受」）。理由：留一个位置让 #22 只改一处。**保留至 #22。**
+  ✅ 已由 #22 兑现：`uplift` 现在报**实际生效**的系数（标记 ∧ 引用），不再是恒 1 的占位；
+  家规配置值经 `/api/portion/rules` 的 `rules.uplift` 读出，每份菜单的读数看 `portion.uplift`。
 
 ---
 

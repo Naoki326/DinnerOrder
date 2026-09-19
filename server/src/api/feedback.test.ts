@@ -314,7 +314,7 @@ describe('冷藏期（点踩的硬后果）：进推荐与候选的排除，家�
     harness = createTestHarness();
     const { status, body } = await harness.json<FamilyRulesResponse>('/api/family-rules');
     expect(status).toBe(200);
-    expect(body.rules).toEqual({ coolOffDays: 14, lunchCutoffHour: 14, dinnerCutoffHour: 21 });
+    expect(body.rules).toEqual({ coolOffDays: 14, lunchCutoffHour: 14, dinnerCutoffHour: 21, leftoverUplift: 1.5 });
   });
 
   it('餐次截止时刻也读家规表：把午餐截止改成 10 点，10:30 的午餐就不能再定', async () => {

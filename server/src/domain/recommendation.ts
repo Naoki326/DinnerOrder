@@ -62,14 +62,22 @@ export const MAX_FAMILY_PER_POSITION = 8;
  * TODO(#26 统一收口)：进家规表。 */
 export const MIN_FAMILY_PER_POSITION = 3;
 
-/** 家规基线（总纲 §2.2：2 荤 1 素 1 汤，每 ±1 大人 → ±1 道菜）
- * TODO(#26 统一收口)：进家规表（总纲 §3：家规 = 单例配置，全部可调）。本票不做——
- * 本票只把「冷藏天数 + 餐次截止」落表（`domain/family-rules.ts`），其余常量一并留给 #26。 */
+/**
+ * 家规基线（总纲 §2.2：2 荤 1 素 1 汤，每 ±1 大人 → ±1 道菜）。
+ *
+ * TODO（归 #26 统一收口）：这几个常量与 `DEDUPE_DAYS`、`MIN/MAX_FAMILY_PER_POSITION`、
+ * `LLM_TIMEOUT_MS` 都是实施者自定的值，spec §2.2/§4 说它们属家规（总纲 §3：「家规 = 一份
+ * 可调的单例配置，全部可调」）。这些家规值归 #26 统一收口，搬进 `family_rules` 同一张单例表
+ * （列求并集即可）。本仓已有四个值在表里：冷藏期天数（006，`domain/feedback.ts` 读）、
+ * 午/晚两餐次截止时刻（006，`domain/slots.ts` 的 `hasMealPassed` 读）与留量上浮系数
+ * （007，#22 落，读口见 `domain/family-rules.ts`）。这里不跟着改是**有意的**：#26 收口时
+ * 一次把剩余的家规值搬完，免得两票各改一半、合并时再对一次账。
+ */
 const BASELINE = { meat: 2, veg: 1, soup: 1 } as const;
 const BASELINE_ADULTS = 2;
 
-/** 去重窗口（家规默认 7 天，总纲 §4）：窗口内上桌过的菜**硬排除**（换菜候选的池干放宽也用它）
- * TODO(#26 统一收口)：进家规表。 */
+/** 去重窗口（家规默认 7 天，总纲 §4）：窗口内上桌过的菜**硬排除**（换菜候选的池干放宽也用它）。
+ * 同为家规值，一并归 #26 统一收口（进 `family_rules` 单例表，见上）。 */
 export const DEDUPE_DAYS = 7;
 
 /** 候选池的位：荤 / 素 / 汤；`soup_meat` 与 `soup_veg` 都算汤位（总纲 §2.8 的汤分荤素只为忌口） */

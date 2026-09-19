@@ -34,6 +34,12 @@
     太油/太甜/量太多/量太少）+ `family_rules`（**单例**配置：冷藏期天数默认 14、餐次截止时刻午 14 / 晚 21）。
     反馈**不挂 meal_events**：留痕 append-only，而反馈可以改主意（点错重按）——两种语义各自一张表。
     家规表本票只放自己需要的可配值；推荐管线的其余常量留给 #26 统一收口（代码里标了 TODO）。
+  - `007_leftover` —— **留量（M1-10 / #22）**：**不再建 `family_rules`**——006（#20）已经建好那张
+    单例表并种下 id=1 那行，这里只 `ALTER TABLE family_rules ADD COLUMN leftover_uplift`
+    （默认 1.5，CHECK 1–5）给它补上留量上浮系数（家规是同一份配置，两张同名表只会让「家规读在哪」分叉）。
+    另加 `meal_events.leftover_menu_slot_id` 的索引（002 只落了列）。引用关系与单道留量标记本身都是
+    002 早已备好的形状（`meal_events.leftover_menu_slot_id` / `meal_event_dishes.keep_leftover`），
+    本票不改这两处的表结构、只落值。
   - 迁移里只种**规则资产与字典**，生数据（餐槽、菜单、推荐）一律不种：推荐永远现算不落库（总纲 §4）。
 - 种子数据写在迁移里（而不是启动时补种），这样测试 harness、E2E 的文件库、生产库三条路径拿到的是同一份初值。
 - 执行器自身的行为由 `src/db/migrate.test.ts`（临时目录 fixture）覆盖；本目录内容由 `src/db/schema.test.ts` 与

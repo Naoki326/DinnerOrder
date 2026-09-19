@@ -26,14 +26,23 @@ export type {
  * 每次改动名单/菜品都会换掉 queryKey，所以 TanStack Query 自动重算、自动取消上一次请求
  * （`signal` 一路传到 fetch）。
  */
-export function usePortionPreview(diners: string[], dishes: { recipeId: string; keepLeftover: boolean }[]) {
+export function usePortionPreview(
+  diners: string[],
+  dishes: { recipeId: string; keepLeftover: boolean }[],
+  /**
+   * 正在编辑哪个餐槽（#22）：留量上浮要问「这一餐有没有被『吃剩的』引用」。
+   * 不传 = 草稿（新定的一餐还没有引用），上浮恒不生效——界面据此决定显不显示倍数。
+   */
+  slotId?: string,
+) {
   return useQuery({
-    queryKey: ['portion-preview', diners, dishes.map((dish) => [dish.recipeId, dish.keepLeftover])],
+    queryKey: ['portion-preview', diners, dishes.map((dish) => [dish.recipeId, dish.keepLeftover]), slotId],
     enabled: diners.length > 0 && dishes.length > 0,
     queryFn: async ({ signal }): Promise<MenuPortion> => {
       const payload: PortionPreviewRequest = {
         diners,
         dishes: dishes.map((dish) => ({ recipeId: dish.recipeId, keepLeftover: dish.keepLeftover })),
+        ...(slotId === undefined ? {} : { slotId }),
       };
       const response = await fetch(apiUrl('/portion/preview'), {
         method: 'POST',
@@ -60,5 +69,6 @@ async function readErrorDetail(response: Response): Promise<string> {
   if (body.error === 'invalid_request') return body.issues?.[0]?.message ?? '份量的入参不合法';
   if (body.error === 'unknown_recipe') return `菜谱库里没有这一道：${body.recipeId ?? ''}`;
   if (body.error === 'unknown_member') return `家人列表里没有这个人：${body.memberId ?? ''}`;
+  if (body.error === 'invalid_slot_id') return '这一餐的地址不对（算不出该不该上浮）';
   return `份量没算出来：HTTP ${response.status}`;
 }

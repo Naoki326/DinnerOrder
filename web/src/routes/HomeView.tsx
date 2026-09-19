@@ -1,15 +1,15 @@
-import { useState } from 'react';
-import { Link } from 'react-router';
+import { useEffect, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router';
 import { apiBaseUrl } from '../config';
 import { useHealth } from '../api/health';
-import { useSlots, type MealSlot, type SlotWithPortion } from '../api/meals';
+import { useIdentity } from '../identity';
+import { useSlots, useBookLeftover, useCancelSlot, type MealSlot, type SlotWithPortion } from '../api/meals';
 import {
   useAcceptRecommendation,
   useRecommendation,
   type MealRecommendation,
 } from '../api/recommendations';
 import { feedbackOf, useFeedback, type CoolingDish, type DishFeedback } from '../api/feedback';
-import { useIdentity } from '../identity';
 import { CandidateList, type SwapCandidate } from '../components/CandidateList';
 import { FeedbackBar } from '../components/FeedbackBar';
 import styles from './HomeView.module.css';
@@ -31,6 +31,9 @@ import styles from './HomeView.module.css';
 export function HomeView() {
   const health = useHealth();
   const slots = useSlots(3);
+  // 从编辑器取消被「吃剩的」引用的那一餐时，服务端把引用方一起退回了未定（#22）。
+  // 那句话要在这边说得出来：取消之后这一页就是家的全部视野，不提示等于让晚餐默认“消失”。
+  const released = useReleaseNotice();
   const feedback = useFeedback();
 
   const list = slots.data?.slots ?? [];
@@ -40,6 +43,13 @@ export function HomeView() {
 
   return (
     <div data-testid="home-view">
+      {released.length > 0 ? (
+        <div className="card" data-testid="release-notice">
+          <span className="sub">
+            取消成功：{released.join('、')} 吃的是这一餐剩的，已经一起退回未定了。
+          </span>
+        </div>
+      ) : null}
       {slots.isPending ? (
         <div className={`card ${styles.hero}`} data-testid="slots-loading">
           <div className={styles.kicker}>最近未定餐槽</div>
@@ -85,6 +95,24 @@ export function HomeView() {
   );
 }
 
+/**
+ * 取消联动带回来的提示（#22）：`SlotView` 把 `DELETE` 响应里的 `released` 经路由 state 递过来。
+ *
+ * 落页时把内容**拷贝进组件状态**再清掉历史里的 state：直接读 `location.state` 会在清理后
+ * 变成空（提示一闪而过），而留在历史里又会在刷新时冤枉复活。
+ */
+function useReleaseNotice(): string[] {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [released] = useState<string[]>(
+    () => (location.state as { released?: string[] } | null)?.released ?? [],
+  );
+  useEffect(() => {
+    if (released.length > 0) navigate('.', { replace: true, state: null });
+  }, [released.length, navigate]);
+  return released;
+}
+
 /** 最近的一餐：定餐的入口（未定）或查看/改餐的入口（已定） */
 function HeroCard({
   slot,
@@ -101,6 +129,12 @@ function HeroCard({
 }) {
   const { current } = useIdentity();
   const decided = slot.status === 'decided';
+  const leftover = slot.menu?.leftoverSlotId ?? null;
+  const leftOverSource = slot.leftoverSource;
+  const bookLeftover = useBookLeftover();
+  const cancel = useCancelSlot();
+  // 未定的餐槽没有名单快照，默认全员（与编辑器同一口径）；已定的用当时的快照
+  const { members } = useIdentity();
   const [recommendation, setRecommendation] = useState<MealRecommendation | null>(null);
   // 「换一整套」前那一份**草稿**推荐：草稿没落库（总纲 §4），所以「上一套」只能在前端留住。
   // 这与已定餐槽的 `undo-set` 是两条路：那边的上一套是服务端从 append-only 留痕推导的
@@ -163,6 +197,19 @@ function HeroCard({
     );
   };
 
+  const doBookLeftover = (): void => {
+    if (!leftOverSource) return;
+    setError(undefined);
+    bookLeftover.mutate(
+      {
+        slotId: slot.id,
+        leftoverOf: leftOverSource.slotId,
+        diners: slot.menu?.diners.map((diner) => diner.memberId) ?? members.map((member) => member.id),
+      },
+      { onError: (cause) => setError(cause instanceof Error ? cause.message : '预定「吃剩的」失败') },
+    );
+  };
+
   return (
     <div className={`card ${styles.hero}`} data-testid="empty-slot" data-slot-id={slot.id}>
       <div className={styles.kicker}>{decided ? '最近这一餐' : '最近未定餐槽'}</div>
@@ -171,20 +218,33 @@ function HeroCard({
         {decided ? <span className="badge ok"> 已定</span> : null}
       </div>
 
+      {decided && leftover ? (
+        // 「吃剩的」那一餐：菜单是从被引用那一餐**现推导**的（总纲 §2.6），
+        // 界面要把这一层说出来，否则家人看不出“为什么这顿没有新采购”
+        <div className={styles.leftoverNote} data-testid="hero-leftover">
+          🌙 吃 {leftoverSourceLabel(leftover)} 剩的 —— 不另采购，做菜量已按留量上浮
+        </div>
+      ) : null}
+
       {decided && slot.menu ? (
         <div className={styles.dishList} data-testid="hero-dishes">
           {slot.menu.dishes.map((dish) => {
             // 份量按菜品 index 对齐：列表接口内嵌的 portion.dishes 与 menu.dishes 同序同长
             // （都由 resolveDishes 按提交顺序产出），所以这里用下标取本餐生重
             const grams = slot.portion?.dishes.find((item) => item.recipeId === dish.recipeId)?.totalGrams;
+            // 留量倍数从**服务端算好的** `portion.uplift` 读（#22 台账第二条：不再硬编码 ×1.5）。
+            // `uplift` 是「实际生效」的那个：留量标记 ∧ 有效引用两道门都过了才是 1.5，
+            // 否则是 1——所以这里只在真上浮时才标倍数，不标一个没兑现的数。
+            const dishUplift = slot.portion?.dishes.find((item) => item.recipeId === dish.recipeId)?.uplift ?? 1;
             return (
               <div key={dish.recipeId} className={styles.dishRow} data-testid={`hero-dish-${dish.recipeId}`}>
                 <span className={`${styles.kind} ${styles[dish.kind]}`}>{KIND_LABEL[dish.kind]}</span>
                 <span>{dish.name}</span>
-                {/* 只标「留量」不标倍数：上浮要等 #22 的「吃剩的」引用就位（总纲 §2.6：
-                    上浮生效 = 留量标记 ∧ 有效引用）。现在写 ×1.5 会让家长以为买菜要多买 50%，
-                    而引擎此刻恒不上浮（uplift=1）——标一个没兑现的倍数比不标更糟 */}
-                {dish.keepLeftover ? <span className="badge">留量</span> : null}
+                {dish.keepLeftover ? (
+                  <span className="badge" data-testid={`hero-dish-keep-${dish.recipeId}`}>
+                    留量{dishUplift !== 1 ? ` ×${dishUplift}` : ''}
+                  </span>
+                ) : null}
                 {grams !== undefined ? (
                   <span className={styles.grams} data-testid={`hero-dish-grams-${dish.recipeId}`}>
                     {grams} g
@@ -286,9 +346,35 @@ function HeroCard({
         >
           {recommend.isPending ? '正在配餐…' : recommendation ? '🔄 换一整套' : '✨ 给我推荐'}
         </button>
-        <button type="button" className="btn ghost" disabled title="留量引用是后续工单">
-          🌙 吃中午剩的
-        </button>
+        {/* 「吃剩的」（#22）：只在晚餐、且同日午餐已定下留量菜时才给入口——这个判定
+            由服务端下发（`leftoverSource`），前端不自己猜（它连今天午餐定没定都不一定看得见）。
+            已定餐槽不再重复给入口（要改就去编辑器里取消）。 */}
+        {leftOverSource && !decided ? (
+          <button
+            type="button"
+            className="btn ghost"
+            data-testid="book-leftover-button"
+            disabled={bookLeftover.isPending || !slot.editable}
+            onClick={doBookLeftover}
+          >
+            {bookLeftover.isPending ? '预定中…' : '🌙 吃中午剩的'}
+          </button>
+        ) : null}
+        {decided && leftover ? (
+          <button
+            type="button"
+            className="btn ghost"
+            data-testid="cancel-leftover-button"
+            disabled={cancel.isPending}
+            onClick={() =>
+              cancel.mutate(slot.id, {
+                onError: (cause) => setError(cause instanceof Error ? cause.message : '取消失败'),
+              })
+            }
+          >
+            {cancel.isPending ? '取消中…' : '不吃剩的了'}
+          </button>
+        ) : null}
       </div>
       <div className="sub" style={{ marginTop: 10 }}>
         手动挑菜按同一条编辑路径走；「给我推荐」按这餐的人、忌口与时令现配一份。
@@ -429,6 +515,15 @@ function RecommendationPanel({
       </div>
     </div>
   );
+}
+
+/**
+ * 「同一日的午餐」这种说法直接写给人看：'2025-06-02:lunch' → 「今天中午」/「6/2 中午」。
+ * 引用永远指同日午餐（总纲 §2.6），所以不必渲染成完整槽 id。
+ */
+function leftoverSourceLabel(slotId: string): string {
+  const date = slotId.slice(0, 10);
+  return `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))} 中午`;
 }
 
 /** 往下的餐槽：未定/已定都列出来，点了就进编辑器 */

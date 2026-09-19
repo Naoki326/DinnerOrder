@@ -15,12 +15,13 @@ import type {
   SlotBooking,
 } from '../wire-types.js';
 import { familyDate } from './family-time.js';
-import { EmptyDinersError, resolveDishes, UnknownMemberError } from './slots.js';
+import { familyRules } from './family-rules.js';
+import { EmptyDinersError, leftoverReferenceActive, resolveDishes, UnknownMemberError } from './slots.js';
 
 /**
  * 份量引擎（总纲 §3 决议 2、§5；ADR-0004）：**纯规则查表**，LLM 不进数值路径。
  *
- * 份量 = 菜谱成人份生重基准 × Σ用餐者折算系数 × 留量上浮（本票恒 1，留量的活是 #22）。
+ * 份量 = 菜谱成人份生重基准 × Σ用餐者折算系数 × 留量上浮（#22：系数是家规，默认 1.5×）
  *
  * 三条口径先说清：
  *
@@ -33,9 +34,6 @@ import { EmptyDinersError, resolveDishes, UnknownMemberError } from './slots.js'
  * 3. **取整时机**：逐项食材算完再取整（150 × 3.164 = 474.6 → 475），不是先逐人取整再相加。
  *    菜的合计是**取整后各项之和**——界面把每行数字加起来要等于合计，不然界面上就露馅。
  */
-
-/** 留量上浮系数（#22：默认 1.5×，是家规不是标准）。本票没有留量引用，恒 1。 */
-export const LEFTOVER_UPLIFT = 1;
 
 /** 最幼分带的下界：不满 2 岁的小孩按它兜底（不静默当成人算——那会喂多一倍） */
 const YOUNGEST_AGE = 2;
@@ -166,7 +164,7 @@ export function portionRules(db: Db): PortionRules {
     source: row.source,
   }));
 
-  return { adults, bands, recommendedAmounts, mealShares, uplift: LEFTOVER_UPLIFT };
+  return { adults, bands, recommendedAmounts, mealShares, uplift: familyRules(db).leftoverUplift };
 }
 
 // ---------------------------------------------------------------- 年龄与分带
@@ -274,6 +272,18 @@ function pickBand(bands: BandRow[], profile: MemberRow, onDate: string): BandPic
 
 // ---------------------------------------------------------------- 份量
 
+/**
+ * 「留量上浮到底该不该写进这道菜」：总纲 §2.6 的两道门——**这道菜标了留量** ∧ **这一餐存在
+ * 有效引用**。两道门各管一半：只看标记会让没人吃剩菜的一餐白白多做 50%；只看引用则是对没标
+ * 「多做」的菜凭空加量。
+ *
+ * 提成具名函数而不是在逐道菜与菜单级读数两处各写一遍 `&&`：菜单级那个倍数是「有没有一道菜
+ * 真的乘过系数」的汇总，两处判定必须永远是同一个，否则界面上的数字与逐道菜的算术会对不上。
+ */
+function leftoverUpliftApplies(keepLeftover: boolean, referenceActive: boolean): boolean {
+  return keepLeftover && referenceActive;
+}
+
 export interface PortionInput {
   diners: string[];
   dishes: { recipeId: string; keepLeftover?: boolean }[];
@@ -285,6 +295,11 @@ export interface PortionOptions {
    * `assumeAdult`（读历史菜单用：快照里的人可能已经不在了，菜单不该因此读不出来）。
    */
   missingMembers?: 'error' | 'assumeAdult';
+  /**
+   * 正在算哪一个餐槽的份量（#22）：留量上浮要问「这一餐有没有生效中的『吃剩的』引用」。
+   * 不给 = 草稿（新定的一餐还没有任何引用），上浮恒不生效。
+   */
+  slotId?: string;
 }
 
 /** 一份菜单的本餐份量（`GET /api/slots/:id` 内嵌、`POST /api/portion/preview` 直取） */
@@ -292,6 +307,10 @@ export function portionOf(db: Db, clock: Clock, input: PortionInput, options: Po
   const asOf = familyDate(clock.now());
   const bands = loadBands(db);
   const profiles = resolveDinerProfiles(db, input.diners, options.missingMembers ?? 'error');
+  // 留量上浮（#22）：系数是家规，但**生效条件**是「留量标记 ∧ 有效引用」（总纲 §2.6）——
+  // 单看标记就上浮，会让没人吃剩菜的一餐白白多做 50%。
+  const uplift = familyRules(db).leftoverUplift;
+  const referenceActive = options.slotId !== undefined && leftoverReferenceActive(db, options.slotId);
   // 份量吃的是菜谱的成人份基准，退役与否不影响克数：历史菜单里可能有退役前的菜，
   // 让退役把份量一起挡住，等于把那一餐的读数废掉（#16 只加菜谱库，不改既成事实）
   const dishes = resolveDishes(db, input.dishes as SlotBooking['dishes'], { allowRetired: true });
@@ -318,8 +337,9 @@ export function portionOf(db: Db, clock: Clock, input: PortionInput, options: Po
 
   const dishPortions: DishPortion[] = dishes.map((dish) => {
     const recipe = findRecipeIngredients(db, dish.recipeId);
-    // 留量上浮（#22）：本票 LEFTOVER_UPLIFT 恒 1，所以这里先按菜算好系数就有位置可扩
-    const factor = factorSum * (dish.keepLeftover ? LEFTOVER_UPLIFT : 1);
+    // 留量上浮：两道门都过了才乘系数（否则恒 ×1）
+    const applied = leftoverUpliftApplies(dish.keepLeftover, referenceActive) ? uplift : 1;
+    const factor = factorSum * applied;
     const ingredients = recipe.map((item) => ({
       ingredientId: item.ingredient_id,
       name: item.name,
@@ -334,10 +354,17 @@ export function portionOf(db: Db, clock: Clock, input: PortionInput, options: Po
       keepLeftover: dish.keepLeftover,
       ingredients,
       totalGrams: ingredients.reduce((sum, item) => sum + item.grams, 0),
+      uplift: applied,
     };
   });
 
-  return { asOf, diners: dinerPortions, dishes: dishPortions, factorSum, uplift: LEFTOVER_UPLIFT };
+  // 菜单级的 uplift 报**实际生效**的那个：界面上写「×1.5」的家规配置值，而这份菜单一道留量菜
+  // 都没生效时，读数的算术对不上（数字乘的是 1，界面写 1.5 就是在骗人）。
+  // 与每道菜的乘法共用同一个判定，不在两处各写一遍。
+  const appliedUplift = dishPortions.some((dish) => leftoverUpliftApplies(dish.keepLeftover, referenceActive))
+    ? uplift
+    : 1;
+  return { asOf, diners: dinerPortions, dishes: dishPortions, factorSum, uplift: appliedUplift };
 }
 
 interface IngredientRow {

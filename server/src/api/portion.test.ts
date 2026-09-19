@@ -344,7 +344,9 @@ describe('规则表与来源', () => {
     harness = createTestHarness();
 
     const table = await rules();
-    expect(table.uplift).toBe(1);
+    // 留量上浮系数（#22）现在是家规里的**配置值**（默认 1.5×）；它兑现与否看每份菜单的实际引用，
+    // 所以这里断言的是「规则表读得出家规」，而不是「每份菜单都上浮」。
+    expect(table.uplift).toBe(1.5);
     const anchors = new Map(table.adults.map((anchor) => [anchor.gender, anchor.dailyKcal]));
     expect(anchors.get('male')).toBe(2250);
     expect(anchors.get('female')).toBe(1800);

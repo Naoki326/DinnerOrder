@@ -172,6 +172,23 @@ export interface DinerRef {
 export interface Menu {
   diners: DinerRef[];
   dishes: MenuDish[];
+  /**
+   * 「吃剩的」引用（#22、总纲 §2.6）：这一餐被预定成「吃某一餐剩的」时，指向被引用那一餐的槽 id
+   * （只可能是同日午餐）；普通菜单为 null。
+   *
+   * 这时 `dishes` 是**从被引用那一餐现推导**的留量菜品（只有 `keepLeftover` 的那几道，
+   * `keepLeftover` 恒为 true），不是本餐自己的快照——菜单语义是「去吃中午剩的那几道」，
+   * 中午改了菜，晚餐跟着变；引用没了（午餐被取消），引用方自动退回未定。
+   */
+  leftoverSlotId: string | null;
+}
+
+/** 晚餐「吃剩的」的来源：同日午餐当前可吃的留量菜品（空数组 = 午餐没有留量的菜，吃不成） */
+export interface LeftoverSource {
+  /** 被引用那一餐的槽 id（'YYYY-MM-DD:lunch'） */
+  slotId: string;
+  /** 该午餐当前有效事件里标记了留量的菜（推导出来的，不是另存的一份） */
+  dishes: MenuDish[];
 }
 
 /** 餐槽（日期 × 餐次） */
@@ -190,6 +207,12 @@ export interface MealSlot {
    * 服务端从事件流推导，前端不自己猜：撤销的可用性 = 留痕的形状，而不是界面记的一个标志位。
    */
   canUndoSet: boolean;
+  /**
+   * 「吃剩的」入口的可用性（#22）：晚餐才有这一项，指向**同日午餐**当前可吃的留量菜品。
+   * 服务端推导（午餐得先定下来、且至少一道菜标了留量），前端不自己猜——它连「今天午餐定没定」
+   * 都不一定看得见（过了截止时刻的餐槽不在列表里）。
+   */
+  leftoverSource: LeftoverSource | null;
 }
 
 /**
@@ -229,6 +252,11 @@ export interface MealEvent {
   diners: DinerRef[];
   /** 当时的菜品快照；取消事件为空 */
   dishes: MenuDish[];
+  /**
+   * 「吃剩的」引用（#22）：这条事件把餐槽预定成吃某一餐剩的时，指向被引用那一餐的槽 id；
+   * 普通事件与取消事件为 null。留痕要能回答「为什么这顿没有新采购」。
+   */
+  leftoverSlotId: string | null;
   llm: LlmCallMeta | null;
 }
 
@@ -236,8 +264,17 @@ export interface MealEvent {
 export interface SlotBooking {
   /** 用餐者名单（member id），至少一人；服务端存快照 */
   diners: string[];
-  /** 菜品（recipe id），至少一道 */
+  /**
+   * 菜品（recipe id）。普通定餐至少一道；「吃剩的」形态（见 `leftoverOf`）**必须为空**——
+   * 那一餐吃什么是从被引用那一餐推导的，不接受另带一份菜单（两份菜单就会有在哪儿说了算的问题）。
+   */
   dishes: MenuDishInput[];
+  /**
+   * 把这一餐预定成「吃剩的」（#22、总纲 §2.6）：填被引用餐槽的 id（只接受**同日午餐**）。
+   * 落库后这一餐没有自己的菜品快照，上浮则记在**被引用那一餐**的留量菜上
+   * （上浮生效 = 留量标记 ∧ 有效引用）。
+   */
+  leftoverOf?: string;
   /** 缺省 manual；#17 接受推荐时传 recommendation */
   source?: BookingSource;
   /**
@@ -422,13 +459,21 @@ export interface FeedbackDeleteInput {
   memberId: string;
 }
 
-/** `GET /api/family-rules` 的响应：家规单例配置（冷藏期、餐次截止） */
+/**
+ * 家规里的单例配置（总纲 §3：「家规 = 一份可调的单例配置」）。
+ *
+ * 表由迁移 006 建、单例行由它种下（冷藏期 + 餐次截止），007 再给同一张表补上
+ * 留量上浮系数列——四个值共享一张 id=1 的单行表，读/写口只有 `domain/family-rules.ts` 一处。
+ * 推荐管线的其余家规值归 #26 统一收口，搬进同一张表（列求并集）。
+ */
 export interface FamilyRules {
   /** 冷藏期天数（某菜被任一本餐用餐者点踩后退出的推荐窗口；到期自动解除） */
   coolOffDays: number;
   /** 餐次截止时刻（家庭时区整点）：过了就不能再定/改这一餐 */
   lunchCutoffHour: number;
   dinnerCutoffHour: number;
+  /** 留量上浮系数（默认 1.5×）：留量标记 ∧ 有效引用时，被引用那一餐的该菜按它上浮 */
+  leftoverUplift: number;
 }
 
 /** `GET /api/family-rules` 的包装 */
@@ -600,7 +645,7 @@ export interface PortionRules {
   recommendedAmounts: PortionRecommendedAmount[];
   /** 餐次占比（全天量 → 单餐量的换算，#22/#23 用） */
   mealShares: PortionMealShare[];
-  /** 留量上浮系数（#22）：本票恒 1（没有留量引用就没有上浮，总纲 §2.6） */
+  /** 留量上浮系数（家规，总纲 §2.6 默认 1.5×）：这是**配置值**，是否兑现看每份菜单的实际引用 */
   uplift: number;
 }
 
@@ -640,6 +685,11 @@ export interface DishPortion {
   ingredients: DishIngredientPortion[];
   /** 本菜合计生重 = 各项取整后之和 */
   totalGrams: number;
+  /**
+   * 本菜实际适用的留量上浮系数（#22）：留量标记 **∧** 有效引用时为家规系数（默认 1.5），
+   * 否则恒 1。界面显示倍数必须读它，不要自己写 ×1.5。
+   */
+  uplift: number;
 }
 
 /** 一份菜单的本餐份量（`GET /api/slots/:id` 内嵌、`POST /api/portion/preview` 直取） */
@@ -651,7 +701,11 @@ export interface MenuPortion {
   dishes: DishPortion[];
   /** Σ折算系数（未舍入；展示层自己决定保留几位） */
   factorSum: number;
-  /** 留量上浮系数（#22）：本票恒 1 */
+  /**
+   * 这份菜单里**实际生效**的留量上浮系数（#22）：有任一「留量标记 ∧ 有效引用」的菜时
+   * 是家规系数，否则恒 1。界面据此显示倍数；未兑现的倍数不显示（家规配置值见
+   * `PortionRules.uplift`）。
+   */
   uplift: number;
 }
 
@@ -691,6 +745,11 @@ export interface ExchangeConversion {
 export interface PortionPreviewRequest {
   diners: string[];
   dishes: MenuDishInput[];
+  /**
+   * 正在编辑哪个餐槽（#22）：留量上浮要问「这一餐有没有被『吃剩的』引用」。
+   * 缺省 = 草稿（无引用），上浮恒不生效——新定的一餐还没有任何引用。
+   */
+  slotId?: string;
 }
 
 /** `GET /api/history/recent-dishes` 的一条：窗口内做过的菜（按菜谱去重） */
@@ -724,6 +783,28 @@ export interface ExchangeConversionResponse {
 /** `POST /api/portion/preview` 的响应 */
 export interface PortionPreviewResponse {
   portion: MenuPortion;
+}
+
+/** `DELETE /api/slots/:id` 的响应：取消的联动结果 */
+export interface SlotCancelResponse {
+  ok: boolean;
+  /**
+   * 因本次取消被**自动退回未定**的引用方餐槽（#22、总纲 §3 决议 4：取消被『吃剩的』引用的午餐
+   * → 引用方晚餐槽提示并自动退回未定）。取消本身也是一条事件，被退回的那一餐照旧留痕。
+   */
+  released: string[];
+}
+
+// ---------------------------------------------------------------- 家规（M1-10 加留量上浮列）
+
+/**
+ * `PATCH /api/family-rules` 的入参：没传的项保持原样。
+ *
+ * 本票只开放留量上浮系数（冷藏期与截止时刻的编辑入口归 #26 统一收口）；
+ * 完整的家规形状见上面 `FamilyRules`（四个值一张单例表）。
+ */
+export interface FamilyRulesPatch {
+  leftoverUplift?: number;
 }
 
 /** `/api/health` 的响应（#13 立的冒烟 API，web 首页页脚用它显示通道状态） */
