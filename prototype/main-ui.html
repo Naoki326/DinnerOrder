@@ -279,6 +279,7 @@ function logEvent(ev, slotKey){ S.history.push({t:new Date().toTimeString().slic
 /* ---------- 动作 ---------- */
 const ACT = {
   switchIdentity(id){ S.identity=id; toast(`当前身份：${P(id).name}`); render(); },
+  setView(v){ document.querySelector('.sheet-mask')?.remove(); PROTO.set(v); toast(`视图已切换：${VARIANT_NAMES[v]}`); },
   openEditor(slotKey){ // 定餐 = 换菜，同一编辑器
     const s = slot(slotKey);
     const fresh = s.status==='undecided';
@@ -357,6 +358,11 @@ function slot(k){ return S.slots.find(s=>s.key===k); }
 ================================================================ */
 const app = document.getElementById('app');
 const VARIANT_NAMES = {A:'A · 下一餐大卡', B:'B · 日程紧凑流', C:'C · 极简向导'};
+const VIEW_DESC = {
+  A:'首页只关心「下一顿吃什么」，未来餐槽收起，换菜走弹层候选 —— 默认',
+  B:'按天看全部餐槽与菜单，信息密度高 —— 掌勺者视角',
+  C:'一屏一件事、大按钮、两步向导 —— 长辈小孩友好',
+};
 
 function render(){
   document.getElementById('proto-label').textContent = VARIANT_NAMES[S.variant];
@@ -537,10 +543,13 @@ function headerA(){
   const me=P(S.identity);
   return `<div class="a-header">
     <div><b style="font-size:18px">家餐桌</b><div class="sub">${today.getMonth()+1} 月 ${today.getDate()} 日 · 周${'日一二三四五六'[today.getDay()]}</div></div>
-    <button class="a-idchip" onclick="S.page='family';render()">
-      <span class="av" style="width:28px;height:28px;font-size:15px">${me.emoji}</span>
-      <span style="font-size:13px">${me.name}</span><span class="sub">▾</span>
-    </button></div>`;
+    <div class="row">
+      <button class="a-idchip" style="padding:6px 12px" onclick="openSettings()" title="设置（视图模式）">⚙️</button>
+      <button class="a-idchip" onclick="S.page='family';render()">
+        <span class="av" style="width:28px;height:28px;font-size:15px">${me.emoji}</span>
+        <span style="font-size:13px">${me.name}</span><span class="sub">▾</span>
+      </button>
+    </div></div>`;
 }
 function tabsA(){
   const on=S.page==='home'?'home':S.page;
@@ -600,7 +609,9 @@ function bodyB(s){
   </div>`;
 }
 function topB(){
-  return `<div class="b-top">${[['home','📋 日程'],['grocery','🛒 买菜'],['family','👥 家人']].map(([k,l])=>
+  return `<div class="spread" style="padding:14px 14px 0"><b style="font-size:17px">家餐桌</b>
+      <button class="a-idchip" style="padding:6px 12px" onclick="openSettings()" title="设置（视图模式）">⚙️</button></div>
+    <div class="b-top">${[['home','📋 日程'],['grocery','🛒 买菜'],['family','👥 家人']].map(([k,l])=>
     `<button class="${S.page===k?'on':''}" onclick="S.page='${k}';render()">${l}</button>`).join('')}</div>`;
 }
 
@@ -649,10 +660,29 @@ function renderC(){
 }
 function wrapC(inner){ return `<div class="c-wrap">
     <div class="sub" style="position:fixed;top:22px;left:50%;transform:translateX(-50%);background:#fff;border-radius:99px;padding:4px 14px;box-shadow:0 1px 4px rgba(60,50,30,.15)">
-      当前身份 ${P(S.identity).emoji} ${P(S.identity).name} · <span style="color:var(--accent)" onclick="S.page='family';render()">切换</span></div>
+      当前身份 ${P(S.identity).emoji} ${P(S.identity).name} · <span style="color:var(--accent)" onclick="S.page='family';render()">切换</span> · <span style="color:var(--accent)" onclick="openSettings()">⚙️</span></div>
     ${inner}</div>
     <div class="c-tabs">${[['home','🍽 吃饭'],['grocery','🛒 买菜'],['family','👪 家人']].map(([k,l])=>
       `<button class="${S.page===k?'on':''}" onclick="S.page='${k}';render()">${l}</button>`).join('')}</div>`;
+}
+
+/* ---------- 设置（产品功能：视图模式，默认 A） ---------- */
+function openSettings(){
+  document.querySelector('.sheet-mask')?.remove();
+  const mask=document.createElement('div'); mask.className='sheet-mask';
+  mask.innerHTML=`<div class="sheet"><div class="grab"></div>
+    <b>设置</b>
+    <div class="sub" style="margin:8px 0 4px">视图模式（默认「下一餐大卡」，随时换，家人各用各的）</div>
+    ${['A','B','C'].map(v=>`
+      <button class="dishline" style="width:100%;text-align:left" onclick="ACT.setView('${v}')">
+        <div style="flex:1"><b>${VARIANT_NAMES[v].replace(/^[ABC] · /,'')}</b>
+          <div class="sub">${VIEW_DESC[v]}</div></div>
+        ${S.variant===v?'<span class="badge acc">当前</span>':'<span class="badge">选择</span>'}
+      </button>`).join('')}
+    <div class="sub" style="margin-top:10px">其余设置项（提醒、家规微调…）留待 spec 阶段补。</div>
+  </div>`;
+  mask.addEventListener('click',e=>{ if(e.target===mask) mask.remove(); });
+  document.body.appendChild(mask);
 }
 
 /* ================================================================
