@@ -24,6 +24,10 @@
 }
 
 .ghostCard {
+  /* 这张卡是 <Link>（<a>）：全局 .card 只声明背景/内边距/margin、不声明 display，
+     <a> 会保持浏览器默认的 display:inline → 水平 margin 算不出来、卡片撑满视口，
+     卡片内文字被左侧虚线边框压住。显式声明 block（对其它 <div> 卡是 no-op）。 */
+  display: block;
   border: 1.5px dashed #d8cfc0;
   background: transparent;
   box-shadow: none;

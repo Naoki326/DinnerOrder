@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { ROOT_URL } from './test-env';
+import { E2E, ROOT_URL } from './test-env';
 /**
  * 验收场景（本票部分）：不靠推荐、纯手动打通「定一餐」——
  * 打开 app 见最近未定餐槽 → 进定餐编辑器 → 挑家庭菜谱组成菜单 → 保存为已定 → 可取消；
@@ -64,6 +64,33 @@ async function slotHistory(page: Page, id: string): Promise<{ type: string }[]> 
   const { history } = (await response.json()) as { history: { type: string }[] };
   return history;
 }
+
+/**
+ * 餐槽列表里的「幽灵卡」是 `<Link>` 渲染的 `<a>`。全局 `.card` 只声明背景/内边距/
+ * margin、不声明 `display`，于是 `<a>` 保持浏览器默认的 `display: inline`，
+ * `margin: 10px 12px` 的水平内缩在 inline 元素上算不出来，卡片会撑满视口
+ * （rect.x=0、width=390），卡片内的文字被左侧虚线边框压住。
+ *
+ * 这里钉住「餐槽卡不吃穿容器」：x 必须有左内缩（>0）、宽度必须小于视口宽。
+ * 只断言可见是抓不住这个 bug 的（塌陷的卡片照样可见）。
+ */
+test('餐槽列表的幽灵卡不越界：有左内缩且宽度小于视口', async ({ page }) => {
+  await clearDecidedSlots(page);
+  await page.goto(`${ROOT_URL}/`);
+
+  const ghost = page.getByTestId('ghost-slot').first();
+  await expect(ghost).toBeVisible();
+
+  // 该卡是 <a>：display 若塌成 inline，水平 margin 就不生效（本 bug 的根因）
+  const display = await ghost.evaluate((el) => getComputedStyle(el).display);
+  expect(display).not.toBe('inline');
+
+  const box = await ghost.boundingBox();
+  if (!box) throw new Error('幽灵卡没有布局盒');
+  // 视口 390 宽 - 两侧各 12px margin = 366；只断言「有内缩且小于视口」
+  expect(box.x).toBeGreaterThan(0);
+  expect(box.width).toBeLessThan(E2E.viewport.width);
+});
 
 test('打开首页见最近未定餐槽大卡，点进去手动定一餐（挑菜 / 改用餐者 / 留量）', async ({ page }) => {
   await clearDecidedSlots(page);
