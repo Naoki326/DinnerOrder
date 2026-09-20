@@ -11,10 +11,20 @@ export function memberSubtitle(member: Member, now: Date = new Date()): string {
   return `${who} · ${member.gender === 'male' ? '男' : '女'}`;
 }
 
-function ageLabel(member: Member, now: Date): string {
-  if (!member.birthMonth) return '年龄待补';
-  const [year, month] = member.birthMonth.split('-').map(Number) as [number, number];
+/**
+ * 出生年月 → 周岁（按当前月份是否过了生日算）。
+ *
+ * 导出是因为别处也要用它做**展示层**判断（家人卡上「是否已进分性别的份量档」那句话）：
+ * 另算一遍会让两处对「几岁」得出不同答案，而这类偏差最难发现（页面自己跟自己不一致）。
+ */
+export function ageInYears(birthMonth: string, now: Date = new Date()): number {
+  const [year, month] = birthMonth.split('-').map(Number) as [number, number];
   let age = now.getFullYear() - year;
   if (now.getMonth() + 1 < month) age -= 1;
-  return `${age} 岁`;
+  return age;
+}
+
+function ageLabel(member: Member, now: Date): string {
+  if (!member.birthMonth) return '年龄待补';
+  return `${ageInYears(member.birthMonth, now)} 岁`;
 }

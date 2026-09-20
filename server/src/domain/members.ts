@@ -263,6 +263,14 @@ export class MissingBirthMonthError extends Error {
   }
 }
 
+/** 性别只收 male / female（zod 形状层已拦，这里是直接调域时的兑底） */
+export class InvalidGenderError extends Error {
+  constructor(readonly gender: string) {
+    super(`性别只能是 male 或 female，收到：${gender}`);
+    this.name = 'InvalidGenderError';
+  }
+}
+
 const BIRTH_MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 /**
@@ -276,6 +284,26 @@ export function updateMember(db: Db, id: string, patch: ProfilePatch): MemberPro
       .get(id) as { kind: 'adult' | 'child' } | undefined;
     if (!row) throw new MemberNotFoundError(id);
 
+    const now = new Date().toISOString();
+
+    // 姓名/头像：与新增时**同一口径**（trim 后空串拒收）——否则改成一个空名字能把
+    // 新增时的校验绕过去，界面上就会出现一个没名字的家人。
+    if (patch.name !== undefined) {
+      const name = patch.name.trim();
+      if (name === '') throw new EmptyMemberNameError();
+      db.prepare('UPDATE members SET name = ?, updated_at = ? WHERE id = ?').run(name, now, id);
+    }
+    if (patch.emoji !== undefined) {
+      const emoji = patch.emoji.trim();
+      if (emoji === '') throw new EmptyMemberEmojiError();
+      db.prepare('UPDATE members SET emoji = ?, updated_at = ? WHERE id = ?').run(emoji, now, id);
+    }
+    // 性别：入参已由 zod 收敛成二值，领域层作为直接调用路径的兜底再挡一次
+    if (patch.gender !== undefined) {
+      if (patch.gender !== 'male' && patch.gender !== 'female') throw new InvalidGenderError(patch.gender);
+      db.prepare('UPDATE members SET gender = ?, updated_at = ? WHERE id = ?').run(patch.gender, now, id);
+    }
+
     if (patch.birthMonth !== undefined) {
       if (patch.birthMonth === null) {
         if (row.kind === 'child') throw new BirthMonthRequiredError(id);
@@ -284,7 +312,7 @@ export function updateMember(db: Db, id: string, patch: ProfilePatch): MemberPro
       }
       db.prepare('UPDATE members SET birth_month = ?, updated_at = ? WHERE id = ?').run(
         patch.birthMonth,
-        new Date().toISOString(),
+        now,
         id,
       );
     }
@@ -297,7 +325,7 @@ export function updateMember(db: Db, id: string, patch: ProfilePatch): MemberPro
     if (patch.isCook !== undefined) {
       db.prepare('UPDATE members SET is_cook = ?, updated_at = ? WHERE id = ?').run(
         patch.isCook ? 1 : 0,
-        new Date().toISOString(),
+        now,
         id,
       );
     }

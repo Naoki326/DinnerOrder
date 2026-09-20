@@ -13,6 +13,7 @@ import {
   findMember,
   INVALID_BIRTH_MONTH_MESSAGE,
   InvalidBirthMonthError,
+  InvalidGenderError,
   listMembers,
   MemberNotFoundError,
   MISSING_BIRTH_MONTH_MESSAGE,
@@ -36,6 +37,13 @@ const loveSchema = z.object({
 });
 
 const patchSchema = z.object({
+  // 名字/头像：与新增时同一口径（trim 后非空）。`trim()` 放在形状层，
+  // 否则 `'   '` 这种「只有空白」会在 min(1) 眼里合法，而它在界面上就是个空名字。
+  name: z.string().trim().min(1, EMPTY_MEMBER_NAME_MESSAGE).optional(),
+  emoji: z.string().trim().min(1, EMPTY_MEMBER_EMOJI_MESSAGE).optional(),
+  // 性别只在新增时问过一次，也得改得回来：6–17 岁小孩的份量系数按性别差约 14%
+  // （WS/T 554 表 1）。录错了一直偏，而删了重建会丢掉忌口/爱吃/餐史归属。
+  gender: z.enum(['male', 'female']).optional(),
   birthMonth: z
     .string()
     // 只收 'YYYY-MM'（线上入口）。领域层 updateMember 也留同口径校验：
@@ -150,6 +158,20 @@ export function registerMemberRoutes(api: Hono, deps: AppDeps): void {
     } catch (error) {
       // 领域错误映射成明确的 4xx：界面要能说清「哪一条没救回来」，而不是笼统失败
       if (error instanceof MemberNotFoundError) return c.json({ error: 'not_found', id }, 404);
+      // 名字/头像的空值：与新增走**同一形状**（invalid_request + issues 指认字段），
+      // 界面因此不必为「新增」与「修改」写两套提示分支
+      if (error instanceof EmptyMemberNameError) {
+        return c.json({ error: 'invalid_request', issues: [{ path: 'name', message: EMPTY_MEMBER_NAME_MESSAGE }] }, 400);
+      }
+      if (error instanceof EmptyMemberEmojiError) {
+        return c.json({ error: 'invalid_request', issues: [{ path: 'emoji', message: EMPTY_MEMBER_EMOJI_MESSAGE }] }, 400);
+      }
+      if (error instanceof InvalidGenderError) {
+        return c.json(
+          { error: 'invalid_request', issues: [{ path: 'gender', message: '性别只能是 male 或 female' }] },
+          400,
+        );
+      }
       if (error instanceof BirthMonthRequiredError) return c.json({ error: 'birth_month_required', id }, 400);
       if (error instanceof InvalidBirthMonthError) {
         return c.json({ error: 'invalid_birth_month', birthMonth: error.birthMonth }, 400);

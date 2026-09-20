@@ -82,6 +82,9 @@ interface PatchOptions {
   avoid?: string[];
   loves?: { kind: 'ingredient' | 'recipe'; id: string }[];
   isCook?: boolean;
+  gender?: 'male' | 'female';
+  emoji?: string;
+  name?: string;
 }
 
 async function patchMember(id: string, patch: PatchOptions) {
@@ -432,6 +435,89 @@ describe('新增家人', () => {
  * 硬删会连带删掉 `dish_feedback`（CASCADE）——那是「历史保留」最贵的一处；
  * 而 `meal_event_diners` 存的是姓名/头像快照，本来就不受影响。
  */
+/**
+ * 改基本资料（名字/头像/性别）：原先只有新增时能填，之后改不了。
+ *
+ * 性别不只是个标注——**6–17 岁小孩的份量系数按性别相差约 14%**（WS/T 554 表 1：
+ * 6–8 岁男 0.756 / 女 0.861），所以录错了要能改回来。头像与名字同理是家人自己挑的。
+ * （2026-05 出生的孩子现在落在学龄前档 `gender:any`，所以改性别暂时不改读数；
+ * 等他长到 6 岁就进了分性别的档——那时这个入口就是必需的。）
+ */
+describe('改基本资料（名字 / 头像 / 性别）', () => {
+  it('性别可改（原先只能在新增时填，之后改不了——而它进份量折算）', async () => {
+    harness = createTestHarness();
+    expect((await getMember('xiaobao')).gender).toBe('female');
+
+    const { status, body } = await patchMember('xiaobao', { gender: 'male' });
+
+    expect(status).toBe(200);
+    expect(body.member?.gender).toBe('male');
+    // 读回来也是新的（不只是回执里对）
+    expect((await getMember('xiaobao')).gender).toBe('male');
+  });
+
+  it('性别改完不动别的字段（三块各自独立，其余保持原样）', async () => {
+    harness = createTestHarness();
+    await patchMember('xiaobao', { avoid: ['shrimp'] });
+
+    await patchMember('xiaobao', { gender: 'male' });
+
+    const after = await getMember('xiaobao');
+    expect(after.gender).toBe('male');
+    expect(after.avoid.map((entry) => entry.ingredientId)).toEqual(['shrimp']);
+    expect(after.name).toBe('小宝');
+  });
+
+  it('性别非法值被拒（不是 male/female 一律 400，且指认到字段）', async () => {
+    harness = createTestHarness();
+
+    const { status, body } = await harness.json<{ error?: string; issues?: { path: string }[] }>(
+      '/api/members/xiaobao',
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ gender: '其他' }),
+      },
+    );
+
+    expect(status).toBe(400);
+    expect(body.error).toBe('invalid_request');
+    expect(body.issues?.[0]?.path).toBe('gender');
+    // 没被改坏
+    expect((await getMember('xiaobao')).gender).toBe('female');
+  });
+
+  it('头像可改（新增时必填，之后也该改得了——emoji 是家人自己挑的）', async () => {
+    harness = createTestHarness();
+
+    const { status, body } = await patchMember('xiaobao', { emoji: '🐯' });
+
+    expect(status).toBe(200);
+    expect(body.member?.emoji).toBe('🐯');
+    expect((await getMember('xiaobao')).emoji).toBe('🐯');
+  });
+
+  it('空头像被拒（与新增时同一句文案，不给「blank 头像」留后门）', async () => {
+    harness = createTestHarness();
+
+    const { status, body } = await patchMember('xiaobao', { emoji: '   ' });
+
+    expect(status).toBe(400);
+    expect(body.error).toBe('invalid_request');
+    expect((await getMember('xiaobao')).emoji).toBe('👧');
+  });
+
+  it('名字也能改（改名后餐史里的快照不变：历史是事实，不是外键）', async () => {
+    harness = createTestHarness();
+
+    const { status, body } = await patchMember('xiaobao', { name: '小虎' });
+
+    expect(status).toBe(200);
+    expect(body.member?.name).toBe('小虎');
+    expect((await listMembers()).map((member) => member.name)).toContain('小虎');
+  });
+});
+
 describe('删除家人（软删除）', () => {
   it('删了就从列表消失、单查 404，但行还在库里（画像条目也保留）', async () => {
     harness = createTestHarness();

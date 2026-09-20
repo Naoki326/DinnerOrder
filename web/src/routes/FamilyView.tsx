@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useIngredients, type Ingredient } from '../api/ingredients';
 import { useRecipes, type Recipe } from '../api/recipes';
 import {
@@ -11,7 +11,7 @@ import {
   type ProfilePatch,
 } from '../api/members';
 import { useIdentity } from '../identity';
-import { memberSubtitle } from '../components/memberLabel';
+import { ageInYears, memberSubtitle } from '../components/memberLabel';
 import styles from './FamilyView.module.css';
 
 /**
@@ -389,6 +389,12 @@ function MemberCard({ member, isCurrent }: { member: Member; isCurrent: boolean 
       <div className={styles.blockLabel}>出生年月{member.kind === 'child' ? '（小孩必填 · 份量按年龄分带折算）' : '（选填）'}</div>
       <BirthMonthField member={member} onSave={(birthMonth) => save({ birthMonth })} />
 
+      {/* 基本资料（名字 / 头像 / 性别）：原先这三栏只在新增时填得了，之后再也改不了——
+          而性别不是标注：6–17 岁小孩的份量系数按性别相差约 14%（WS/T 554 表 1）。
+          录错了只能删了重建，而重建会丢掉这位家人的忌口/爱吃/餐史归属。
+          三个字段都「改完即存」（与这一页其余编辑同一手感），不另设保存按钮。 */}
+      <ProfileBasics member={member} onSave={(patch) => save(patch)} />
+
       {/* 掌勺者标记（本票起可改）：语义是「家里**通常**谁做菜」——是缺省值，不是权限位。
           每一餐的掌勺者在餐槽编辑器里单独指定（`SlotView`），这里改的是开 app 的缺省身份
           与新餐槽的缺省掌勺者。所以文案不说“谁做菜”，说清是「通常」。 */}
@@ -669,6 +675,19 @@ function LovesPicker({
   );
 }
 
+/**
+ * 这位家人是否已进入**分性别**的份量档（学龄期 6 岁起）。
+ *
+ * 用来决定那句提示怎么写：同一页面上一句话既要说清「这个字段为什么重要」，
+ * 又不该对尚在学龄前的孩子说「你选错就偏了」（实际还没到那个档，选错真的不影响读数）。
+ * 年龄算法共用 `memberLabel` 那一份，不在这里重算一遍。
+ */
+function banded(member: Member): boolean {
+  if (member.kind !== 'child' || member.birthMonth === null) return false;
+  const age = ageInYears(member.birthMonth, new Date());
+  return age >= 6;
+}
+
 function BirthMonthField({ member, onSave }: { member: Member; onSave(birthMonth: string): void }) {
   // 本地草稿：input[type=month] 中途的不完整值不往外发（服务端只收 YYYY-MM）
   const [draft, setDraft] = useState(member.birthMonth ?? '');
@@ -690,5 +709,120 @@ function BirthMonthField({ member, onSave }: { member: Member; onSave(birthMonth
         }}
       />
     </div>
+  );
+}
+
+/**
+ * 基本资料：名字 / 头像 / 性别。
+ *
+ * **改完即存，不设保存按钮**——与这一页其余编辑（忌口/爱吃/出生年月/掌勺者）同一手感，
+ * 家人不必学两套交互。名字与头像是**本地草稿**（打字中途不该每敲一个字发一次请求），
+ * 失焦时才提交；性别是二选一，点一下就该生效。
+ *
+ * 为什么值得给它一块 UI：这三栏原先只在新增家人的表单里，之后**永远改不了**。
+ * 名字打错字、头像挑错、性别录反都是迟早的事，而唯一出路「删了重建」会连带丢掉这位家人的
+ * 忌口/爱吃与餐史归属（删除是软删除，但那是绕路，不是替代）。
+ */
+function ProfileBasics({ member, onSave }: { member: Member; onSave(patch: ProfilePatch): void }) {
+  // 草稿与「已提交值」分开：输入中途不发请求，失焦时若真的变了才提交
+  const [name, setName] = useState(member.name);
+  const [emoji, setEmoji] = useState(member.emoji);
+
+  // 服务端数据变了（别处改过/切换了当前身份）就把草稿同步回来，避免显示陈旧值
+  useEffect(() => {
+    setName(member.name);
+    setEmoji(member.emoji);
+  }, [member.name, member.emoji]);
+
+  const commitName = (): void => {
+    const next = name.trim();
+    // 空名字就地退回原值：服务端也会拒（同一口径），但没必要为此打一趟请求
+    if (next === '' || next === member.name) {
+      setName(member.name);
+      return;
+    }
+    onSave({ name: next });
+  };
+
+  return (
+    <>
+      <div className={styles.blockLabel}>基本资料（名字 / 头像 / 性别）</div>
+      <div className={styles.basicsRow}>
+        <input
+          className={styles.input}
+          type="text"
+          value={name}
+          maxLength={20}
+          aria-label={`${member.name}的名字`}
+          data-testid={`member-name-input-${member.id}`}
+          onChange={(event) => setName(event.target.value)}
+          onBlur={commitName}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur();
+          }}
+        />
+        <input
+          className={styles.emojiInput}
+          type="text"
+          value={emoji}
+          maxLength={4}
+          aria-label={`${member.name}的头像`}
+          data-testid={`member-emoji-input-${member.id}`}
+          onChange={(event) => setEmoji(event.target.value)}
+          onBlur={() => {
+            const next = emoji.trim();
+            if (next === '' || next === member.emoji) {
+              setEmoji(member.emoji);
+              return;
+            }
+            onSave({ emoji: next });
+          }}
+        />
+      </div>
+      {/* 头像快选：家人多半就点这几个（与新增表单同一组，不另维护一份） */}
+      <div className={styles.emojiRow}>
+        {EMOJI_PICKS.map((pick) => (
+          <button
+            key={pick}
+            type="button"
+            className={pick === member.emoji ? `${styles.emojiPick} ${styles.emojiPickOn}` : styles.emojiPick}
+            data-testid={`member-emoji-${member.id}-${pick}`}
+            aria-label={`把头像换成 ${pick}`}
+            aria-pressed={pick === member.emoji}
+            onClick={() => {
+              setEmoji(pick);
+              onSave({ emoji: pick });
+            }}
+          >
+            {pick}
+          </button>
+        ))}
+      </div>
+      <div className={styles.entries} style={{ marginTop: 8 }}>
+        <button
+          type="button"
+          className={member.gender === 'male' ? `${styles.entry} ${styles.loves}` : styles.entry}
+          data-testid={`member-gender-male-${member.id}`}
+          aria-pressed={member.gender === 'male'}
+          onClick={() => onSave({ gender: 'male' })}
+        >
+          👦 男孩 / 男士
+        </button>
+        <button
+          type="button"
+          className={member.gender === 'female' ? `${styles.entry} ${styles.loves}` : styles.entry}
+          data-testid={`member-gender-female-${member.id}`}
+          aria-pressed={member.gender === 'female'}
+          onClick={() => onSave({ gender: 'female' })}
+        >
+          👧 女孩 / 女士
+        </button>
+        <span className="sub" data-testid={`member-gender-hint-${member.id}`}>
+          {banded(member)
+            ? '6 岁起份量按性别分带折算，这里选错会让克数一直偏。'
+            : '6–17 岁的份量按性别分带折算（现在还没到这个年龄带，选错不影响读数）。'}
+        </span>
+      </div>
+    </>
   );
 }

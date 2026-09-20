@@ -106,6 +106,34 @@
   align-items: center;
 }
 
+/* 基本资料那一行：名字吃掉剩余宽度、头像固定窄宽。
+   不复用 .birthRow——它带 `.birthRow .input { flex: 0 0 160px }`（给月份输入框定的），
+   套到名字输入框上会把它挤成固定 160px，而头像的 `flex: 0 0 62px` 不脏收缩，
+   两者相加就冲出手机视口（实测 390px 屏上 scrollWidth = 410）。 */
+.basicsRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.basicsRow .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 头像输入框：固定窄宽（它只装一个 emoji） */
+.emojiInput {
+  flex: 0 0 62px;
+  width: 62px;
+  text-align: center;
+  font-size: 20px;
+  line-height: 1.2;
+  padding: 6px 4px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+
 .birthRow .input {
   flex: 0 0 160px;
 }
