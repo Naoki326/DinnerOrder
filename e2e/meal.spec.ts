@@ -120,8 +120,11 @@ test('打开首页见最近未定餐槽大卡，点进去手动定一餐（挑�
   await page.getByTestId('diner-xiaobao').click();
   await expect(page.getByTestId('diner-xiaobao')).toHaveAttribute('aria-pressed', 'false');
 
-  // 从家庭菜谱里挑菜：一荤一素一汤（挑菜器按荤/素/汤分组）
+  // 从家庭菜谱里挑菜：一荤一素一汤（挑菜器按荤/素/汤分组）。加菜器**默认收起**（#29）：
+  // 先展开——这也是加菜按钮唯一的新前置动作，收起只省地方、不动任何已选状态。
   await expect(page.getByTestId('no-dishes')).toBeVisible();
+  await page.getByTestId('dish-picker-toggle').click();
+  await expect(page.getByTestId('dish-picker-toggle')).toHaveAttribute('aria-expanded', 'true');
   await page.getByTestId('pick-hongshaopaigu').click();
   await page.getByTestId('pick-fanqiechaodan').click();
   await page.getByTestId('pick-dongguapaigutang').click();
@@ -162,15 +165,17 @@ test('已定的一餐还能改（改餐留痕与预定分开），留痕在编�
 
   // 先定一餐（整份菜单一次性提交）
   await page.goto(`${ROOT_URL}/slot/${targetId}`);
+  await page.getByTestId('dish-picker-toggle').click();
   await page.getByTestId('pick-hongshaopaigu').click();
   await page.getByTestId('save-slot').click();
   await expect(page).toHaveURL(`${ROOT_URL}/`);
 
-  // 再进去改：加一道素菜
+  // 再进去改：加一道素菜（每次重挂编辑器，加菜器又是收起的）
   await page.goto(`${ROOT_URL}/slot/${targetId}`);
   await expect(page.getByTestId('slot-status')).toHaveText('已定');
   const decideBefore = countOf(await slotHistory(page, targetId), 'decide');
   const replaceBefore = countOf(await slotHistory(page, targetId), 'replace');
+  await page.getByTestId('dish-picker-toggle').click();
   await page.getByTestId('pick-suanrongcaixin').click();
   await page.getByTestId('save-slot').click();
   await expect(page).toHaveURL(`${ROOT_URL}/`);
@@ -193,6 +198,7 @@ test('取消已定的一餐：回到未定、留痕可查、能重新定', async
   const targetId = slots[0]!.id;
 
   await page.goto(`${ROOT_URL}/slot/${targetId}`);
+  await page.getByTestId('dish-picker-toggle').click();
   await page.getByTestId('pick-kelejichi').click();
   await page.getByTestId('pick-fanqiechaodan').click();
   await page.getByTestId('save-slot').click();
@@ -214,6 +220,7 @@ test('取消已定的一餐：回到未定、留痕可查、能重新定', async
   expect((await slotState(page, targetId)).status).toBe('undecided');
 
   // 未定之后还能重新定（取消不是封禁，只是退回未定）
+  await page.getByTestId('dish-picker-toggle').click();
   await page.getByTestId('pick-hongshaopaigu').click();
   await page.getByTestId('save-slot').click();
   await expect(page).toHaveURL(`${ROOT_URL}/`);

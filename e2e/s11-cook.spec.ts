@@ -104,7 +104,8 @@ test('餐槽卡上选掌勺者 → 卡片与编辑器都看得见 → 改掉之�
   await page.getByTestId('cook-dad').click();
   await expect(page.getByTestId('cook-dad')).toHaveAttribute('aria-pressed', 'true');
 
-  // 挑一道菜，保存
+  // 挑一道菜，保存（加菜器默认收起，先展开）
+  await page.getByTestId('dish-picker-toggle').click();
   await page.getByTestId('pick-fanqiechaodan').click();
   await page.getByTestId('save-slot').click();
   await expect(page).toHaveURL(`${ROOT_URL}/`);
@@ -143,6 +144,7 @@ test('不指定掌勺者时按上一餐继承：前一餐选了爸爸，后一�
   // 先一餐：编辑器选爸爸 → 保存
   await page.goto(`${ROOT_URL}/slot/${earlier.id}`);
   await page.getByTestId('cook-dad').click();
+  await page.getByTestId('dish-picker-toggle').click();
   await page.getByTestId('pick-fanqiechaodan').click();
   await page.getByTestId('save-slot').click();
   await expect(page).toHaveURL(`${ROOT_URL}/`);
@@ -169,6 +171,7 @@ test('这一餐不指定掌勺者：卡片上说得清，服务端存 null', asy
   await page.getByTestId(`cook-${defaultId}`).click();
   await expect(page.getByTestId(`cook-${defaultId}`)).toHaveAttribute('aria-pressed', 'false');
 
+  await page.getByTestId('dish-picker-toggle').click();
   await page.getByTestId('pick-fanqiechaodan').click();
   await page.getByTestId('save-slot').click();
   await expect(page).toHaveURL(`${ROOT_URL}/`);

@@ -117,6 +117,8 @@ test('家人页新增一位家人：出现在列表、能进用餐者名单，�
   }
   await expect(page.getByTestId(`diner-${added!.id}`)).toHaveAttribute('aria-pressed', 'true');
 
+  // 加菜器默认收起（#29）：先展开再挑
+  await page.getByTestId('dish-picker-toggle').click();
   await page.getByTestId('pick-fanqiechaodan').click();
   // 份量随名单即时重算（服务端算的那一份里也只有他）
   await expect(page.getByTestId('portion-summary')).toContainText('1 人合计');
@@ -253,6 +255,7 @@ async function bookThenDeleteDiner(page: Page, who: { name: string; emoji: strin
   // 只留这一位家人（其余种子家人点掉），保存成一份“只有他”的菜单
   await setDiners(page, ['mom', 'dad', 'dabao', 'xiaobao'], false);
   await expect(page.getByTestId(`diner-${added!.id}`)).toHaveAttribute('aria-pressed', 'true');
+  await page.getByTestId('dish-picker-toggle').click();
   await page.getByTestId('pick-fanqiechaodan').click();
   await page.getByTestId('save-slot').click();
   await expect(page).toHaveURL(`${ROOT_URL}/`);

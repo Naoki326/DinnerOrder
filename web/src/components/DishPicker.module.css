@@ -1,14 +1,46 @@
 /* 加菜器（#27）：搜索 + 三组筛选 + 分组按钮区。
    手机优先：输入框与筛选行都允许换行，390 px 下不横向溢出（本仓纪律：截图前先量 scrollWidth）。 */
 
-.blockLabel {
+/* 行头 = 展开/收起开关（整行可点）。收起时这张卡就只剩这一行，所以它得立得住：
+   标题用正文尺寸，右侧那枚胶囊明确写出「展开 / 收起」——不能只靠标题当暗示。 */
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+
+.headTitle {
+  flex: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* 中间那行小字（已选 N 道 / 提示）：`min-width: 0` + 省略号，长读数不把「展开」挤出去 */
+.headNote {
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
   color: var(--sub);
-  margin-bottom: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.toggle {
+  flex: none;
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 99px;
+  background: var(--chip);
+  color: var(--ink);
 }
 
 .search {
   width: 100%;
+  margin-top: 10px;
   font: inherit;
   padding: 9px 12px;
   border-radius: 12px;

@@ -44,12 +44,14 @@ async function nextUndecidedSlot(page: Page): Promise<string> {
   return slot.id;
 }
 
-/** 打开定餐编辑器（加菜器的唯一落点：A 视图的槽位页） */
+/** 打开定餐编辑器（加菜器的唯一落点：A 视图的槽位页），并把加菜器展开（默认收起） */
 async function openEditor(page: Page): Promise<string> {
   const slotId = await nextUndecidedSlot(page);
   await page.goto(`${ROOT_URL}/slot/${slotId}`);
   await expect(page.getByTestId('slot-view')).toBeVisible();
   await expect(page.getByTestId('dish-picker')).toBeVisible();
+  await page.getByTestId('dish-picker-toggle').click();
+  await expect(page.getByTestId('dish-picker-toggle')).toHaveAttribute('aria-expanded', 'true');
   return slotId;
 }
 
@@ -276,8 +278,11 @@ test('退役菜照旧不进加菜器；搜索与筛选是本次打开的临时�
   await expect(page.getByTestId('pick-xiangjiandaiyu')).toHaveCount(0);
 
   // 不持久化：换个页面回来、或原地刷新，都是干净的全量（不进路由、不进存储、不跨设备）
+  // 刷新后加菜器也回到**默认收起**（展开与否同样是临时状态），所以先展开再看筛选
   await page.reload();
   await expect(page.getByTestId('dish-picker')).toBeVisible();
+  await expect(page.getByTestId('dish-picker-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await page.getByTestId('dish-picker-toggle').click();
   await expect(page.getByTestId('dish-search-input')).toHaveValue('');
   await expect(page.getByTestId('filter-status-all')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByTestId('filter-effort-all')).toHaveAttribute('aria-pressed', 'true');
@@ -285,6 +290,53 @@ test('退役菜照旧不进加菜器；搜索与筛选是本次打开的临时�
   await expect(page.getByTestId('dish-filter-count')).toContainText(`共 ${(await filterCounts(page)).total} 道`);
   await expect(page.getByTestId('dish-filter-clear')).toBeDisabled();
   await expect(page).toHaveURL(`${ROOT_URL}/slot/${slotId}`);
+});
+
+test('加菜器默认收起：一行行头，点开才铺开；收起不丢已选与筛选', async ({ page }) => {
+  await clearDecidedSlots(page);
+  const slotId = await nextUndecidedSlot(page);
+  await page.goto(`${ROOT_URL}/slot/${slotId}`);
+  await expect(page.getByTestId('slot-view')).toBeVisible();
+
+  // 默认收起：只有行头，搜索/筛选/菜按钮全不在（这一屏的长短由「这一餐的菜」说了算）
+  const toggle = page.getByTestId('dish-picker-toggle');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(toggle).toContainText('展开');
+  await expect(page.getByTestId('dish-search-input')).toBeHidden();
+  await expect(page.getByTestId('filter-status-all')).toBeHidden();
+  await expect(pickButtons(page)).toHaveCount(0);
+
+  // 点一下展开：搜索 + 筛选 + 按钮都回来了
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(toggle).toContainText('收起');
+  await expect(page.getByTestId('dish-search-input')).toBeVisible();
+  const total = (await filterCounts(page)).total;
+  expect(total).toBeGreaterThan(0);
+
+  // 收起不丢状态：先选一道、再搜一个词，收起后行头报出已选道数，展开回来原样还在
+  await page.getByTestId('pick-hongshaopaigu').click();
+  await page.getByTestId('dish-search-input').fill('土豆');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(toggle).toContainText('已选 1 道');
+  await expect(page.getByTestId('chosen-hongshaopaigu')).toBeVisible();
+
+  // 展开回来：搜索词与筛选、以及「已选的那道被筛掉了」那句提示都还在（收起只藏不重置）
+  await toggle.click();
+  await expect(page.getByTestId('dish-search-input')).toHaveValue('土豆');
+  await expect(page.getByTestId('dish-filter-hidden-chosen')).toContainText('1 道已选的菜被筛掉了');
+  await page.getByTestId('dish-filter-clear').click();
+  await expect(page.getByTestId('pick-hongshaopaigu')).toHaveAttribute('aria-pressed', 'true');
+
+  // 收起态也不许把页面撑宽（行头是整行按钮 + 三块文字）
+  await toggle.click();
+  const overflow = await page.evaluate(() => {
+    const wide = [...document.querySelectorAll('*')].filter((el) => el.scrollWidth > el.clientWidth + 1);
+    return wide.map((el) => `${el.tagName}.${el.className}`).slice(0, 5);
+  });
+  expect(overflow).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(E2E.viewport.width);
 });
 
 test('不是掌勺者也照样能搜能筛（不按身份门控），且不吃穿手机宽度', async ({ page }) => {

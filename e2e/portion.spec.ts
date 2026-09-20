@@ -67,7 +67,8 @@ test('编辑器显示每道菜的本餐生重，改用餐者名单即时重算�
   await expect(page.getByTestId('diner-mom')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByTestId('diner-xiaobao')).toHaveAttribute('aria-pressed', 'false');
 
-  // 挑一道荤菜：红烧排骨的成人份基准是猪排骨 150 g
+  // 挑一道荤菜：红烧排骨的成人份基准是猪排骨 150 g（加菜器默认收起，先展开）
+  await page.getByTestId('dish-picker-toggle').click();
   await page.getByTestId('pick-hongshaopaigu').click();
   await expect(page.getByTestId('portion-hongshaopaigu')).toBeVisible();
   // 两个成人 → 150 × 2 = 300 g（拿服务端当 oracle 断言，界面数字要与它一致）
@@ -142,6 +143,7 @@ test('固定量的食材不随人数放大（一锅就放这么多）', async ({
   if (!targetId) throw new Error('大卡上没有餐槽 id');
   await page.goto(`${ROOT_URL}/slot/${targetId}`);
 
+  await page.getByTestId('dish-picker-toggle').click();
   await page.getByTestId('pick-kelejichi').click();
 
   // 名单收敛到两位大人（真实时钟下小孩的系数随生日走，本用例断的是与日期无关的那部分）
