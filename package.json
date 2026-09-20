@@ -18,7 +18,11 @@
     "lint": "eslint .",
     "test": "pnpm --filter @dinnerorder/server run test",
     "test:watch": "pnpm --filter @dinnerorder/server run test:watch",
-    "test:e2e": "pnpm run build && playwright test"
+    "test:e2e": "pnpm run build && playwright test",
+    "backup": "node server/dist/deploy/backup-cli-entry.js",
+    "deploy:install": "pnpm --filter @dinnerorder/server exec tsx src/deploy/deploy-cli.ts install",
+    "deploy:uninstall": "pnpm --filter @dinnerorder/server exec tsx src/deploy/deploy-cli.ts uninstall",
+    "deploy:status": "pnpm --filter @dinnerorder/server exec tsx src/deploy/deploy-cli.ts status"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",

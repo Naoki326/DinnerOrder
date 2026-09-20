@@ -17,6 +17,9 @@ build/
 data/
 backups/
 
+# 装机生成的部署产物（含本机绝对路径，宿主机各自生成）
+deploy/tm-exclusions.txt
+
 # 测试与工具产物
 coverage/
 playwright-report/

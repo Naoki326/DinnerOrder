@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "backup": "node dist/deploy/backup-cli-entry.js",
     "import:library": "tsx --env-file-if-exists=../.env scripts/import-library.ts",
     "fetch:xiachufang": "tsx scripts/fetch-xiachufang.ts"
   },

@@ -25,11 +25,19 @@
 | 10 | #22 M1-10 留量 | `1a88e78` | 375 unit + 36 E2E | ✅ CLOSED |
 | 11 | **#23 M1-11 买菜清单** | 见下 | 396 unit + 40 E2E | ✅ 实现完成，待审查 |
 | 12 | **#24 M1-12 三视图与视图模式** | 见下 | 322 unit + 31 E2E | ✅ 实现完成，待审查 |
-| 13 | #25 M1-13 部署与备份 | — | — | 待做 |
+| 13 | #25 M1-13 部署与备份 | 见下 | 582 unit（含 71 新增）+ 73 E2E | ✅ 实现完成 + **已真装到本机** + 审查修复轮，待提交 |
 | 14 | #26 M1-14 验收收尾 | — | — | 待做 |
 | — | **#12 父 spec 收尾** | — | — | 全部子票关闭后处理 |
 
-**建议执行顺序**（依赖关系）：#20 → #21；#19 可与 #20 并行；#22（依赖 M1-04 已完成）→ #23；#24（依赖 #18 已实现，待审查）→ #23；#25（只依赖 #13，可随时做）；#26 最后。
+**部署现状（#25 已真装到 `chenMac-mini.local`）**：两个 launchd 服务实例（`8787` `BASE_PATH=/` 供直连、
+`8786` `BASE_PATH=/apps/dinner` 供 nginx，共用一个库）+ 每日 03:00 热备 agent；宿主 nginx
+（`servers/apps-proxy.conf`）只多了一行 include，片段在 `deploy/nginx/dinner-location.conf`。
+巡检用 `pnpm deploy:status`，装卸用 `pnpm deploy:install` / `pnpm deploy:uninstall`（**不删数据**）。
+**⚠️ 手工启动的那个 `/tmp/demo.db` 实例已被 #25 取代**（它占着 8787 且库在 /tmp，不受任何备份通道保护）；
+生产库现在是 `data/dinner.db`。那份演示库仍留在 `/tmp/demo.db`（未删，但那 6 位家人**不在**生产库里）。
+详见 [`docs/deploy/README.md`](../../docs/deploy/README.md)。
+
+**建议执行顺序**（依赖关系）：#20 → #21；#19 可与 #20 并行；#22（依赖 M1-04 已完成）→ #23；#24（依赖 #18 已实现，待审查）→ #23；#25 已完成；#26 最后。
 
 ### 新对话开工前必读
 
@@ -362,6 +370,125 @@
   导入期的 0 克项（模糊份量待 LLM 重标）**列出并标记**（`⌛ 待重算`）而不是静默跳过：
   0 g 不是「不需要买」而是「还不知道买多少」。重标写回正数后重算一次，标记自然消失。
   测试：`server/src/api/grocery.test.ts` 的「0 克项（导入期「待重标」）列出并标记」。
+
+## 归属 #25（部署与备份）
+
+- ✅ **五条 AC 全部落地并实测**（spec §7、S10；实测记录见 `docs/deploy/README.md`）。
+  实现面：`server/src/deploy/`（`paths` / `launchd` / `backup` / `backup-cli` / `backup-cli-entry` /
+  `nginx` / `nginx-include` / `secrets` / `install` / `deploy-cli`）、片段 `deploy/nginx/dinner-location.conf`、
+  入口脚本 `pnpm deploy:install|uninstall|status` + `pnpm backup`、测试 66 条
+  （`server/src/deploy/*.test.ts` 与 `scripts/backup.test.ts`，共 71 条）。
+
+- **⚠️ 决定性发现：一个进程只能有一个 `BASE_PATH`，所以 S10 的两条通道需要两个实例**
+  （来源：#25 实施，本票最重要的一条）。S10 要求「经 nginx 子路径」与「直连 `http://<host>.local:8787`」
+  **两条都可用**，但 `BASE_PATH` 是启动配置：`=/apps/dinner` 时直连根路径 404；
+  `=/` 时 nginx 侧的前端会去请求根路径的 `/api/*`，而那个 location 在本机 8080 上**属于 pi-web**
+  （实测「剥前缀」写法需要额外补 4 条 location 才能跑通，其中 `/api/` 会抢别人的流量）。
+  **⚠️ 同一发现里的一处实测更正**：剥前缀写法**确实可用**，但需要额外 4 条 location，
+  且 `proxy_pass` **必须不带路径**（带路径时 nginx 用那个 URI 替换匹配到的 location 前缀，
+  `/assets/x.js` 会变成 `/x.js` → 上游 404；实测踩过一次，第一版记录里的写法是错的，已更正）。
+  6 条路径（入口/API/manifest/assets/icons/深链）在隔离端口 17991 上逐条实测 200，
+  记录进 `docs/deploy/README.md` 的「两种 nginx 写法」与实测表。**它在本机不可用的唯一原因**
+  是 `location /api/` 已属于 pi-web（会抢流量），不是兼容性问题。
+
+  **决议（用户拍板）**：两个 launchd 实例，共用同一个 SQLite 文件（WAL 支持多进程读写，
+  写锁竞争由 `db/index.ts` 的 `busy_timeout = 5000` 兜）——
+  `com.naoki.dinnerorder`（8787、`BASE_PATH=/`）+ `com.naoki.dinnerorder.subpath`（8786、`BASE_PATH=/apps/dinner`）。
+  **这偏离了 spec §7「一个 plist 指 `node dist/server/index.js`」的字面**（那句默认单实例），
+  但两条通道同时可用是 S10 的硬要求，二者不可兼得时选了后者。
+  ✅ **已记 ADR-0008**（`docs/adr/0008-two-instances-per-access-path.md`）：含完整取舍、
+  被否决备选、以及与 ADR-0002/0003 的关系（**ADR-0002 不被推翻**——每个实例仍是单进程前后端一体；
+  **ADR-0003 被强化**——同一份构建产物挂两个路径，正是运行时注入想要的效果）。
+  审查指出「偏离 ADR 未记录」后补的。若不接受双实例，代价最小的退路是让直连也带前缀
+  （`http://<host>.local:8787/apps/dinner/`，改 plist 的 `BASE_PATH` + 文档，**无需改代码**）。
+
+- **宿主 nginx 只加一行 include，片段本体留在仓库里**（来源：#25 实施）。
+  `servers/apps-proxy.conf` 是用户手写的、服务 pi-web / mdtools / baby / frame / qqmusic 的文件；
+  装机只往里插一行带标记的 include（`# dinnerorder-location`，幂等且可撤），片段本体
+  `deploy/nginx/dinner-location.conf` 受版本控制。实测 diff 就两行（一行 include + 一个空行）。
+  **`servers/*` 是 http 上下文**（`include servers/*`），所以裸 `location` 放在那目录下会报
+  `"location" directive is not allowed here`——两种形态（location 片段 / 自带 `server {}`）在
+  `nginx.test.ts` 与 `nginx-include.test.ts` 分别钉住。
+  **插入位置用大括号配平算**（`nginx-include.ts`）：那个文件里有引号含 `{}`/`#` 的字符串与注释掉的花括号，
+  正则一把梭会插错位置。
+
+- **`--dry-run` 曾真的写了系统**（来源：#25 实施，自测逮到）。第一版 `deploy-cli.ts` 在 dry-run
+  分支里自己拼步骤列表、没调 `install(plan, {dryRun:true})`，于是「空跑」照样装了 plist 与 nginx 片段。
+  **已修**：dry-run 与真装走**同一条判断路径**（`install(..., {dryRun:true})` 返回计划、不碰文件系统）。
+
+- **`bootout` 是异步的，紧接着 `bootstrap` 会报 `Input/output error`**（来源：#25 实施，重装幂等测试逮到）。
+  `launchctl bootout` 返回 0 只代表命令收到，服务可能还在退；此时 `bootstrap` 报
+  `Bootstrap failed: 5: Input/output error`——**这句话完全指不到真因**（看起来像权限问题）。
+  **已修**：`loadAgent` 在 bootout 后有界轮询到 `launchctl print` 真的失败为止（上限 10s）。
+  重装幂等因此可测：连装两次都能成功。
+
+- **`.backup` 会继承源库的 `journal_mode = WAL`，于是备份目录会堆 `-wal`/`-shm`**
+  （来源：#25 实施，恢复演练时发现）。源库是 WAL，`.backup` 输出也是 WAL；
+  任何人打开备份文件（包括恢复演练）都会在 `backups/` 里留下侧文件，而它们**不匹配**
+  `dinner-YYYY-MM-DD.db` 这个形状 → 滚动保留不会清 → 日子一长堆满垃圾。
+  **已修**：备份后立刻 `PRAGMA journal_mode = delete`（冷藏快照不需要并发写），并清掉侧文件
+  （连 `.tmp` 那一步产生的也清）。回归测试两条钉住：「打开备份后目录里只有一份 .db」
+  「滚动删日期时连同侧文件一起清」。
+
+- **既有测试对真实系统有副作用，需要在 #26 注意**（来源：#25 实施）。
+  `src/deploy/*.test.ts` 里只有纯逻辑与 `plists`/`nginx -t` 这类**只读**断言进单测；
+  `launchctl bootstrap` 与 `tmutil addexclusion` **有意不进单测**（会污染跑测试的机器，
+  在别人机器/CI 上结果还不同）。那两条由装机实测负责（`docs/deploy/README.md` 有记录）。
+  **#26 若在别的机器上跑 `pnpm test`，`deploy` 那 66 条应当全绿**（它们不碰系统状态）；
+  但 `install.test.ts` 有一条「找得到 Homebrew 的 nginx servers 目录」，在没装 nginx 的机器上
+  走的是 `dir === undefined` 的分支（断言写成了二选一，不会红）。
+
+- **审查修复轮（两轴审查发现，均已处理）**（来源：#25 评审）：
+  1. **剥前缀写法的实测记录缺失且**写法是错的**（Spec 轴 AC2 指出）。第一版把
+     `proxy_pass http://upstream/assets/` 当成对的了——实测 `/assets/x.js` → `/x.js` → 404。
+     正确写法是 **`proxy_pass` 不带路径**（不带 URI 时 nginx 原样转发；带 URI 时用它替换匹配前缀）。
+     现已 6 条路径（入口/API/manifest/assets/icons/深链）在隔离端口逐条实测 200，
+     写进 `docs/deploy/README.md`「两种 nginx 写法」与实测表。
+  2. **卸载把 `.env` 的 Time Machine 排除撤掉了**（Spec 轴指出，**真 bug**）。`uninstall` 原先调
+     `removeTimeMachineExclusion`，而 `.env` 仍在盘上（`kept` 里声明保留）——撤销排除等于把密钥放回
+     整机备份，正违反 spec §4「排除出双通道」。**已修**：卸载只**重新确认**保留项的排除状态
+     （`retainedExclusions`），不再撤销；测试三条钉住。
+  3. **`removeTimeMachineExclusion` 恒返回 `false`**（Standards 轴指出）：卸载报告永远显示「未排除」，
+     与实情无关。该函数已随第 2 条整体删除。
+  4. **卸载/回滚会删掉受版本控制的片段文件**（Spec 轴指出）。`uninstallFromExistingServer` 原先
+     `fs.rmSync(deploy/nginx/dinner-location.conf)`——那是仓库文件（删它会让 `git status` 冒出一个意外删除）。
+     **已修**：只撤 include 行，不删片段；测试两条钉住。
+  5. **两个错误的注释路径**：`server/src/deploy/nginx.ts` 与 `backup-cli-entry.ts` 的头注里
+     把文件位置/入口名写错了（Standards 轴指出），已改对。
+  6. **死导出与魔法数字**（Standards 轴指出）：删掉 `countRowsInBackup` / `backupTargetDir` /
+     `nginxFragmentPath`（全仓无调用），`deploy-cli.ts` 的 `7` 改用 `KEEP_DEFAULT`，
+     端口校验收成 `parsePort()`，`LaunchAgents` 目录复用 `launchAgentsDir()`，
+     `deploy:status` 的输出从**已装载的 plist 现读**端口与挂载点（不再硬编码 8787/8786）。
+  7. **`InstallPlan` 与 `PlistOptions` 字段重复**（Standards 轴指出）：改为类型别名复用。
+  8. **`deploy/tm-exclusions.txt` 不该入库**（两条轴都问过）：内容是本机绝对路径、每次装机重生成，
+     已加进 `.gitignore`。
+  9. **偏离 ADR 未记录**（Spec 轴指出）：新增
+     [`docs/adr/0008-two-instances-per-access-path.md`](../../docs/adr/0008-two-instances-per-access-path.md)，
+     写明取舍、被否决备选、与 ADR-0002/0003 的关系。
+  10. **AC5 缺 plist 示例**（Spec 轴指出）：`docs/deploy/README.md` 补了两个 plist 的关键片段
+      与三个 key（`KeepAlive` 字典型 / `RunAtLoad` / `EnvironmentVariables`）的用意说明。
+
+- **一个间歇性失败的测试（自己写的，已根治）**：`backup.test.ts` 的「正在被写着的库也备得到最新数据」
+  偶发红（12 轮里 3 次），**根因有两层**：
+  1. 轮询用的是忙等 `while (Date.now() < until) {}` —— 并发跑到 CPU 饱和时会把 sqlite 子进程饿死，
+     写入永远完不成（改成 `await` 让出 CPU）；
+  2. **更关键**：轮询用的 `sqlite3` CLI 连接**没设 `busy_timeout`**（生产库的 5000ms 是 `db/index.ts`
+     给 app 连接设的，CLI 不吃那套），撞上写锁立刻抛 `database is locked` 而不是等。
+  现已在轮询里加 `-cmd '.timeout 5000'`，并加注释说明这两个坑。**15 轮连续并发跑全绿后收工**。
+  另一处同类毛病（生产代码）：`install.ts` 的 `waitUntilUnloaded` 也用忙等等 launchd，
+  已改 `Atomics.wait` 同步睡眠（不烧 CPU）。
+
+- **未做的部分（建议归 #26 的上线检查单）**：
+  * **真机重启验证**：`RunAtLoad` 的语义已用「bootout + bootstrap 后不 kickstart 就自动起」等价证明，
+    但那不等于「整机重启后自启」——后者需要一次真重启，属人工走查项（本票没重启用户的机器）。
+  * **家人设备实测**：iPad / iPhone / Android / 桌面四种设备的真实访问（含「添加到主屏幕」），
+    归 #26（本票只用 curl 验了两条通道）。
+  * **Time Machine 双通道的端到端验证**：本机 `tmutil destinationinfo` 显示 **没有配置备份目的地**，
+    所以只能验证「排除项已登记」（`tmutil isexcluded` 返回 `[Excluded]`），
+    无法验证「备份里真的没有 .env」。要在配了 TM 的机器上走查一次。
+  * **`NGINX_CONF` / `NGINX_LISTEN` 的默认值绑定本机**：`nginxEntryConfPath()` 默认找
+    `servers/apps-proxy.conf`、`NGINX_LISTEN` 默认 8080。换机器要设这两个环境变量
+    （已在 `docs/deploy/README.md` 与错误信息里写明）。
 
 ## 归属 #26（验收收尾）
 

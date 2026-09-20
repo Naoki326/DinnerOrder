@@ -27,6 +27,10 @@
 | `pnpm test` | server 单测 + API 集成测试（Vitest，内存 SQLite） |
 | `pnpm test:watch` | 同上，watch 模式 |
 | `pnpm test:e2e` | 先 `build` 再跑 Playwright 冒烟（根路径 + 子路径两个实例） |
+| `pnpm deploy:install` | **部署到常驻主机**：launchd 自启与崩溃拉起 + nginx 子路径反代 + `.env` 权限 + 备份排除。先 `--dry-run` 看一眼。见 [`docs/deploy/README.md`](docs/deploy/README.md) |
+| `pnpm deploy:status` | 部署巡检（服务装载状态、热备清单、密钥权限、排除项） |
+| `pnpm deploy:uninstall` | 卸载（**不删数据**：库、热备、`.env` 都留着） |
+| `pnpm backup` | 手动跑一次 SQLite 热备（`backups/dinner-<日期>.db`，按日滚动保留 7 份） |
 
 ## 冷启动导入（外部菜谱池打底，总纲 §2.8、§5；ADR-0006）
 
@@ -109,10 +113,13 @@ server/                 @dinnerorder/server —— Hono + better-sqlite3 + 领�
   src/e2e-server.ts     E2E 专用入口：与生产同一条装配路，只把 LLM 换成确定性 fake；另挂一个测试专用的时钟控制口（需 `E2E_CLOCK_CONTROL=1`，生产入口没有；S6 转正要把一餐拨到「已经吃过」）
   src/testing/harness.ts 集成测试 harness（内存库 + 可控时钟 + fake LLM + 直打 HTTP）
   src/domain/            领域逻辑（食材字典、家人画像、菜谱、餐槽、份量、推荐管线、导入管线）
-  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行；004 = 外部菜谱池；005 = 导入工具链；006 = 反馈与家规；007 = 留量与留量上浮列；008 = 转正台账；009 = 买菜清单）
+  src/deploy/            部署与运维：launchd plist 生成 · 每日热备（sqlite3 .backup + 按日滚动）· nginx 片段与 include 插入 · .env 权限与备份排除 · 装机/卸载编排
+  migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行；004 = 外部菜谱池；005 = 导入工具链；006 = 反馈与家规；007 = 留量与留量上浮列；008 = 转正台账；009 = 买菜清单；010–012 = 家人软删、按餐指定掌勺者、营养与食谱）
 web/                    @dinnerorder/web —— React 18 + Vite + Router 7 + TanStack Query
   src/identity.tsx      当前身份（设备本地：localStorage；家人画像在服务端）
 e2e/                    Playwright 冒烟 + 家人与当前身份
+deploy/                 部署产物：nginx/dinner-location.conf（宿主 include 的片段，随仓库走）· tm-exclusions.txt（备份排除清单，**装机生成、不入库**：含本机绝对路径）
+docs/deploy/README.md   部署与运维手册（安装/卸载/备份恢复/排障/实测记录）
 ```
 
 ## API（M1 增量，无登录 · 家庭 Wi-Fi 即门禁）
@@ -159,7 +166,10 @@ e2e/                    Playwright 冒烟 + 家人与当前身份
    （`window.__APP_CONFIG__.basePath`），Router `basename`、API 前缀、manifest `start_url`/`scope`
    都从它推导。**同一份构建产物**挂 `/` 或 `/dinner/` 都不用重打包。
 2. **单进程前后端一体**（[ADR-0002](docs/adr/0002-ts-monorepo-react-hono-sqlite-single-process.md)）：
-   生产一个 Node 进程同时服务 `/api/*` 与 `web/dist`，launchd 一个 plist 拉起   （部署见 spec §7；`/api` 未匹配时返回 JSON 404，绝不落到 SPA fallback）。
+   生产一个 Node 进程同时服务 `/api/*` 与 `web/dist`，launchd 拉起   （部署见 spec §7；`/api` 未匹配时返回 JSON 404，绝不落到 SPA fallback）。
+   **注意**：部署时装的是**两个实例**（`8787` + `BASE_PATH=/` 供直连；`8786` + `BASE_PATH=/apps/dinner`
+   供 nginx 子路径），它们共用同一个 SQLite 文件——一个进程只能有一个 `BASE_PATH`，而 S10 要求两条通道都可用。
+   理由与取舍见 [`docs/deploy/README.md`](docs/deploy/README.md)。
 
 3. **共享类型由 server 导出**（ADR-0002、总纲 §6）：HTTP 的线上形状只在
    `server/src/wire-types.ts` 定义一处；web 侧一律
