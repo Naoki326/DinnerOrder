@@ -8,6 +8,7 @@ import { useBookLeftover, useBookSlot, useCancelSlot, useSlot, type DinerRef, ty
 import { useAcceptRecommendation, useRecommendation } from '../api/recommendations';
 import { useUndoSet } from '../api/replacements';
 import { CandidateList } from '../components/CandidateList';
+import { DishPicker } from '../components/DishPicker';
 import { NutritionSheet } from '../components/NutritionSheet';
 import { RecipeSheet } from '../components/RecipeSheet';
 import styles from './SlotView.module.css';
@@ -229,7 +230,6 @@ function SlotEditor({
 
   const byId = useMemo(() => new Map(recipes.map((recipe) => [recipe.id, recipe])), [recipes]);
   const chosen = useMemo(() => new Set(dishes.map((dish) => dish.recipeId)), [dishes]);
-  const pool = useMemo(() => sortForBooking(recipes), [recipes]);
 
   const toggleDiner = (memberId: string): void => {
     setDinersDraft(diners.includes(memberId) ? diners.filter((id) => id !== memberId) : [...diners, memberId]);
@@ -540,6 +540,14 @@ function SlotEditor({
                   <div className={styles.chosenRow}>
                     <span className={`${styles.kind} ${styles[recipe.kind]}`}>{KIND_LABEL[recipe.kind]}</span>
                     <span className={styles.chosenName}>{recipe.name}</span>
+                    {/* 「没做过」（#27 story 20）：草稿菜被选中后仍带小标进菜单——上桌前就有预期。
+                        用全局 `.badge`（与 `CandidateList`、推荐面板同一枚），不另造一份样式：
+                        「没做过」全库只有一个口径，也只有一个长相。 */}
+                    {recipe.status === 'draft' ? (
+                      <span className="badge" data-testid={`chosen-untried-${dish.recipeId}`}>
+                        没做过
+                      </span>
+                    ) : null}
                     {/* 食谱（本票）：单道菜的做法弹出。对**任何**菜都给入口——草稿/退役的菜也有做法，
                         「看怎么做」不该被状态挡住（服务端也只按「菜谱在不在」回应）。 */}
                     <button
@@ -621,34 +629,10 @@ function SlotEditor({
         )}
       </div>
 
-      {/* 挑菜：按荤/素/汤分组 */}
-      <div className="card">
-        <div className={styles.blockLabel}>加菜（点一下加，再点一下去掉）</div>
-        {(['meat', 'veg', 'soup_meat', 'soup_veg'] as const).map((kind) => {
-          const group = pool.filter((recipe) => recipe.kind === kind);
-          if (group.length === 0) return null;
-          return (
-            <div key={kind} className={styles.group}>
-              <div className={styles.groupLabel}>{GROUP_LABEL[kind]}</div>
-              <div className={styles.picker}>
-                {group.map((recipe) => (
-                  <button
-                    key={recipe.id}
-                    type="button"
-                    className={chosen.has(recipe.id) ? `${styles.pick} ${styles.picked}` : styles.pick}
-                    data-testid={`pick-${recipe.id}`}
-                    aria-pressed={chosen.has(recipe.id)}
-                    onClick={() => toggleDish(recipe.id)}
-                  >
-                    {recipe.name}
-                    {recipe.status === 'draft' ? <span className={styles.tiny}>没做过</span> : null}
-                  </button>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {/* 加菜器（#27）：搜索 + 筛选 + 按荤/素/汤分组。
+          筛选是**组件本地状态**（`DishPicker` 里）：不进路由、不进存储、不跨设备；
+          而「已选」由这里的 `dishes` 草稿持有——筛选只改可见性，不动已选（spec #27 的硬要求）。 */}
+      <DishPicker recipes={recipes} chosen={chosen} onToggle={toggleDish} />
 
       {/* 份量小结：这餐总共做多少（Σ系数 × 成人份基准；留量上浮要等 #22 的引用）。
           两件「算不出来」都要有话说（本仓纪律：异常原因看得见）：
@@ -845,24 +829,12 @@ function roundSum(value: number): string {
 }
 
 const KIND_LABEL: Record<string, string> = { meat: '荤', veg: '素', soup_meat: '汤', soup_veg: '汤' };
-const GROUP_LABEL: Record<string, string> = { meat: '荤菜', veg: '素菜', soup_meat: '荤汤', soup_veg: '素汤' };
 const EVENT_LABEL: Record<string, string> = {
   decide: '预定',
   replace: '改餐',
   replace_set: '换一整套',
   cancel: '取消',
 };
-
-/**
- * 挑菜的顺序：先按荤素汤位、再按名字，顺序稳定、不随请求回来的次序漂移。
- * 退役的菜不上挑菜器（家里不再做；要吃先转正），草稿留着——它是外部补位池的菜（spec S6）。
- */
-function sortForBooking(recipes: Recipe[]): Recipe[] {
-  const order: Record<string, number> = { meat: 0, veg: 1, soup_meat: 2, soup_veg: 3 };
-  return recipes
-    .filter((recipe) => recipe.status !== 'retired')
-    .sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9) || a.name.localeCompare(b.name, 'zh'));
-}
 
 /** 事件的时刻：显示到分钟（家庭时区）——这是「家里什么时候定的」，不是技术时间戳 */
 export function eventAt(iso: string): string {

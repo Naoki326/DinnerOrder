@@ -3,7 +3,15 @@ import type { Recipe, RecipeStatus } from '@dinnerorder/server/types';
 import { apiUrl } from '../config';
 
 // 线上形状来自 server（ADR-0002「共享类型由 server 导出」），前端不手抄
-export type { Recipe, RecipeKind, RecipeEffort, RecipeSource, RecipeStatus, TasteTag } from '@dinnerorder/server/types';
+export type {
+  Recipe,
+  RecipeCuisine,
+  RecipeEffort,
+  RecipeKind,
+  RecipeSource,
+  RecipeStatus,
+  TasteTag,
+} from '@dinnerorder/server/types';
 
 async function fetchRecipes(status: RecipeStatus | 'all', signal: AbortSignal): Promise<Recipe[]> {
   const response = await fetch(apiUrl('/recipes', { status }), { signal, headers: { accept: 'application/json' } });
