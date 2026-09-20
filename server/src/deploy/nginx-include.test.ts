@@ -7,8 +7,10 @@ import {
   hasDinnerInclude,
   insertDinnerInclude,
   removeDinnerInclude,
+  retargetLandingRoot,
   stripForBalance,
   uninstallFromExistingServer,
+  uninstallLandingRoot,
 } from './nginx-include.js';
 
 /**
@@ -198,5 +200,112 @@ describe('真文件上的装卸（片段是仓库文件，不能删）', () => {
 
     expect(result.includeRemoved).toBe(false);
     expect(fs.readFileSync(confPath, 'utf8')).toBe(original);
+  });
+});
+
+describe('导航页 root 改指稳定目录（Cellar 版本目录会在升级时丢改动）', () => {
+  const CONF = [
+    'server {',
+    '    listen 8080;',
+    '    location = /apps { return 301 /apps/$is_args$args; }',
+    '    location = /apps/ {',
+    '        root html;',
+    '        try_files /index.html =404;',
+    '    }',
+    '}',
+  ].join('\n');
+
+  it('把 root html 改成绝对稳定目录，并留标记（幂等）', () => {
+    const { text, changed } = retargetLandingRoot(CONF, '/opt/homebrew/etc/nginx/landing');
+
+    expect(changed).toBe(true);
+    expect(text).toContain('root /opt/homebrew/etc/nginx/landing;');
+    expect(text).not.toMatch(/^\s*root html;/m);
+    // try_files 不受影响
+    expect(text).toContain('try_files /index.html =404;');
+
+    // 再跑一次不动（幂等：反复装机不会堆标记）
+    const again = retargetLandingRoot(text, '/opt/homebrew/etc/nginx/landing');
+    expect(again.changed).toBe(false);
+    expect(again.text).toBe(text);
+  });
+
+  it('只改 /apps/ 那条的 root，不碰别的 location 的 root html', () => {
+    const conf = [
+      'server {',
+      '    listen 8080;',
+      '    location = /apps/ {',
+      '        root html;',
+      '    }',
+      '    location /other/ {',
+      '        root html;',
+      '    }',
+      '}',
+    ].join('\n');
+
+    const { text } = retargetLandingRoot(conf, '/stable');
+
+    // 第一条被改了，第二条原样
+    expect(text).toContain('root /stable;');
+    const other = text.split('location /other/')[1] as string;
+    expect(other).toContain('root html;');
+  });
+
+  it('没有那个 location 时原样返回（导航页不是本 app 的必需品，不该因此装不上）', () => {
+    const conf = 'server {\n    listen 8080;\n}\n';
+    const { text, changed } = retargetLandingRoot(conf, '/stable');
+
+    expect(changed).toBe(false);
+    expect(text).toBe(conf);
+  });
+});
+
+describe('导航页 root 的撤销', () => {
+  it('卸载时把 root 改回 html（不留下指向 landing/ 的死配置）', () => {
+    const installed = [
+      'server {',
+      '    listen 8080;',
+      '    location = /apps/ {',
+      '        root /opt/homebrew/etc/nginx/landing;     # dinnerorder-landing-root',
+      '    }',
+      '}',
+    ].join('\n');
+
+    const { changed } = retargetLandingRoot(installed, '/whatever');
+
+    // 已经是改过的形态：幂等不动
+    expect(changed).toBe(false);
+
+    // 撤销：回到 root html，且不留标记
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dinner-landing-'));
+    try {
+      const confPath = path.join(dir, 'apps-proxy.conf');
+      fs.writeFileSync(confPath, installed);
+      const removed = uninstallLandingRoot({ confPath });
+
+      expect(removed.changed).toBe(true);
+      const after = fs.readFileSync(confPath, 'utf8');
+      expect(after).toContain('root html;');
+      expect(after).not.toContain('dinnerorder-landing-root');
+      expect(after).not.toContain('/opt/homebrew/etc/nginx/landing');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('没改过时撤销是幂等的（不误删宿主的 root html）', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dinner-landing-'));
+    try {
+      const confPath = path.join(dir, 'apps-proxy.conf');
+      const original = 'server {\n    listen 8080;\n    location = /apps/ {\n        root html;\n    }\n}\n';
+      fs.writeFileSync(confPath, original);
+
+      const removed = uninstallLandingRoot({ confPath });
+
+      expect(removed.changed).toBe(false);
+      expect(fs.readFileSync(confPath, 'utf8')).toBe(original);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

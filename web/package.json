@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "icons": "bash scripts/icons/make-icons.sh",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",

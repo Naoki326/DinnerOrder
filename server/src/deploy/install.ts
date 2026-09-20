@@ -24,9 +24,13 @@ import { renderNginxLocation } from './nginx.js';
 import {
   DEFAULT_NGINX_LISTEN_PORT,
   installIntoExistingServer,
+  installIntoLandingRoot,
   repoFragmentPath,
   uninstallFromExistingServer,
+  uninstallLandingRoot,
 } from './nginx-include.js';
+import { defaultLandingEntries, landingDir, landingIndexPath, renderLandingPage, svgDataUri } from './landing.js';
+import { readFileSync } from 'node:fs';
 import {
   ensureEnvMode,
   excludeFromTimeMachine,
@@ -105,6 +109,61 @@ function launchctl(args: string[]): { status: number; output: string } {
     const failure = error as { status?: number; stdout?: string; stderr?: string };
     return { status: failure.status ?? -1, output: `${failure.stdout ?? ''}${failure.stderr ?? ''}` };
   }
+}
+
+/**
+ * 导航页的安装（两步，缺一不可）：
+ *
+ * 1. 把 `location = /apps/` 的 `root` 从 nginx 的**版本目录**改到 `<配置目录>/landing`；
+ * 2. 把生成的导航页 HTML 写到那里。
+ *
+ * 只写文件而不改 `root` 是无效的（请求仍会去版本目录找）；只改 `root` 而不写文件则会 404。
+ * 两者都幂等，可以反复跑。
+ *
+ * **图标从 app 自己的 `icon.svg` 现场读**（而不是在这里再描一份）：两份图标必然漂移，
+ * 而导航页上的条目图标正是「是不是这个 app」的第一眼线索。读不到就拿不到图标——
+ * 导航页照常生成（只是那条没图标），不让一个图标文件把整次装机弄挂。
+ */
+export function installLandingPage(options: {
+  root: string;
+  mountPath: string;
+  subPathPort: number;
+  listenPort?: number;
+}): { indexPath: string; rootChanged: boolean; iconEmbedded: boolean } {
+  const confsDir = nginxConfDir();
+  if (confsDir === undefined) throw new Error('找不到 nginx 配置目录，无法安装导航页');
+  const confPath = nginxEntryConfPath();
+  if (confPath === undefined) throw new Error('找不到宿主 nginx 统一入口配置，无法安装导航页');
+
+  const dir = landingDir(confsDir);
+  fs.mkdirSync(dir, { recursive: true });
+
+  // 直连实例的图标（web/public 下的真源，与页面眉签用的是同一份：保持一致）
+  const svgPath = path.join(options.root, 'web', 'public', 'icons', 'icon.svg');
+  const svg = fs.existsSync(svgPath) ? readFileSync(svgPath, 'utf8') : undefined;
+
+  const html = renderLandingPage({
+    entries: defaultLandingEntries({
+      mountPath: options.mountPath,
+      subPathPort: options.subPathPort,
+      appIcon: svg === undefined ? '' : svgDataUri(svg),
+    }),
+    listenPort: options.listenPort ?? nginxListenPort(),
+  });
+
+  const indexPath = landingIndexPath(confsDir);
+  fs.writeFileSync(indexPath, html);
+  const { changed } = installIntoLandingRoot({ confPath, absoluteDir: dir });
+
+  return { indexPath, rootChanged: changed, iconEmbedded: svg !== undefined };
+}
+
+/** nginx 的**配置目录**（`nginx.conf` 所在的那层）；找不到返回 undefined */
+export function nginxConfDir(): string | undefined {
+  const override = process.env.NGINX_CONF_DIR?.trim();
+  if (override) return override;
+  const serversDir = nginxServersDir();
+  return serversDir === undefined ? undefined : path.dirname(serversDir);
 }
 
 /** 这个 Label 现在装载着吗（`launchctl print` 的成功与否就是答案） */
@@ -285,6 +344,16 @@ export function installSteps(plan: InstallPlan): Step[] {
           : `将插一行 include（指向 ${repoFragmentPath(plan.root)}）并 reload`,
     },
     {
+      action: `恢复 8080 导航页（加一条家餐桌入口）并把它的 root 改到稳定目录`,
+      target: nginxConfDir() === undefined ? '（找不到 nginx 配置目录）' : landingIndexPath(nginxConfDir() as string),
+      state:
+        nginxConfDir() === undefined
+          ? '跳过：未找到 nginx 配置目录'
+          : fs.existsSync(landingIndexPath(nginxConfDir() as string))
+            ? '将覆盖写入（幂等：只加/更新家餐桌那一条，其余条目保留）'
+            : '将新建（宿主原先那一份在 Cellar 版本目录里，nginx 升级会丢）',
+    },
+    {
       action: '校正 .env 权限为 600',
       target: path.join(plan.root, '.env'),
       state: fs.existsSync(path.join(plan.root, '.env')) ? '存在' : '不存在（跳过；没配 key 是合法形态）',
@@ -365,10 +434,18 @@ export function install(plan: InstallPlan, options: { dryRun?: boolean; nginxBin
       // 定位 host 那个 server block 用 nginx 的端口（8080），不是 app 的 8787/8786
       listenPort: nginxListenPort(),
     });
+
+    // 2b) 导航页：把 `root html` 从 Homebrew 的**版本目录**改到稳定目录，并把
+    //     仓库里生成的导航页写过去。见 `landing.ts` 与 `retargetLandingRoot` 的注释：
+    //     版本目录在 `brew upgrade nginx` 后会换名，导航页的改动会静默消失。
+    installLandingPage({ root: plan.root, mountPath: plan.mountPath, subPathPort: plan.subPathPort });
+
     const check = nginxConfigOk(options.nginxBin);
     if (!check.ok) {
-      // 撤掉自己那行 include：宿主配置回到改动前的状态，问题留给人看
+      // 撤掉自己两处改动（include 行 + 导航页 root）：宿主配置回到改动前的状态，问题留给人看。
+      // **两处都要撤**：只撤 include 而留下一行改过的 root，会让导航页指向一个可能不存在的目录
       uninstallNginxFragment();
+      uninstallLandingRoot({ confPath });
       throw new Error(`nginx 配置未通过检查，已撤销改动：\n${check.message}`);
     }
     nginxReload(options.nginxBin);
@@ -437,6 +514,7 @@ export function uninstall(options: { root: string; nginxBin?: string } = { root:
   const agents = [SERVER_LABEL, SUBPATH_LABEL, BACKUP_LABEL].map((label) => ({ label, ...unloadAgent(label) }));
 
   const { confPath, includeRemoved } = uninstallNginxFragment();
+  if (confPath !== undefined) uninstallLandingRoot({ confPath });
   if (includeRemoved) {
     const check = nginxConfigOk(options.nginxBin);
     if (check.ok) nginxReload(options.nginxBin);

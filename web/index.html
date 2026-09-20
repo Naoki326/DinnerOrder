@@ -5,8 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#faf7f2" />
     <title>家餐桌</title>
+    <!--
+      图标声明（**全部用相对路径**，与 ADR-0003 一致：同一份产物挂 / 或 /apps/dinner/ 都不用重打包）。
+
+      为什么必须显式写 rel="icon"：不写的时候浏览器只会去要 origin 根的 `/favicon.ico`。
+      本 app 经 nginx 挂在 8080 的子路径下时，那个地址属于**另一个 app**（pi-web），
+      于是标签页里显示的是别人的图标（实测过）。这里把每一档都指名到自己的资产，
+      浏览器就不会再去猜那个共享根路径。
+
+      sizes="any" 的 SVG 那一条是现代浏览器的首选（矢量，任意缩放都清晰）；
+      ico 放最后作为旧浏览器的兑底；apple-touch-icon 要 180（iOS 主屏不认别的尺寸）。
+    -->
+    <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" sizes="any" />
+    <link rel="icon" type="image/png" href="./favicon.ico" sizes="48x48" />
+    <link rel="icon" type="image/png" href="./icons/icon-32.png" sizes="32x32" />
+    <link rel="icon" type="image/png" href="./icons/icon-16.png" sizes="16x16" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
     <script>
       /*__APP_CONFIG__*/
     </script>

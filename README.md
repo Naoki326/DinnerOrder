@@ -113,13 +113,16 @@ server/                 @dinnerorder/server —— Hono + better-sqlite3 + 领�
   src/e2e-server.ts     E2E 专用入口：与生产同一条装配路，只把 LLM 换成确定性 fake；另挂一个测试专用的时钟控制口（需 `E2E_CLOCK_CONTROL=1`，生产入口没有；S6 转正要把一餐拨到「已经吃过」）
   src/testing/harness.ts 集成测试 harness（内存库 + 可控时钟 + fake LLM + 直打 HTTP）
   src/domain/            领域逻辑（食材字典、家人画像、菜谱、餐槽、份量、推荐管线、导入管线）
-  src/deploy/            部署与运维：launchd plist 生成 · 每日热备（sqlite3 .backup + 按日滚动）· nginx 片段与 include 插入 · .env 权限与备份排除 · 装机/卸载编排
+  src/deploy/            部署与运维：launchd plist 生成 · 每日热备（sqlite3 .backup + 按日滚动）· nginx 片段与 include 插入 · 8080 导航页生成 · .env 权限与备份排除 · 装机/卸载编排
   migrations/            编号 .sql（001 = 家人与食材字典，含种子；随库执行；004 = 外部菜谱池；005 = 导入工具链；006 = 反馈与家规；007 = 留量与留量上浮列；008 = 转正台账；009 = 买菜清单；010–012 = 家人软删、按餐指定掌勺者、营养与食谱）
 web/                    @dinnerorder/web —— React 18 + Vite + Router 7 + TanStack Query
   src/identity.tsx      当前身份（设备本地：localStorage；家人画像在服务端）
+  public/favicon.ico    页签图标（**必须在 public 根**：浏览器未声明时会要 origin 根的这一个路径）
+  public/icons/icon.svg 图标真源（改设计只改它，各档 PNG/ICO 由脚本生成）
+  scripts/icons/        图标生成脚本与说明（`pnpm --filter @dinnerorder/web run icons`）
 e2e/                    Playwright 冒烟 + 家人与当前身份
 deploy/                 部署产物：nginx/dinner-location.conf（宿主 include 的片段，随仓库走）· tm-exclusions.txt（备份排除清单，**装机生成、不入库**：含本机绝对路径）
-docs/deploy/README.md   部署与运维手册（安装/卸载/备份恢复/排障/实测记录）
+docs/deploy/README.md   部署与运维手册（安装/卸载/备份恢复/导航页与图标/排障/实测记录）
 ```
 
 ## API（M1 增量，无登录 · 家庭 Wi-Fi 即门禁）

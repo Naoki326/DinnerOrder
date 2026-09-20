@@ -147,12 +147,25 @@ describe('单进程一体：API + 静态产物在同一个 app 上', () => {
   });
 
   it('缺失的构建资源返回 404 而不是 HTML（否则浏览器报的是误导性的 MIME 错）', async () => {
+    // 用**真实不存在**的文件名：`favicon.ico` 曾经是个好例子，但自从仓库提供了它，
+    // 拿它当「缺失资源」只会让这条用例随图标票一起变红（写死一个会同名文件就自相矛盾）
     harness = createTestHarness({ webDistDir: createWebDist() });
-    for (const path of ['/assets/nope.js', '/favicon.ico']) {
+    for (const path of ['/assets/nope.js', '/icons/nope.png', '/favicon.ico']) {
       const response = await harness.request(path);
       expect(response.status, path).toBe(404);
       expect(await response.text(), path).toBe('Not Found');
     }
+  });
+
+  it('有产物时 favicon.ico 按二进制送出（不是 404、也不是被当成深链返回 index.html）', async () => {
+    const dist = createWebDist();
+    // 写一个最小「看起来像 ico」的字节串（static 层只负责按扩展名送文件，不解析内容）
+    fs.writeFileSync(path.join(dist, 'favicon.ico'), Buffer.from([0x00, 0x00, 0x01, 0x00]));
+    harness = createTestHarness({ webDistDir: dist });
+
+    const response = await harness.request('/favicon.ico');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('image');
   });
 
   it('缺产物目录时 API 照常可用，根路径给 api-only 提示（开发模式：静态侧由 Vite 提供）', async () => {

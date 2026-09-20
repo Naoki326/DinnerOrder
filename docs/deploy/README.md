@@ -34,6 +34,8 @@ pnpm deploy:uninstall
 | 子路径服务 | `~/Library/LaunchAgents/com.naoki.dinnerorder.subpath.plist` | `8786`、`BASE_PATH=/apps/dinner` —— nginx 反代目标 |
 | 每日热备 | `~/Library/LaunchAgents/com.naoki.dinnerorder.backup.plist` | 每天 03:00 跑 `sqlite3 .backup` → `backups/dinner-<日期>.db` |
 | nginx 片段 | `deploy/nginx/dinner-location.conf`（仓库内，被 include） | `/apps/dinner/` → `127.0.0.1:8786` |
+| 导航页 | `/opt/homebrew/etc/nginx/landing/index.html`（装机生成） | 8080 的 `/apps/` 那一页「本地服务统一入口」 |
+| 图标 | `web/public/favicon.ico` + `web/public/icons/*` | 页签图标（详见 [`web/scripts/icons/README.md`](../../web/scripts/icons/README.md)） |
 | 备份排除清单 | `deploy/tm-exclusions.txt`（**装机生成，不入库**——内容是本机绝对路径） | `.env` 与 `data/logs/` 的排除记录（换机后照它重加） |
 
 ### plist 长什么样
@@ -205,6 +207,45 @@ cat deploy/tm-exclusions.txt          # 排除清单（换机后照它重加）
 while read -r line; do case "$line" in /[!/]*) tmutil addexclusion "$line";; esac; done < deploy/tm-exclusions.txt
 ```
 
+## 8080 导航页（「本地服务统一入口」）
+
+`location = /apps/` 那一页是这台机器上**所有**服务的入口。它原先只活在
+`/opt/homebrew/Cellar/nginx/<版本>/html/index.html`，而**那个目录名带 nginx 版本号**——
+`brew upgrade nginx` 之后我们对它的改动会静默消失（新版若没带 `html/`，连页面都 404）。
+所以现在：**生成器与产物都在仓库里，装机时重新写一遍**。
+
+装机做两件事（缺一不可）：
+
+1. 把那个 location 的 `root html`（相对 nginx 的 **prefix** 解析，于是落在版本目录里）
+   改指到稳定的 `/opt/homebrew/etc/nginx/landing`，并留一个带 `#` 的标记（幂等）；
+2. 把生成的导航页写到那里。
+
+**卸载会两件都撤**（`root` 还原成 `html`、`include` 删掉），实测宿主配置能逐字节回到改动前。
+
+### 排版
+
+按**用途分组**（家庭日常 / 设备与媒体 / 工具与开发），一行一条、图标居左、
+端口做右侧等宽小标签、长名字 ellipsis 截断。8 条平铺时找东西靠逐条扫，分组后是找标题——
+手机上尤其明显。端口的处理是刻意的：它是排查「服务到底跑没跑」的第一手线索，
+但平时不该抢注意力，所以留在一行里但缩成小标签（原先那版把 `/apps/pi/ → 30141` 全写进副标题）。
+
+### 图标（两层，都要）
+
+> 完整的图标规则见 [`web/scripts/icons/README.md`](../../web/scripts/icons/README.md)。
+
+**家餐桌自己的页签图标**（`web/public/`）：`favicon.ico` 在 **public 根**（不能放 `icons/`——
+浏览器未声明时会去要 origin 根的 `/favicon.ico` 这**一个**固定路径），
+`index.html` 里显式声明每档（不声明时经 nginx 访问会拿到 **pi-web 的图标**，实测过），
+真源是 `icons/icon.svg`，生成用 `pnpm --filter @dinnerorder/web run icons`。
+
+**导航页自己的页签图标**（`landing.ts` 内嵌）：四格「应用启动台」，页面链接蓝。
+它**必须是 data URI，不能是相对路径的文件**——`/apps/` 下有
+`location /apps/ { return 404 … }` 的兜底，`/apps/icon.svg` 这种请求会直接被 404（实测过）。
+条目图标同理内嵌：导航页的作用恰恰是「某个 app 挂了也能从这里进」，
+让它去引用那个 app 自己的静态资源就本末倒置了。
+
+导航页顶部那张图与页签用的是**同一份** SVG。
+
 ## 两种 nginx 写法（AC2 都实测过）
 
 ADR-0003 说剥不剥前缀都兼容。两种写法都实测通过，但**本仓库只能用不剥前缀**——
@@ -277,6 +318,9 @@ nginx -t && nginx -s reload                           # 改过 nginx 配置后
 | 服务不自动起 | `launchctl print` 看 `state`；plist 里 `RunAtLoad` 是否还在 |
 | 崩溃后没拉起 | `KeepAlive` 必须是 `{SuccessfulExit: false}` 字典型；写成 `true` 会在正常停机后也拉起 |
 | 热备没产出 | `tail data/logs/com.naoki.dinnerorder.backup.err.log`；手动 `pnpm backup` 看报错 |
+| 页签里是**别的 app** 的图标 | `index.html` 的 `<link rel="icon">` 丢了；或 `web/public/favicon.ico` 不在（浏览器会退到 origin 根那份，而那属于 pi-web） |
+| 导航页 404 或回到旧样子 | `brew upgrade nginx` 后 `root` 指回了版本目录；重跑 `pnpm deploy:install` |
+| 导航页图标不显示 | 它的图标是 data URI 内嵌的，坏了通常是 `deploy:install` 没重跑（页面的 HTML 在 `landing/` 下，不在版本目录里） |
 | 备份目录堆满 `-wal`/`-shm` | 不该发生（备份后已复位 `journal_mode`）；若见到，说明有别的工具在打开那些备份 |
 
 **两个实例共用一个库**：如果日志里出现 `SQLITE_BUSY`，那是写锁竞争超了 5 秒——
@@ -299,6 +343,11 @@ nginx -t && nginx -s reload                           # 改过 nginx 配置后
 | 双实例共用一库 | 两个进程都打开 `data/dinner.db`，各自 `/api/health` 正常 | ✅ 见「为什么要两个服务实例」 |
 | `.env` 权限 | `stat -f %Sp .env` | ✅ `-rw-------` |
 | 排除双通道 | `tmutil isexcluded` + 备份文件里搜 key 字样 | ✅ 均 `[Excluded]`，搜不到 |
+| **页签图标（两条通道）** | 逐档下载并解码：`favicon.ico`(48/32/16) + `icon-16/32/180/192/512` + maskable | ✅ 全 200 且尺寸正确 |
+| **图标与 pi-web 不同** | 32px 下与 pi-web 图标逐像素比 | ✅ 差异 95% 的像素 |
+| **导航页两处改动** | `diff` 宿主配置：只有 `root` 那一行 + include 那一行 | ✅ 就这两处 |
+| **导航页装卸还原** | 装 → 卸 → `diff` 与最初备份 | ✅ 逐字节一致 |
+| 导航页在手机上可读 | 390×844 视口截图 | ✅ 分组卡片、无横向溢出 |
 
 ## 相关文件
 
@@ -310,10 +359,14 @@ server/src/deploy/
   backup-cli.ts      热备 CLI 逻辑（参数与家庭时区日期）
   backup-cli-entry.ts  热备生产入口（node dist/…，不依赖 tsx）
   nginx.ts           location 片段生成（两种写法与为何选不剥前缀）
-  nginx-include.ts   往宿主已有 server block 插/撤 include（大括号配平）
+  nginx-include.ts   往宿主已有 server block 插/撤 include（大括号配平）＋ 导航页 root 重定向
+  landing.ts         8080 导航页的生成（分组排版、条目图标内嵌、页签图标）
   secrets.ts         .env 权限、Time Machine 排除、排除清单
-  install.ts         装机/卸载编排（launchtl / nginx -t / tmutil）
+  install.ts         装机/卸载编排（launchctl / nginx -t / tmutil / 导航页）
   deploy-cli.ts      `pnpm deploy:*` 的入口
 deploy/nginx/dinner-location.conf   片段本体（被宿主 include）
 deploy/tm-exclusions.txt            排除清单（装机生成，已 gitignore）
+web/public/favicon.ico              页签图标（ico，必须在 public 根）
+web/public/icons/icon.svg           图标真源（改设计只改它）
+web/scripts/icons/                  图标生成脚本与说明（**不放 public/**：那是给人看的）
 ```

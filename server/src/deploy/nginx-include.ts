@@ -191,3 +191,96 @@ export function repoFragmentPath(root: string): string {
 
 /** 宿主 nginx 的统一入口监听端口（本机 8080）。可用 `NGINX_LISTEN` 覆盖 */
 export const DEFAULT_NGINX_LISTEN_PORT = 8080;
+
+/** 导航页 location 的行标记。**必须带 `#`**：这是 nginx 配置文件，不带注释符时
+ *  它会被当成一条指令直接报 `unknown directive`（实测踩过，幸好 `-t` 拦下了）。 */
+const LANDING_ROOT_TAG = '# dinnerorder-landing-root';
+
+/**
+ * 把导航页（`location = /apps/`）的 `root` 从 nginx 的**版本目录**改到稳定目录。
+ *
+ * ## 为什么必须改
+ *
+ * 宿主原配置是 `location = /apps/ { root html; try_files /index.html =404; }`，
+ * 而 `root html` 相对 nginx 的 **prefix** 解析 —— 本机 prefix 是
+ * `/opt/homebrew/Cellar/nginx/1.31.3`，于是导航页真身在
+ * `/opt/homebrew/Cellar/nginx/1.31.3/html/index.html`。**那个路径带版本号**：
+ * `brew upgrade nginx` 之后目录换成新版号，我们对导航页的改动就**静默消失**了
+ * （若新版没带 `html/`，甚至连导航页都 404）。
+ *
+ * 所以装机时把它指到 `<nginx 配置目录>/landing`（`/opt/homebrew/etc/nginx/landing`）——
+ * 配置目录不经 Homebrew 升级换名，导航页 HTML 放那里才稳。
+ *
+ * ## 为什么用绝对路径
+ *
+ * `root` 相对 prefix 解析那件事本身就不直观；写绝对路径后，读配置的人一眼看得出
+ * 导航页在哪，不受 `nginx -p` 影响。
+ *
+ * 幂等：已经改过（带标记）就不再动；没找到那个 location 就返回 `changed: false`
+ * （导航页不是本 app 的必需品，不该因它装不上）。
+ */
+export function retargetLandingRoot(
+  text: string,
+  absoluteDir: string,
+): { text: string; changed: boolean } {
+  if (text.includes(LANDING_ROOT_TAG)) return { text, changed: false };
+
+  const lines = text.split('\n');
+  // 找 `location = /apps/ {` 那一段里的 `root html;`
+  let start = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (/location\s*=\s*\/apps\/\s*\{/.test(stripForBalance(lines[i] as string))) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return { text, changed: false };
+
+  // 在该 location 的大括号范围内找 root 行（配平，不越过块尾）
+  let depth = 0;
+  for (let i = start; i < lines.length; i += 1) {
+    const stripped = stripForBalance(lines[i] as string);
+    if (/^\s*root\s+html\s*;/.test(stripped)) {
+      const indent = /\s*/.exec(lines[i] as string)?.[0] ?? '';
+      lines[i] = `${indent}root ${absoluteDir};     ${LANDING_ROOT_TAG}`;
+      return { text: lines.join('\n'), changed: true };
+    }
+    for (const ch of stripped) {
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        // 出块了还没找到 root，就放弃（那不是我们预期的形状）
+        if (depth <= 0) return { text, changed: false };
+      }
+    }
+  }
+  return { text, changed: false };
+}
+
+/** 装机前把导航页的 `root` 改指到稳定目录（幂等；找不到那个 location 就原样返回） */
+export function installIntoLandingRoot(options: {
+  confPath: string;
+  absoluteDir: string;
+}): { changed: boolean } {
+  const original = fs.readFileSync(options.confPath, 'utf8');
+  const { text, changed } = retargetLandingRoot(original, options.absoluteDir);
+  if (changed) fs.writeFileSync(options.confPath, text);
+  return { changed };
+}
+
+/**
+ * 把导航页的 `root` 改回 `html`（卸载与失败回滚用）。
+ *
+ * 卸载要**完整撤销**：只撤 include 而留下一行改过的 `root`，会让宿主配置在下一次
+ * `brew upgrade nginx` 后指向一个已经没人维护的 `landing/` 目录（旧导航页永远僵在那里）。
+ */
+export function uninstallLandingRoot(options: { confPath: string }): { changed: boolean } {
+  const original = fs.readFileSync(options.confPath, 'utf8');
+  const lines = original.split('\n');
+  const index = lines.findIndex((line) => line.includes(LANDING_ROOT_TAG));
+  if (index === -1) return { changed: false };
+  const indent = /\s*/.exec(lines[index] as string)?.[0] ?? '';
+  lines[index] = `${indent}root html;`;
+  fs.writeFileSync(options.confPath, lines.join('\n'));
+  return { changed: true };
+}
