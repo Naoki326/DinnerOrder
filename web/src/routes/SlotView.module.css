@@ -113,6 +113,16 @@
   margin-bottom: 4px;
 }
 
+/* 读数旁的口径注记（已删家人未计入份量）：与 `ghostNote` 的分工是「数字是什么」vs「怎么处理」。
+   `overflow-wrap` 是必需的：名字连成一串时不能在 390 px 下把卡片撑宽 */
+.portionGhostNote {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
 .chosenRow {
   display: flex;
   align-items: center;

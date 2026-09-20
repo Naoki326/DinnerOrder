@@ -295,14 +295,26 @@ test('已定菜单含已删家人：编辑器里看得到份量、点掉「已�
   await expect(page.getByTestId('portion-summary')).toBeVisible();
   await expect(page.getByTestId('portion-summary')).toContainText('人合计');
 
+  // 份量读数旁的**口径注记**（本票修复 ①）：ghost chip 还是按下状态（看起来在名单里），
+  // 而人数与克数已经把他剔掉了——不点那个 chip 的人也必须看得出这份读数不含已删家人
+  await expect(ghost).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('portion-summary')).toContainText('1 人合计');
+  const portionNote = page.getByTestId('portion-ghost-note');
+  await expect(portionNote).toBeVisible();
+  await expect(portionNote).toContainText('姥姥');
+  await expect(portionNote).toContainText('没算进份量');
+  // 手机宽度：口径注记要换行而不是把卡片撑宽
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+
   // 带着 ghost 保存：在本地被拦下并说清下一步（不去打注定 400 的请求）
   await page.getByTestId('save-slot').click();
   await expect(page.getByTestId('slot-error-message')).toContainText('已不在家人列表里');
   expect(page.url()).toContain(`/slot/${slotId}`);
 
-  // 点掉那个 chip：名单里不再有已删的人
+  // 点掉那个 chip：名单里不再有已删的人，口径注记随之退场（数字不再需要解释）
   await ghost.click();
   await expect(ghost).toHaveAttribute('aria-pressed', 'false');
+  await expect(portionNote).toBeHidden();
 
   // 现在存得回去，菜单里不再有他；留痕里也看得到这次改动
   await page.getByTestId('save-slot').click();
@@ -351,4 +363,42 @@ test('已定菜单含已删家人：「移除已删的家人」一拍清掉，�
   const after = await page.request.get(`${ROOT_URL}/api/slots/${slotId}`);
   const { slot } = (await after.json()) as { slot: { menu: { diners: { memberId: string }[] } | null } };
   expect(slot.menu?.diners.map((diner) => diner.memberId)).toEqual(['mom']);
+});
+
+/**
+ * 家人名单读不回来时，份量区要说清为什么算不出来（本票修复 ②）。
+ *
+ * 背景：名单没到位前不发份量请求（`usePortionPreview` 的 `ready`，见 `SlotView.tsx` 的 `rosterKnown`）
+ * ——这是对的（否则快照里的已删家人会被当成未知成员，白吃一次注定 400 的请求）。
+ * 但名单查询**失败**时（`retry: 1` 之后仍是 error），`isSuccess` 永远不为真 → 份量请求永不发，
+ * 而 `portionQuery.isError` 也为假 → 份量区一片静默空白。用户看不出发生了什么。
+ *
+ * 这条把 `GET /api/members` 在浏览器侧按断（`page.route` + abort，照 `views.spec.ts` 那道
+ * 把请求按在网里的先例），断言份量区**显示出说明**而不是空白；判别性在：不显示说明的实现
+ * 会让 `portion-error` 永远不可见（`portion-summary` 也不会出现，两边都空）。
+ */
+test('家人名单读不回来：份量区说清原因，而不是静默空白', async ({ page }) => {
+  // 先造一桌**已定且带菜**的餐：平时这一屏会算出份量，所以「空白」是真问题而不是「没菜可算」
+  const slotId = await nextUndecidedSlot(page);
+  const booked = await page.request.put(`${ROOT_URL}/api/slots/${slotId}`, {
+    data: { diners: ['mom', 'dad'], dishes: [{ recipeId: 'fanqiechaodan' }] },
+  });
+  expect(booked.ok(), `定餐失败：HTTP ${booked.status()}`).toBe(true);
+
+  // 浏览器侧打断家人名单（`page.request` 是另一条上下文，不受这条 route 影响，收尾照常）
+  const membersRequest = (url: URL): boolean => url.pathname === '/api/members';
+  await page.route(membersRequest, (route) => route.abort('failed'));
+
+  await page.goto(`${ROOT_URL}/slot/${slotId}`);
+  await expect(page.getByTestId('slot-view')).toBeVisible();
+
+  // 份量区给出人话说明：是「名单没读回来」，不是空白、也不是「没人吃」
+  const portionError = page.getByTestId('portion-error');
+  await expect(portionError).toBeVisible();
+  await expect(portionError).toContainText('家人列表没读回来');
+  await expect(portionError).toContainText('份量');
+  // 而且没有拿一份算不出来的读数糊弄（没有 summary 卡）
+  await expect(page.getByTestId('portion-summary')).toBeHidden();
+
+  await page.unroute(membersRequest);
 });

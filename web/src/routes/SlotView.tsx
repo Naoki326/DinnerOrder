@@ -163,10 +163,21 @@ function SlotEditor({
   /**
    * 「谁还在家人列表里」拿到之前，已定菜单的名单先别往外发（见 `usePortionPreview` 的 `ready`）：
    * 那一段空窗里发出去的请求会把快照里的已删家人当成未知成员，白得一个 400。
+   * 这份名单**读不回来**时（`isError`）份量请求就永远不发——所以份量区必须把这件事说出来
+   * （下面 `portion-error` 那块的分支），否则就是一片静默空白。
    */
   const rosterKnown = membersQuery.isSuccess;
   /** 还在草稿名单里的 ghost：提示文案与保存拦截都看它（全被点掉后就不再拦了） */
   const draftGhosts = useMemo(() => ghosts.filter((ghost) => diners.includes(ghost.memberId)), [ghosts, diners]);
+  /**
+   * 家人名单读不回来时份量区那句说明。两种失败要分开说：**首屏就没读到**（屏幕上一位家人也没有），
+   * 与**只是这一次刷新失败**（缓存里还有上次的名单，人还渲染在屏幕上）——后者说「没刷新回来」，
+   * 否则那句「名单没读回来」与眼前那排家人 chip 自相矛盾。两种情况下 `isSuccess` 都为假，
+   * 份量请求都发不出去（`ready` 门控），所以都必须有一句话，不能静默空白。
+   */
+  const rosterErrorMessage = membersQuery.isRefetchError
+    ? '家人列表这次没刷新回来——份量算不出来'
+    : '家人列表没读回来——份量算不出来';
   /**
    * 名单里还留着已删的家人时，一切**会落库**的动作先停在本地并说清下一步。
    * 不去打一个注定 400 的请求（服务端只报一个 memberId，那一串 id 对家人没有意义），
@@ -425,7 +436,7 @@ function SlotEditor({
               {ghosts.map((ghost) => ghost.name).join('、')} 已不在家人列表里（名单是定这一餐时的快照）。
               {draftGhosts.length > 0
                 ? cleanup.length > 0
-                  ? '点一下他的名字把他从这一餐移除——在那之前，份量按剩下来的人算，保存与换一整套都会先拦住。'
+                  ? '点一下他的名字把他从这一餐移除——在那之前，保存与换一整套都会先拦住。'
                   : '点一下他的名字把他从这一餐移除，再从上面在册的家人里点一位——这一餐至少要有一位用餐者才能保存。'
                 : diners.length === 0
                   ? '已经从这一餐移除了。名单现在是空的——从上面在册的家人里点一位，才能保存。'
@@ -555,20 +566,32 @@ function SlotEditor({
         })}
       </div>
 
-      {/* 份量小结：这餐总共做多少（Σ系数 × 成人份基准；留量上浮要等 #22 的引用） */}
-      {portionQuery.isError ? (
+      {/* 份量小结：这餐总共做多少（Σ系数 × 成人份基准；留量上浮要等 #22 的引用）。
+          两件「算不出来」都要有话说（本仓纪律：异常原因看得见）：
+            * `membersQuery.isError`：家人列表读不回来 → `ready` 门控让份量请求根本发不出去，
+              只等 `portionQuery.isError` 就会是一片静默空白——所以这一支自己说一句人话；
+            * `portionQuery.isError`：份量接口报错 → 把服务端/请求层那句原样报出来。 */}
+      {membersQuery.isError || portionQuery.isError ? (
         <div className="card" data-testid="portion-error">
-          <span className={styles.error}>
-            {portionQuery.error instanceof Error ? portionQuery.error.message : '份量没算出来'}
-          </span>
-          {draftGhosts.length > 0 ? (
+          <div className={styles.error}>
+            {membersQuery.isError
+              ? rosterErrorMessage
+              : portionQuery.error instanceof Error
+                ? portionQuery.error.message
+                : '份量没算出来'}
+          </div>
+          {membersQuery.isError ? (
+            <div className="sub" style={{ marginTop: 6 }}>
+              份量按用餐者名单折算，名单读不回来就没法算。检查一下网络或服务是不是停了，刷新本页再试。
+            </div>
+          ) : draftGhosts.length > 0 ? (
             <div className="sub" style={{ marginTop: 6 }}>
               名单里还有已删的家人——点掉上面标了「已删」的名字，份量就会重新算。
             </div>
           ) : null}
         </div>
       ) : null}
-      {portion && dishes.length > 0 ? (
+      {portion && !membersQuery.isError && dishes.length > 0 ? (
         <div className="card" data-testid="portion-summary">
           <div className={styles.blockLabel}>这餐的份量（生重）</div>
           <div className={styles.summaryLine}>
@@ -577,8 +600,16 @@ function SlotEditor({
                 那个值（留量标记 ∧ 有效引用），为 1 时不标——标一个没兑现的倍数比不标更糟。 */}
             {portion.uplift !== 1 ? ` × 留量上浮 ${portion.uplift}` : ''}，共 {totalGrams(portion)} g
           </div>
+          {/* 读数旁的口径注记：`portion.diners.length` 是剔掉 ghost 之后的人数，而选择器里
+              ghost chip 还是 `aria-pressed=true`（看起来在名单里）。不点 chip 的人也要看得出
+              「这个数字里没有已删的家人」——`diner-ghost-note` 讲怎么处理，这里只讲数字是什么。 */}
+          {draftGhosts.length > 0 ? (
+            <div className={styles.portionGhostNote} data-testid="portion-ghost-note">
+              ⚠️ 已删的家人（{draftGhosts.map((ghost) => ghost.name).join('、')}）没算进份量：人数与克数只按还在册的家人算
+            </div>
+          ) : null}
           <div className="sub">
-            大人按菜谱的成人份，小孩按出生年月现算年龄查 WS/T 554 分带；改上面的人或菜，这里立刻重算。
+            大人按菜谱的成人份，小孩按出生年月现算年龄查 WS/T 554 分带；改上面在册的家人或菜，这里立刻重算。
           </div>
         </div>
       ) : null}
