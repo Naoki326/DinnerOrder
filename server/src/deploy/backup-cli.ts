@@ -13,6 +13,13 @@ import { KEEP_DEFAULT, runBackup, type BackupResult } from './backup.js';
 
 export interface CliOptions {
   dbPath: string;
+  /**
+   * 备份通道所在的根（`backups/` 落在它下面）。缺省是仓库根——launchd 不传它，行为不变。
+   * 为什么 CLI 需要这个口子：域层 `runBackup` 本来就接受 `root`，但 CLI 写死 `REPO_ROOT` 后，
+   * 测试（`backup-cli.test.ts` 走编译产物那条路）就只能把夹具备份写进仓库的 `backups/`——
+   * 那是真实的恢复通道，测试写进去会**同名覆盖当天的真实备份**，且退出码 0、毫无整告。
+   */
+  root: string;
   keep: number;
   /** 覆盖「今天」（家庭时区）。只给测试用，正常调用不传 */
   today?: string;
@@ -37,6 +44,7 @@ export function parseOptions(argv: string[]): CliOptions {
       db: { type: 'string' },
       keep: { type: 'string' },
       today: { type: 'string' },
+      root: { type: 'string' },
       json: { type: 'boolean', default: false },
     },
     allowPositionals: false,
@@ -50,6 +58,9 @@ export function parseOptions(argv: string[]): CliOptions {
 
   return {
     dbPath: resolveFromRoot(values.db, 'data/dinner.db'),
+    // 缺省直接用常量本身（不二次 resolve：REPO_ROOT 带目录尾部斜杠，重新解析会得到
+    // 规范化后的另一形式）；相对路径才需要按仓库根解析（与 --db 同一套理由：launchd 的 cwd 不可信）
+    root: values.root === undefined ? REPO_ROOT : resolveFromRoot(values.root, REPO_ROOT),
     keep,
     today: values.today,
     json: values.json ?? false,
@@ -64,7 +75,7 @@ export function todayInFamilyZone(now: Date = new Date()): string {
 export function executeBackup(options: CliOptions, now: Date = new Date()): BackupResult {
   return runBackup({
     dbPath: options.dbPath,
-    root: REPO_ROOT,
+    root: options.root,
     today: options.today ?? todayInFamilyZone(now),
     keep: options.keep,
   });
