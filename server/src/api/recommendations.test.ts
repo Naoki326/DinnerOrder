@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { createTestHarness, type TestHarness } from '../testing/harness.js';
+import { createTestHarness, seedAvoider, type TestHarness } from '../testing/harness.js';
 import { parsePromptPool, parsePromptStructure, pickPoolSelection } from '../llm/prompt.js';
 import type {
   MealEvent,
@@ -111,14 +111,9 @@ describe('规则引擎：忌口硬过滤与时令检索', () => {
     scriptPoolSelection();
 
     // 这位家人只忌基础类「猪肉」——细类菜（猪排骨/猪梅花肉/五花肉）全要跟着出局
-    harness.db
-      .prepare("INSERT INTO members (id, name, emoji, kind, gender, is_cook, sort_order, created_at, updated_at) VALUES ('pork_free', '忌猪', '🙅', 'adult', 'female', 0, 9, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
-      .run();
-    harness.db
-      .prepare("INSERT INTO member_avoid (member_id, ingredient_id, created_at) VALUES ('pork_free', 'pork', '2025-01-01T00:00:00Z')")
-      .run();
+    const avoider = await seedAvoider(harness, { name: '忌猪', avoid: ['pork'] });
 
-    await recommend({ diners: ['pork_free'] });
+    await recommend({ diners: [avoider] });
     const prompt = promptOf();
     // 家庭池里三道细类猪菜：红烧排骨（猪排骨）、土豆炖牛腩里没有、糖醋里脊（里脊）
     expect(prompt).not.toContain('红烧排骨');
@@ -133,14 +128,9 @@ describe('规则引擎：忌口硬过滤与时令检索', () => {
     harness = createTestHarness();
     scriptPoolSelection();
 
-    harness.db
-      .prepare("INSERT INTO members (id, name, emoji, kind, gender, is_cook, sort_order, created_at, updated_at) VALUES ('no_chicken', '忌鸡', '🙅', 'adult', 'male', 0, 9, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
-      .run();
-    harness.db
-      .prepare("INSERT INTO member_avoid (member_id, ingredient_id, created_at) VALUES ('no_chicken', 'chicken', '2025-01-01T00:00:00Z')")
-      .run();
+    const avoider = await seedAvoider(harness, { name: '忌鸡', gender: 'male', avoid: ['chicken'] });
 
-    await recommend({ diners: ['no_chicken'] });
+    await recommend({ diners: [avoider] });
     const prompt = promptOf();
     expect(prompt).not.toContain('可乐鸡翅');
     expect(prompt).not.toContain('黄焖鸡');
@@ -155,14 +145,9 @@ describe('规则引擎：忌口硬过滤与时令检索', () => {
     harness = createTestHarness();
     scriptPoolSelection();
 
-    harness.db
-      .prepare("INSERT INTO members (id, name, emoji, kind, gender, is_cook, sort_order, created_at, updated_at) VALUES ('no_ribs', '忌排骨', '🙅', 'adult', 'female', 0, 9, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
-      .run();
-    harness.db
-      .prepare("INSERT INTO member_avoid (member_id, ingredient_id, created_at) VALUES ('no_ribs', 'pork_ribs', '2025-01-01T00:00:00Z')")
-      .run();
+    const avoider = await seedAvoider(harness, { name: '忌排骨', avoid: ['pork_ribs'] });
 
-    await recommend({ diners: ['no_ribs'] });
+    await recommend({ diners: [avoider] });
     const prompt = promptOf();
     expect(prompt).not.toContain('红烧排骨');
     // 忌排骨不影响其他猪部位（指针是单向的：只有「忌基础类连细类排」）

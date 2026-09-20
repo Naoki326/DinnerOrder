@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { createTestHarness, type TestHarness } from '../testing/harness.js';
+import { createTestHarness, seedAvoider, type TestHarness } from '../testing/harness.js';
 import { parsePromptCandidates, parsePromptSwap, pickLlmSelection } from '../llm/prompt.js';
 import type { MealEvent, SlotResponse, SwapCandidates, SlotWithPortion } from '../wire-types.js';
 
@@ -218,17 +218,12 @@ describe('忌口：硬过滤 + 排除原因', () => {
     harness = createTestHarness();
     scriptLlm();
     // 这位家人只忌基础类「猪肉」——细类菜要跟着出局，且原因要说得出
-    harness.db
-      .prepare("INSERT INTO members (id, name, emoji, kind, gender, is_cook, sort_order, created_at, updated_at) VALUES ('no_pork', '姥姥', '👵', 'adult', 'female', 0, 9, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
-      .run();
-    harness.db
-      .prepare("INSERT INTO member_avoid (member_id, ingredient_id, created_at) VALUES ('no_pork', 'pork', '2025-01-01T00:00:00Z')")
-      .run();
+    const avoider = await seedAvoider(harness, { name: '姥姥', emoji: '👵', avoid: ['pork'] });
     await seedDinner(['kelejichi', 'suanrongcaixin']);
 
     // 换的是**荤位**（可乐鸡翅）——excluded 只列同位（荤位）的菜，而细类猪菜都在荤位。
     // 糖醋里脊用里脊（含猪肉），应被基础类「猪肉」排掉。
-    const { status, body } = await candidates({ replacing: 'kelejichi', diners: ['no_pork'] });
+    const { status, body } = await candidates({ replacing: 'kelejichi', diners: [avoider] });
     expect(status).toBe(200);
 
     const tenderloin = body.excluded.find((entry) => entry.recipeId === 'tangculiji');

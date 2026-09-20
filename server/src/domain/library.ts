@@ -10,7 +10,8 @@ import type { RecipeCuisine, RecipeKind, RecipeSource, TasteTag } from '../wire-
 /**
  * 冷启动导入管线的**落库侧**（总纲 §2.8、§5；ADR-0006）：外部菜谱池从近零到可用的唯一入口。
  *
- * 三条来源共用这一条管线（ADR-0006：HowToCook / 下厨房爬取 / LLM 生成都是「素材层」）：
+ * **三条来源共用这一条管线**（ADR-0006：HowToCook / 下厨房爬取 / LLM 生成都是「素材层」）。
+ * 管线依次是四步：
  *
  *   1. **采集器**（`library/collectors.ts`）把外部数据源读成 `DraftRecipe[]`——纯函数、不碰库；
  *   2. **清洗**（本文件 `isNoiseIngredientName` / `splitCombinedIngredientName`）把数据源那侧的

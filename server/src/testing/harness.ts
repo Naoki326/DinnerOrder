@@ -51,6 +51,48 @@ export interface TestHarness {
   close(): void;
 }
 
+/**
+ * 造一位「只忌这几味」的家人（走**真 HTTP 路径**，不是手写 INSERT）。
+ *
+ * 为什么要这个 helper：忌口传播的测试要反复建「新的人 + 他的忌口」（#28 一次就加了四条），
+ * 手写 `INSERT INTO members ...` 既长又容易把列写漏（而且那条 SQL 不走领域层的校验）。
+ * 走 `POST /api/members` + `PATCH /api/members/:id` 的话，建出来的家人与真实使用完全同形
+ * （sort_order 由领域层排、created_at 用注入时钟），断言就只针对被测行为本身。
+ */
+export async function seedAvoider(
+  harness: TestHarness,
+  options: { name: string; emoji?: string; gender?: 'male' | 'female'; avoid: string[] },
+): Promise<string> {
+  const created = await harness.json<{ member?: { id: string }; error?: string }>('/api/members', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: options.name,
+      emoji: options.emoji ?? '🙅',
+      kind: 'adult',
+      gender: options.gender ?? 'female',
+    }),
+  });
+  if (created.status !== 201 || !created.body.member) {
+    throw new Error(`造家人失败（${created.status}）：${JSON.stringify(created.body)}`);
+  }
+  const id = created.body.member.id;
+
+  const patched = await harness.json<{ member?: unknown; error?: string; ingredientId?: string }>(
+    `/api/members/${id}`,
+    {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ avoid: options.avoid }),
+    },
+  );
+  if (patched.status !== 200) {
+    // 忌口条目要指向真食材（字典是唯一受控表）；写错 id 时错误体里会带 ingredientId
+    throw new Error(`设忌口失败（${patched.status}）：${JSON.stringify(patched.body)}`);
+  }
+  return id;
+}
+
 const DEFAULT_MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations', import.meta.url));
 
 /**
