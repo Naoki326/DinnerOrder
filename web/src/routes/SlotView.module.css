@@ -127,10 +127,27 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  /* 本票在这行加了「食谱」按钮：菜名长 + 换/留量/✕ 一共六个元素，
+     390 宽下必须允许换行（换行时名字仍占满第一行，按钮排到第二行），否则会横向溢出 */
+  flex-wrap: wrap;
 }
 
 .chosenName {
   flex: 1;
+  font-weight: 600;
+  /* 名字可以缩到比内容窄（配合 flex-wrap 换行），否则长菜名会把后面的按钮挤出去 */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 「食谱」入口（本票）：与「换」同形，同一个行里并列显示 */
+.recipe {
+  flex: none;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--accent);
   font-weight: 600;
 }
 

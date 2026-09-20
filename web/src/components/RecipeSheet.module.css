@@ -1,0 +1,75 @@
+.sectionLabel {
+  font-size: 12px;
+  color: var(--sub);
+  margin: 10px 0 6px;
+}
+
+/* 做法步骤：自由文本（外部池的步骤带「1. 2. 3.」序号），换行照原样保留。
+   `pre-wrap` 保留换行又能自动折行；`anywhere` 保证长行（长菜名、外文）不吃穿手机宽度。 */
+.steps {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 14px;
+  line-height: 1.7;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--chip);
+}
+
+.ingredients {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ingredient {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--chip);
+  font-size: 13px;
+}
+
+.ingredientName {
+  /* 长食材名（复合调料）要能折行，不许把右边克数挤出去 */
+  overflow-wrap: anywhere;
+}
+
+.ingredientGrams {
+  flex: none;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.fixedTag {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--sub);
+  background: var(--card);
+  border-radius: 99px;
+  padding: 1px 6px;
+}
+
+.actual {
+  font-weight: 500;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.note {
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--sub);
+}
+
+.error {
+  font-size: 13px;
+  color: var(--warn);
+}

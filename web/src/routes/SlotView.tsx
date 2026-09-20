@@ -8,6 +8,8 @@ import { useBookLeftover, useBookSlot, useCancelSlot, useSlot, type DinerRef, ty
 import { useAcceptRecommendation, useRecommendation } from '../api/recommendations';
 import { useUndoSet } from '../api/replacements';
 import { CandidateList } from '../components/CandidateList';
+import { NutritionSheet } from '../components/NutritionSheet';
+import { RecipeSheet } from '../components/RecipeSheet';
 import styles from './SlotView.module.css';
 
 /**
@@ -124,6 +126,11 @@ function SlotEditor({
   const [dishes, setDishes] = useState<DraftDish[]>(
     () => slot.menu?.dishes.map((dish) => ({ recipeId: dish.recipeId, keepLeftover: dish.keepLeftover })) ?? [],
   );
+
+  // 两个弹层（本票）：整餐营养 / 单道菜食谱。状态挂在这里而不是各自的卡片里——
+  // 面板是页面级的浮层（挂在 <body> 的 fixed 遮罩里），贴在卡片里会被 card 的 overflow 裁掉。
+  const [nutritionOpen, setNutritionOpen] = useState(false);
+  const [recipeOf, setRecipeOf] = useState<{ recipeId: string; name: string } | null>(null);
 
   // 换菜（spec S2）：只记「正在换哪一道」；候选本身由 CandidateList 取，
   // 而**本会话的排除集**（被换掉的 + 已出示过的）在 SlotView 那一层——「换它」即关面板，
@@ -533,6 +540,19 @@ function SlotEditor({
                   <div className={styles.chosenRow}>
                     <span className={`${styles.kind} ${styles[recipe.kind]}`}>{KIND_LABEL[recipe.kind]}</span>
                     <span className={styles.chosenName}>{recipe.name}</span>
+                    {/* 食谱（本票）：单道菜的做法弹出。对**任何**菜都给入口——草稿/退役的菜也有做法，
+                        「看怎么做」不该被状态挡住（服务端也只按「菜谱在不在」回应）。 */}
+                    <button
+                      type="button"
+                      className={styles.recipe}
+                      data-testid={`recipe-${dish.recipeId}`}
+                      aria-haspopup="dialog"
+                      aria-expanded={recipeOf?.recipeId === dish.recipeId}
+                      aria-label={`${recipe.name} 的食谱`}
+                      onClick={() => setRecipeOf({ recipeId: dish.recipeId, name: recipe.name })}
+                    >
+                      食谱
+                    </button>
                     {/* 换菜（spec S2）：只对已定的菜给入口——未定时「挑一道」就是加菜，不需要先有再换 */}
                     {slot.editable && slot.menu ? (
                       <button
@@ -664,6 +684,19 @@ function SlotEditor({
                 那个值（留量标记 ∧ 有效引用），为 1 时不标——标一个没兑现的倍数比不标更糟。 */}
             {portion.uplift !== 1 ? ` × 留量上浮 ${portion.uplift}` : ''}，共 {totalGrams(portion)} g
           </div>
+          {/* 整餐营养（本票）：按钮放在这张餐槽卡上（用户口径）。弹层里给的是**整餐合计**，
+              口径与上面这句「N 人合计 ×Σ系数，共 X g」同源，所以两处的数字对得上。 */}
+          <button
+            type="button"
+            className="btn ghost block"
+            data-testid="nutrition-button"
+            aria-haspopup="dialog"
+            aria-expanded={nutritionOpen}
+            style={{ marginTop: 8 }}
+            onClick={() => setNutritionOpen(true)}
+          >
+            📊 营养（能量 · 蛋白 · 脂肪 · 碳水）
+          </button>
           {/* 读数旁的口径注记：`portion.diners.length` 是剔掉 ghost 之后的人数，而选择器里
               ghost chip 还是 `aria-pressed=true`（看起来在名单里）。不点 chip 的人也要看得出
               「这个数字里没有已删的家人」——`diner-ghost-note` 讲怎么处理，这里只讲数字是什么。 */}
@@ -762,6 +795,19 @@ function SlotEditor({
           </ol>
         )}
       </div>
+
+      {/* 两个弹层（本票）：都挂在页面末尾的浮层里，不在各自的卡片里——卡片有 overflow 与
+          变换上下文，fixed 遮罩在里面会被裁掉。`dishes` 里找不到的菜不会出现，所以能开面
+          板时它一定还在。 */}
+      {nutritionOpen ? <NutritionSheet slotId={slot.id} onClose={() => setNutritionOpen(false)} /> : null}
+      {recipeOf ? (
+        <RecipeSheet
+          recipeId={recipeOf.recipeId}
+          recipeName={recipeOf.name}
+          dishIngredients={portionOfDish(portion, recipeOf.recipeId)?.ingredients}
+          onClose={() => setRecipeOf(null)}
+        />
+      ) : null}
     </div>
   );
 }

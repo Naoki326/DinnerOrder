@@ -6,6 +6,7 @@ import type { Clock } from '../clock.js';
 import type { Db } from '../db/index.js';
 import type { MealSlot, SlotWithPortion } from '../wire-types.js';
 import { markGroceryStale } from '../domain/grocery.js';
+import { nutritionOf } from '../domain/nutrition.js';
 import { portionOf } from '../domain/portion.js';
 import {
   bookSlot,
@@ -144,6 +145,36 @@ export function registerSlotRoutes(api: Hono, deps: AppDeps): void {
     const slot = foldSlot(db, clock, parsed.date, parsed.meal);
     try {
       return c.json({ slot: withPortion(db, clock, slot), history: listSlotEvents(db, id) });
+    } catch (error) {
+      return bookingError(c, id, error);
+    }
+  });
+
+  /**
+   * 一餐的营养合计（本票）。与份量同一口径：营养 = Σ(portionOf 的逐食材本餐克数 ÷ 100 × 每 100 g 营养)。
+   *
+   * 为什么是独立接口而不是塞进 `GET /slots/:id` 的内嵌 `portion`：营养是**重读一次就要重算一次**
+   * 的展示量（家庭一顿看完就走），而 `GET /slots/:id` 是所有界面路径都要打的菜单读取；
+   * 把它挂在后者上会让每次打开编辑器都多算一份谁也没要的营养。单独接口也让「按需打开弹层」
+   * 这条交互（用户口径）在网线上就是一次按需请求。
+   *
+   * 未定的餐槽没有菜单：返回 `null`（与 `slot.portion` 同一形态），前端据此把按钮禁掉。
+   */
+  api.get('/slots/:id/nutrition', (c) => {
+    const id = c.req.param('id');
+    const parsed = parseSlotId(id);
+    if (!parsed) return c.json({ error: 'invalid_slot_id', id }, 400);
+    const slot = foldSlot(db, clock, parsed.date, parsed.meal);
+    if (!slot.menu) return c.json({ nutrition: null });
+    try {
+      return c.json({
+        nutrition: nutritionOf(
+          db,
+          clock,
+          { diners: slot.menu.diners.map((diner) => diner.memberId), dishes: slot.menu.dishes },
+          { missingMembers: 'assumeAdult', slotId: slot.id },
+        ),
+      });
     } catch (error) {
       return bookingError(c, id, error);
     }

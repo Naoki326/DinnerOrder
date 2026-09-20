@@ -54,6 +54,18 @@
   color: var(--accent);
 }
 
+/* 大卡菜行上的「食谱」入口（本票）：与编辑器里的同形，但目前大卡的菜行更挤，
+   所以不抢克数的 margin-left:auto——紧跟在留量标记之后，克数仍然靠右。 */
+.dishRecipe {
+  flex: none;
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .dish {
   display: flex;
   align-items: center;

@@ -12,6 +12,8 @@ import {
 import { feedbackOf, useFeedback, type CoolingDish, type DishFeedback } from '../api/feedback';
 import { CandidateList, type SwapCandidate } from '../components/CandidateList';
 import { FeedbackBar } from '../components/FeedbackBar';
+import { NutritionSheet } from '../components/NutritionSheet';
+import { RecipeSheet } from '../components/RecipeSheet';
 import styles from './HomeView.module.css';
 
 /**
@@ -148,6 +150,9 @@ function HeroCard({
   const recommend = useRecommendation(slot.id);
   const accept = useAcceptRecommendation(slot.id);
   const [error, setError] = useState<string | undefined>(undefined);
+  // 两个弹层（本票）：整餐营养 / 单道菜食谱。与编辑器同一对面板，只是这边的菜行没有逐食材份量
+  const [nutritionOpen, setNutritionOpen] = useState(false);
+  const [recipeOf, setRecipeOf] = useState<{ recipeId: string; name: string } | null>(null);
 
   const request = (): void => {
     setError(undefined);
@@ -264,6 +269,19 @@ function HeroCard({
                     留量{dishUplift !== 1 ? ` ×${dishUplift}` : ''}
                   </span>
                 ) : null}
+                {/* 食谱（本票）：每道菜行上的入口（用户口径）。大卡上没有逐食材份量读数，
+                    所以面板只给成人份基准（食谱本身的口径）——编辑器里那份会多一列「本餐」。 */}
+                <button
+                  type="button"
+                  className={styles.dishRecipe}
+                  data-testid={`hero-dish-recipe-${dish.recipeId}`}
+                  aria-haspopup="dialog"
+                  aria-expanded={recipeOf?.recipeId === dish.recipeId}
+                  aria-label={`${dish.name} 的食谱`}
+                  onClick={() => setRecipeOf({ recipeId: dish.recipeId, name: dish.name })}
+                >
+                  食谱
+                </button>
                 {grams !== undefined ? (
                   <span className={styles.grams} data-testid={`hero-dish-grams-${dish.recipeId}`}>
                     {grams} g
@@ -351,6 +369,22 @@ function HeroCard({
         </div>
       ) : null}
 
+      {/* 整餐营养（本票）：按钮在餐槽卡上（用户口径）。已定的那一餐才有菜单/份量；
+          没定时按钮不出来（没有菜单就没有营养）。 */}
+      {decided && slot.menu ? (
+        <button
+          type="button"
+          className="btn ghost block"
+          data-testid="hero-nutrition-button"
+          aria-haspopup="dialog"
+          aria-expanded={nutritionOpen}
+          style={{ marginTop: 8 }}
+          onClick={() => setNutritionOpen(true)}
+        >
+          📊 营养（能量 · 蛋白 · 脂肪 · 碳水）
+        </button>
+      ) : null}
+
       <Link className="btn block" to={`/slot/${slot.id}`} data-testid={decided ? 'edit-slot-button' : 'book-slot-button'}>
         {decided ? '✏️ 看看 / 改这餐' : '🍽 现在定这一餐'}
       </Link>
@@ -400,6 +434,15 @@ function HeroCard({
       <div className="sub" style={{ marginTop: 10 }}>
         手动挑菜按同一条编辑路径走；「给我推荐」按这餐的人、忌口与时令现配一份。
       </div>
+
+      {nutritionOpen ? <NutritionSheet slotId={slot.id} onClose={() => setNutritionOpen(false)} /> : null}
+      {recipeOf ? (
+        <RecipeSheet
+          recipeId={recipeOf.recipeId}
+          recipeName={recipeOf.name}
+          onClose={() => setRecipeOf(null)}
+        />
+      ) : null}
     </div>
   );
 }

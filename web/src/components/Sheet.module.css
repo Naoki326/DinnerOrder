@@ -1,0 +1,43 @@
+.mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(60, 50, 30, 0.28);
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.sheet {
+  background: var(--card);
+  border-radius: 20px 20px 0 0;
+  padding: 16px 14px 22px;
+  /* 手机优先：底栏面板宽不越过视口，长内容在面板内滚动 */
+  width: min(100%, 480px);
+  max-height: 80vh;
+  overflow-y: auto;
+  /* 长自由文本（食谱步骤）不许把面板撑宽 */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.head b {
+  font-size: 16px;
+}
+
+.close {
+  flex: none;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 99px;
+  background: var(--chip);
+  color: var(--sub);
+}

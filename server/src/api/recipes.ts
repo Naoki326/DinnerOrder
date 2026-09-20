@@ -4,6 +4,7 @@ import { zodValidator } from './validation.js';
 import type { AppDeps } from '../app.js';
 import type { RecipeCuisine } from '../wire-types.js';
 import { findRecipe, listRecipes } from '../domain/recipes.js';
+import { recipeDetail } from '../domain/nutrition.js';
 import {
   MAX_DIFFERENCES_LENGTH,
   promoteRecipe,
@@ -55,6 +56,24 @@ export function registerRecipeRoutes(api: Hono, deps: AppDeps): void {
     const recipe = findRecipe(deps.db, c.req.param('id'));
     if (!recipe) return c.json({ error: 'not_found', id: c.req.param('id') }, 404);
     return c.json({ recipe });
+  });
+
+  /**
+   * 一道菜的食谱（本票）：做法步骤自由文本 + 食材清单（成人份基准）。
+   *
+   * 为什么单独一条路径而不是给 `GET /recipes/:id` 加个 `?with=steps`：本接口服务的是
+   * **站在灶台前的掌勺者**（步骤 + 清单，一屏做完），与「菜谱资源本身」是两种读法；
+   * 拼在同一个响应里会让菜谱管理列表也不得不读一遍没人看的自由文本。
+   * `steps` 为空串时**照原样返回**（家庭菜里确实有没写做法的），界面自己表达「还没写做法」。
+   */
+  api.get('/recipes/:id/recipe', (c) => {
+    const recipeId = c.req.param('id');
+    try {
+      return c.json({ recipe: recipeDetail(deps.db, recipeId) });
+    } catch (error) {
+      if (error instanceof RecipeNotFoundError) return c.json({ error: 'not_found', id: recipeId }, 404);
+      throw error;
+    }
   });
 
   /**

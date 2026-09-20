@@ -791,6 +791,109 @@ export interface MenuPortion {
   uplift: number;
 }
 
+// ---------------------------------------------------------------- 每餐营养 / 每道菜食谱（本票）
+
+/**
+ * 一项食材对本餐营养的贡献（`GET /api/slots/:id/nutrition` 的逐食材明细）。
+ *
+ * `nutrition` 为 `null` = **这个食材没有营养数据**（成分表里没有对应条目），
+ * **不是「0 营养」**：把缺数据当 0 会让整餐热量偏低且看不出来（本仓「异常原因看得见」的纪律）。
+ */
+export interface DishNutritionIngredient {
+  ingredientId: string;
+  name: string;
+  /** 本餐克数（与 `portionOf` 同一份读数，含留量上浮与年龄折算） */
+  grams: number;
+  /** 每 100 g 可食部的营养；null = 缺数据（没被算进合计） */
+  per100g: IngredientNutrition | null;
+  /** 本项计入合计的四项（缺数据时为 null，不是 0） */
+  energyKcal: number | null;
+  proteinG: number | null;
+  fatG: number | null;
+  carbG: number | null;
+}
+
+/** 一道菜的本餐营养（逐食材明细 + 合计） */
+export interface DishNutrition {
+  recipeId: string;
+  name: string;
+  kind: RecipeKind;
+  ingredients: DishNutritionIngredient[];
+  /** 合计（只含**有数据**的食材）；`partial` 为真时合计是「部分食材」的合计 */
+  energyKcal: number;
+  proteinG: number;
+  fatG: number;
+  carbG: number;
+  /** 这道菜里有食材没有营养数据（界面上说不说得出「为什么看起来偏低」全靠它） */
+  partial: boolean;
+}
+
+/**
+ * 一餐的营养合计（`GET /api/slots/:id/nutrition`）。
+ *
+ * **口径**：按本餐**全部生重**算，不是「每人份」（分母是 `portion.factorSum` 那份总克数，
+ * 已含留量上浮与年龄折算）。界面文案见 `NutritionSheet`。
+ */
+export interface MenuNutrition {
+  /** 年龄按这一天现算（家庭时区），与份量同一份 asOf */
+  asOf: string;
+  /** Σ折算系数（未舍入） */
+  factorSum: number;
+  /** 这份菜单里实际生效的留量上浮系数（与 `MenuPortion.uplift` 同源） */
+  uplift: number;
+  diners: DinerPortion[];
+  dishes: DishNutrition[];
+  energyKcal: number;
+  proteinG: number;
+  fatG: number;
+  carbG: number;
+  /**
+   * 有食材没有营养数据时非空：整餐的四项合计是「**部分食材**的合计」。
+   * 逐条给出是哪些食材（同名的会合并），界面据此把话说出来。
+   */
+  missingIngredients: { ingredientId: string; name: string }[];
+  /** 这些食材只是**没录进本表**，不代表它们没有营养——`source` 是数据出处，供界面折叠展示 */
+  nutritionSource: string;
+}
+
+/** 食材的每 100 g 可食部营养（数据资产本身） */
+export interface IngredientNutrition {
+  ingredientId: string;
+  energyKcal: number;
+  proteinG: number;
+  fatG: number;
+  carbG: number;
+  /** 逐行出处（哪个平台的哪个食物名、原始数值） */
+  source: string;
+  note: string | null;
+}
+
+/** 一道菜的食谱（`GET /api/recipes/:id/recipe`）：做法步骤自由文本 + 食材清单 */
+export interface RecipeDetail {
+  recipeId: string;
+  name: string;
+  kind: RecipeKind;
+  status: RecipeStatus;
+  cuisine: Recipe['cuisine'];
+  /**
+   * 做法步骤（自由文本，可能多行带序号；可能是空串 = 这道还没写做法）。
+   * **不进推荐管线**（spec §2.8），只给掌勺者看。
+   */
+  steps: string;
+  /** 食材清单：成人份基准（每道菜的「一格」，不随人数放大） */
+  ingredients: RecipeIngredient[];
+}
+
+/** `GET /api/recipes/:id/recipe` 的响应 */
+export interface RecipeDetailResponse {
+  recipe: RecipeDetail;
+}
+
+/** `GET /api/slots/:id/nutrition` 的响应 */
+export interface MenuNutritionResponse {
+  nutrition: MenuNutrition;
+}
+
 /** 互换表里的一条：`grams` 的本品等价于同组 `anchorGrams` 的 `anchorName` */
 export interface ExchangeItem {
   id: string;
