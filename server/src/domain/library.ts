@@ -626,7 +626,7 @@ export function seasonIngredientCount(db: Db): number {
 export function buildReport(
   db: Db,
   outcome: ImportOutcome,
-  extra: { generatedAt: string },
+  extra: { generatedAt: string; relabel?: RelabelReport },
 ): ImportReport & { season: { ingredients: number; months: number } } {
   return {
     generatedAt: extra.generatedAt,
@@ -634,8 +634,11 @@ export function buildReport(
     rejected: outcome.rejected,
     // 归一失败清单来自本次落库的结果（`normalizeRecipe` 把原文名带下来了）
     unmatched: outcome.unmatched,
-    // 覆盖率也是这一批的结果（在事务里带走的那份，见 ImportOutcome.relabel 的说明）
-    relabel: outcome.relabel,
+    // 覆盖率缺省用事务里带走的那份（dry-run 唯一能看到「若真跑」数字的地方：回滚后再查库
+    // 读到的是导入前的小库）。但真跑且已做过 LLM 重标时，**必须**传重读库的那份
+    // （`relabelReport(db)`）——重标之后库已经变了，事务里的快照是过期数字，
+    // 报告会一边说「N 项写回」一边把同样这 N 项列成「仍待重标」，自相矛盾。
+    relabel: extra.relabel ?? outcome.relabel,
     season: { ingredients: seasonIngredientCount(db), months: 12 },
     notes: outcome.notes,
   };
@@ -752,5 +755,60 @@ export async function tagDraftCuisines(
 /** 报告落盘（报告是 AC 的交付物：导入量、重标量、归一失败清单都要能留档） */
 export function writeReport(report: ImportReport & { season: { ingredients: number; months: number } }, filePath: string): void {
   writeFileSync(filePath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+}
+
+// ---------------------------------------------------------------- 导入编排（CLI 的可测核心）
+
+export interface LibraryImportRequest {
+  /** 已归一的菜（调用方先用 `normalizeRecipe` 过一遍） */
+  recipes: NormalizedRecipe[];
+  /** 采集/归一阶段攒下的被拒条目（快照读不进来的、manifest 登记了但文件缺的），原样并入报告 */
+  rejected?: RejectedRecipe[];
+  /** 开 LLM 份量重标与菜系初打；只在**真跑**生效（dry-run 一律不调 LLM） */
+  useLlm?: boolean;
+  dryRun?: boolean;
+  onConflict?: 'skip' | 'replace';
+  /** 采集侧的备注（来源不可达之类），原样进报告 */
+  notes?: string[];
+  /** 报告时间戳（调用方在运行开始时取好） */
+  generatedAt: string;
+}
+
+/**
+ * 一整条导入编排：落库 →（真跑且开 LLM 时）份量重标与菜系初打 → 组报告。
+ *
+ * 为什么从 `scripts/import-library.ts` 抽到这里：**编排顺序本身就是行为**——
+ * 「报告的覆盖率读的是哪个时刻的库」只有在这里才测得到。脚本里的 main() 没有测试接缝，
+ * 而各自复刻管线的测试恰好都没复刻「重标之后才组报告」这一段。
+ */
+export async function runLibraryImport(
+  db: Db,
+  llm: LlmClient,
+  request: LibraryImportRequest,
+): Promise<ImportReport & { season: { ingredients: number; months: number } }> {
+  const outcome = importDrafts(db, {
+    recipes: request.recipes,
+    dryRun: request.dryRun,
+    onConflict: request.onConflict,
+    notes: request.notes,
+  });
+  outcome.rejected.push(...(request.rejected ?? []));
+
+  let relabel = { requests: 0, written: 0, calls: 0, notes: [] as string[] };
+  let cuisine = { requests: 0, written: 0, calls: 0, notes: [] as string[] };
+  if (request.useLlm && !request.dryRun) {
+    relabel = await relabelDrafts(db, llm);
+    cuisine = await tagDraftCuisines(db, llm);
+    outcome.notes.push(
+      `LLM 重标：${relabel.written} 项写回（${relabel.calls} 次调用）；菜系初打：草稿 ${cuisine.written} 道带 tag（${cuisine.calls} 次调用）`,
+      ...relabel.notes,
+      ...cuisine.notes,
+    );
+    // 落库与重标都已完成、事务已提交——覆盖率重读库（报告 = 库的真相）。dry-run 不进这里，
+    // 继续用事务内的那份快照（「若真跑会发生什么」，回滚后重读只会看到导入前的小库）。
+    return buildReport(db, outcome, { generatedAt: request.generatedAt, relabel: relabelReport(db) });
+  }
+
+  return buildReport(db, outcome, { generatedAt: request.generatedAt });
 }
 

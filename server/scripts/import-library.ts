@@ -27,12 +27,9 @@ import { runMigrations } from '../src/db/migrate.js';
 import { createLlmClient } from '../src/bootstrap.js';
 import { createFakeLlmClient } from '../src/llm/fake.js';
 import {
-  buildReport,
-  importDrafts,
   loadIngredientIndex,
   normalizeRecipe,
-  relabelDrafts,
-  tagDraftCuisines,
+  runLibraryImport,
   writeReport,
   type DraftRecipe,
   type NormalizedRecipe,
@@ -215,30 +212,21 @@ async function main(): Promise<void> {
     const llm = options.useLlm ? createLlmClient(process.env, REPO_ROOT) : createFakeLlmClient();
     if (!options.useLlm) notes.push('未开 --llm：份量全部留「待重标」（报告里 relabel.pending），菜系只落采集侧能确定的那些');
 
-    const outcome = importDrafts(db, {
+    // 落库 →（真跑且 --llm 时）重标与菜系初打 → 组报告：整条编排在领域层（runLibraryImport），
+    // 脚本只管读输入与写报告文件——编排顺序是行为（报告的覆盖率读的是哪个时刻的库），
+    // 要在领域层测得到，而不是只活在这个 main() 里。
+    const report = await runLibraryImport(db, llm, {
       recipes: normalized,
+      rejected: skipped,
       dryRun: options.dryRun,
       // --replace：把同名/同 id 的**草稿**清掉重写。用途只有一个——补了字典别名/改了筛选口径
       // 之后要把已有草稿刷新一遍（草稿还没有历史与转正版本，重写无损）。
-      // **家庭菜谱永不覆盖**（importDrafts 里对非草稿状态直接拒）。
+      // **家庭菜谱永不覆盖**（runLibraryImport→importDrafts 里对非草稿状态直接拒）。
       onConflict: options.replace ? 'replace' : 'skip',
       notes,
+      useLlm: options.useLlm,
+      generatedAt,
     });
-    outcome.rejected.push(...skipped);
-
-    let relabel = { requests: 0, written: 0, calls: 0, notes: [] as string[] };
-    let cuisine = { requests: 0, written: 0, calls: 0, notes: [] as string[] };
-    if (options.useLlm && !options.dryRun) {
-      relabel = await relabelDrafts(db, llm);
-      cuisine = await tagDraftCuisines(db, llm);
-      outcome.notes.push(
-        `LLM 重标：${relabel.written} 项写回（${relabel.calls} 次调用）；菜系初打：草稿 ${cuisine.written} 道带 tag（${cuisine.calls} 次调用）`,
-        ...relabel.notes,
-        ...cuisine.notes,
-      );
-    }
-
-    const report = buildReport(db, outcome, { generatedAt });
     writeReport(report, options.reportPath);
 
     // 覆盖率用**报告里那份**（dry-run 时它带的是事务内的数字；回滚后再查库读到的是导入前状态）

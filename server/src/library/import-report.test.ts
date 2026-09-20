@@ -8,6 +8,7 @@ import {
   loadIngredientIndex,
   normalizeRecipe,
   relabelReport,
+  runLibraryImport,
   seasonGrid,
   seasonIngredientCount,
   type DraftRecipe,
@@ -172,6 +173,108 @@ describe('导入报告（AC 的交付物：导入量 / 重标量 / 归一失败�
       .prepare("SELECT source, COUNT(*) AS n FROM recipes WHERE status = 'draft' GROUP BY source ORDER BY source")
       .all() as { source: string; n: number }[];
     expect(rows.map((row) => row.source)).toEqual(['howtocook', 'llm', 'scraped']);
+  });
+});
+
+describe('导入编排（runLibraryImport）：报告的覆盖率读的是哪个时刻的库', () => {
+  /** 两项都是「适量」模糊份量的菜：真跑 + LLM 时会被全部重标成克数 */
+  function relabelableDraft(id: string, name: string): DraftRecipe {
+    return {
+      id,
+      name,
+      aliases: [],
+      kind: 'meat',
+      effort: 'quick',
+      source: 'howtocook',
+      sourceRef: `dishes/meat_dish/${id}.md`,
+      tastes: ['咸鲜'],
+      seasonMonths: [],
+      // 已有确定菜系：菜系初打那一路不会为它发请求（本组只测重标与报告）
+      cuisine: '家常',
+      steps: '炒。',
+      ingredients: [
+        { name: '五花肉', adultGrams: null, quantity: '约 3~4 斤', scaling: 'linear' },
+        { name: '盐', adultGrams: null, quantity: '适量', scaling: 'fixed' },
+      ],
+    };
+  }
+
+  /** 库里草稿的真实待重标条数（报告必须与它一致，而不是与某个时刻的快照一致） */
+  function zeroGramCount(db: TestHarness['db']): number {
+    return (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM recipe_ingredients ri
+             JOIN recipes r ON r.id = ri.recipe_id
+            WHERE r.status = 'draft' AND ri.adult_grams <= 0`,
+        )
+        .get() as { n: number }
+    ).n;
+  }
+
+  it('真跑 + LLM 重标后，报告的 pending 与库内实际一致（不再携带事务内的过期快照）', async () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+    const recipes = [normalizeRecipe(index, relabelableDraft('report_fresh', '报告新鲜度样本菜')).normalized];
+
+    // 按请求类型应答：重标要克数，菜系要标签（种子里还有没菜系的草稿，别让它白烧重试）
+    harness.llm.setCompletion((request) =>
+      request.prompt.includes('菜系参考标签')
+        ? JSON.stringify({ dishes: [{ recipeId: 'report_fresh', cuisine: '家常' }] })
+        : JSON.stringify({
+            dishes: [
+              { recipeId: 'report_fresh', ingredients: [{ name: '五花肉', grams: 130 }, { name: '盐', grams: 2 }] },
+            ],
+          }),
+    );
+
+    const report = await runLibraryImport(harness.db, harness.llm, {
+      recipes,
+      useLlm: true,
+      generatedAt: '2026-09-20T00:00:00.000Z',
+    });
+
+    // 本批的两项都被重标掉了（库与报告都不再列为待办）
+    expect(report.relabel.pending.filter((item) => item.recipeId === 'report_fresh')).toHaveLength(0);
+    // 报告 = 库的真相。这条就是本 bug 的定义：报告一边说 436 项写回，一边把同样这些项列成仍待重标
+    expect(report.relabel.pending).toHaveLength(zeroGramCount(harness.db));
+    expect(report.relabel.done).toBe(report.relabel.needed - zeroGramCount(harness.db));
+  });
+
+  it('dry-run + --llm：不烧一次 LLM，pending 仍是「若真跑会发生什么」的全量（这不是 bug，是设计）', async () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+    const recipes = [normalizeRecipe(index, relabelableDraft('report_dry', '报告 dry-run 样本菜')).normalized];
+
+    const report = await runLibraryImport(harness.db, harness.llm, {
+      recipes,
+      useLlm: true,
+      dryRun: true,
+      generatedAt: '2026-09-20T00:00:00.000Z',
+    });
+
+    // dry-run 一律不调 LLM（重标是写库动作，回滚掉的调用只会白烧端点）
+    expect(harness.llm.completionCalls).toHaveLength(0);
+    // 事务里的快照：若真跑，这两项会先进库等待重标——pending 里就该有它们
+    expect(report.relabel.pending.filter((item) => item.recipeId === 'report_dry')).toHaveLength(2);
+    // 而库本身一个字节没写（回滚干净）
+    expect(
+      (harness.db.prepare("SELECT COUNT(*) AS n FROM recipes WHERE id = 'report_dry'").get() as { n: number }).n,
+    ).toBe(0);
+  });
+
+  it('真跑不开 LLM：pending 照实留在报告里，且与库一致', async () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+    const recipes = [normalizeRecipe(index, relabelableDraft('report_nollm', '报告无 LLM 样本菜')).normalized];
+
+    const report = await runLibraryImport(harness.db, harness.llm, {
+      recipes,
+      generatedAt: '2026-09-20T00:00:00.000Z',
+    });
+
+    expect(report.relabel.pending.filter((item) => item.recipeId === 'report_nollm')).toHaveLength(2);
+    expect(report.relabel.pending).toHaveLength(zeroGramCount(harness.db));
   });
 });
 
