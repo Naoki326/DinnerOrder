@@ -199,3 +199,206 @@ test('大卡上的已定餐：营养按钮与每道菜的食谱入口都在，�
   expect(editorOverflow).toEqual([]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
+
+/**
+ * 可达性缺口（本票修的 ①）：**下方列表里的已定餐也能打开营养与食谱**。
+ *
+ * 大卡永远优先显示「最近未定餐槽」（产品意图，不动），所以定完的餐会落到下面的小卡。
+ * 这些用例钉住的是「定了明天的餐 → 它进下方列表 → 两个入口仍然在、而且点得开」。
+ *
+ * ⚠️ 小卡整张是 `<Link>`（`<a>`）：卡内按钮必须 `preventDefault` + `stopPropagation`，
+ * 否则点按钮会同时跳进编辑器。所以每条都断言 **URL 不变、编辑器没打开**——只断言
+ * 「面板可见」抓不住这个 bug（边跳转边弹面板也会让「面板可见」成立）。
+ */
+test('下方列表里的已定餐：营养入口点得开、不离开今天页（小卡是 <Link>）', async ({ page }) => {
+  await clearDecidedSlots(page);
+  // 用 API 定一餐：它必然落在下方列表（大卡让位给下一个未定餐槽）
+  const listed = await page.request.get(`${ROOT_URL}/api/slots?days=3`);
+  const { slots } = (await listed.json()) as { slots: SlotJson[] };
+  const target = slots.find((slot) => slot.status === 'undecided');
+  expect(target, '窗口内要有未定餐槽').toBeTruthy();
+  const booked = await page.request.put(`${ROOT_URL}/api/slots/${target!.id}`, {
+    data: {
+      diners: ['mom', 'dad'],
+      dishes: [{ recipeId: 'hongshaopaigu' }, { recipeId: 'kelejichi' }],
+    },
+  });
+  expect(booked.ok()).toBe(true);
+
+  await page.goto(`${ROOT_URL}/`);
+  await expect(page.getByTestId('home-view')).toBeVisible();
+
+  // 前置成立：这一餐在小卡里（不是大卡）
+  const ghost = page.locator(`[data-testid="ghost-slot-decided"][data-slot-id="${target!.id}"]`);
+  await expect(ghost).toBeVisible();
+
+  const nutrition = ghost.locator(`[data-testid="ghost-nutrition-${target!.id}"]`);
+  await expect(nutrition).toHaveAttribute('aria-haspopup', 'dialog');
+  await expect(nutrition).toHaveAttribute('aria-expanded', 'false');
+  await nutrition.click();
+
+  // 面板真的开了（不是空壳），并且**没离开今天页**
+  await expect(page.getByTestId('nutrition-sheet')).toBeVisible();
+  await expect(nutrition).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByTestId('nutrition-energy')).toContainText('kcal');
+  await expect(page.getByTestId('nutrition-scope')).toContainText('按 2 人算');
+  expect(page.url()).toBe(`${ROOT_URL}/`);
+  expect(await page.getByTestId('slot-view').count()).toBe(0);
+
+  // 点面板内容区不收起、也不跳走
+  await page.getByTestId('nutrition-body').click();
+  await expect(page.getByTestId('nutrition-sheet')).toBeVisible();
+  expect(page.url()).toBe(`${ROOT_URL}/`);
+
+  // 遮罩收起（贴着顶部的空白就是遮罩）
+  await page.getByTestId('nutrition-sheet').click({ position: { x: 5, y: 2 } });
+  await expect(page.getByTestId('nutrition-sheet')).toBeHidden();
+  expect(page.url()).toBe(`${ROOT_URL}/`);
+});
+
+test('下方列表里的已定餐：每道菜的食谱入口点得开、不离开今天页', async ({ page }) => {
+  await clearDecidedSlots(page);
+  const listed = await page.request.get(`${ROOT_URL}/api/slots?days=3`);
+  const { slots } = (await listed.json()) as { slots: SlotJson[] };
+  const target = slots.find((slot) => slot.status === 'undecided');
+  expect(target, '窗口内要有未定餐槽').toBeTruthy();
+  const booked = await page.request.put(`${ROOT_URL}/api/slots/${target!.id}`, {
+    data: {
+      diners: ['mom', 'dad'],
+      dishes: [{ recipeId: 'hongshaopaigu' }, { recipeId: 'kelejichi' }],
+    },
+  });
+  expect(booked.ok()).toBe(true);
+
+  await page.goto(`${ROOT_URL}/`);
+  const ghost = page.locator(`[data-testid="ghost-slot-decided"][data-slot-id="${target!.id}"]`);
+  await expect(ghost).toBeVisible();
+
+  // 逐道菜都有入口（不是只给第一道）
+  const ribs = ghost.locator('[data-testid="ghost-dish-recipe-hongshaopaigu"]');
+  await expect(ribs).toBeVisible();
+  await expect(ghost.locator('[data-testid="ghost-dish-recipe-kelejichi"]')).toBeVisible();
+
+  await ribs.click();
+  await expect(page.getByTestId('recipe-sheet')).toBeVisible();
+  await expect(page.getByTestId('recipe-sheet-title')).toContainText('红烧排骨');
+  await expect(page.getByTestId('recipe-steps')).toBeVisible();
+  expect(page.url()).toBe(`${ROOT_URL}/`);
+  expect(await page.getByTestId('slot-view').count()).toBe(0);
+
+  await page.getByTestId('recipe-sheet').click({ position: { x: 5, y: 2 } });
+  await expect(page.getByTestId('recipe-sheet')).toBeHidden();
+  expect(page.url()).toBe(`${ROOT_URL}/`);
+});
+
+/**
+ * 布局 bug（本票修的 ②）：掌勺者那一行含 emoji（👨‍🍳），而 `line-height: normal` 的高度
+ * 由**回退字体**决定——字体一换行盒就可能容不下 emoji 的字形，墨迹溢出到行盒外被下方
+ * 有背景色的按钮压住。修法是给这些行一个**显式行高**，不再依赖字体回退。
+ *
+ * 为什么断言「行高是显式值」而不是「两个 boundingBox 不重叠」：本机（Chromium + macOS emoji）
+ * 的 `normal` 恰好把行盒撑到 21px，墨迹没真的越界，所以 boundingBox 不重叠这条在**修前也是绿的**
+ * （没有判别力，实测过）。真正把 bug 复现条件钉住的是「行高不得是 `normal`／不得由字体回退决定」。
+ */
+test('掌勺者行有显式行高，不依赖字体回退（emoji 不被下方按钮压住）', async ({ page }) => {
+  await clearDecidedSlots(page);
+  // 造一张已定餐落在下方列表：大小卡的掌勺者行都要断言
+  const listed = await page.request.get(`${ROOT_URL}/api/slots?days=3`);
+  const { slots } = (await listed.json()) as { slots: SlotJson[] };
+  const target = slots.find((slot) => slot.status === 'undecided');
+  expect(target, '窗口内要有未定餐槽').toBeTruthy();
+  const booked = await page.request.put(`${ROOT_URL}/api/slots/${target!.id}`, {
+    data: { diners: ['mom', 'dad'], dishes: [{ recipeId: 'hongshaopaigu' }] },
+  });
+  expect(booked.ok()).toBe(true);
+
+  await page.goto(`${ROOT_URL}/`);
+  await expect(page.getByTestId('home-view')).toBeVisible();
+
+  const rows = [
+    page.getByTestId('hero-cook'),
+    page.locator(`[data-testid="ghost-cook-${target!.id}"]`),
+  ];
+  for (const row of rows) {
+    await expect(row).toBeVisible();
+    // 含 emoji 的行必须是确定行高，不能让 `normal`（字体度量）说了算
+    const metrics = await row.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { lineHeight: cs.lineHeight, fontSize: parseFloat(cs.fontSize) };
+    });
+    expect(metrics.lineHeight, '含 emoji 的掌勺者行不能是 line-height: normal').not.toBe('normal');
+    const lineHeight = parseFloat(metrics.lineHeight);
+    // 至少 1.5 倍字号：emoji 的字形高度大于同号拉丁/中文字，行盒要留得下它
+    expect(lineHeight).toBeGreaterThanOrEqual(metrics.fontSize * 1.5);
+  }
+
+  // 大卡上掌勺者行与下方按钮不重叠（行盒层面；真正的判别在上一段的显式行高）
+  const heroGap = await page.evaluate(() => {
+    const cook = document.querySelector('[data-testid="hero-cook"]')!.getBoundingClientRect();
+    const book = document.querySelector('[data-testid="book-slot-button"]')!.getBoundingClientRect();
+    return book.top - cook.bottom;
+  });
+  expect(heroGap).toBeGreaterThanOrEqual(0);
+});
+
+/**
+ * 布局 bug（本票修的 ③）：「已定」徽标被长菜名预告挤成竖排两行。
+ *
+ * `.spread` 是 flex 两端对齐，但左侧那一列原先没有 `flex:1`/`min-width:0`，菜名预告一长就把
+ * 右侧徽标挤到只剩 36px 宽 → `white-space: normal` 下「已定」上下堆叠。
+ *
+ * 判别性断言：**徽标里的文字必须只占一个行盒**（`Range.getClientRects()` 长度为 1）。
+ * 只看 `badge.width > badge.height` 抓不住——竖排时宽度（36.4）反而略大于高度（36），
+ * 实测过（修前也满足）。
+ */
+test('下方已定小卡的「已定」徽标不被长菜名预告挤成竖排', async ({ page }) => {
+  await clearDecidedSlots(page);
+  // 三道菜：把菜名预告拉到最长（正是把徽标挤扁的条件）
+  const listed = await page.request.get(`${ROOT_URL}/api/slots?days=3`);
+  const { slots } = (await listed.json()) as { slots: SlotJson[] };
+  const target = slots.find((slot) => slot.status === 'undecided');
+  expect(target, '窗口内要有未定餐槽').toBeTruthy();
+  const booked = await page.request.put(`${ROOT_URL}/api/slots/${target!.id}`, {
+    data: {
+      diners: ['mom', 'dad', 'dabao', 'xiaobao'],
+      dishes: [{ recipeId: 'hongshaopaigu' }, { recipeId: 'kelejichi' }, { recipeId: 'qingzhengluyu' }],
+    },
+  });
+  expect(booked.ok()).toBe(true);
+
+  await page.goto(`${ROOT_URL}/`);
+  const ghost = page.locator(`[data-testid="ghost-slot-decided"][data-slot-id="${target!.id}"]`);
+  await expect(ghost).toBeVisible();
+  // 前置成立：预告确实很长（不然这条测试没有压力）
+  await expect(ghost).toContainText('红烧排骨');
+  await expect(ghost).toContainText(/共 \d+ g/);
+
+  const badge = ghost.locator('.badge');
+  await expect(badge).toContainText('已定');
+
+  const measured = await badge.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const rects = [...range.getClientRects()];
+    const box = el.getBoundingClientRect();
+    return {
+      textLines: rects.length,
+      width: box.width,
+      height: box.height,
+      whiteSpace: getComputedStyle(el).whiteSpace,
+    };
+  });
+  // 「已定」两个字横排 = 一个行盒；竖排会变成两个
+  expect(measured.textLines, '「已定」徽标里的文字必须是横排一行').toBe(1);
+  expect(measured.whiteSpace, '徽标不参与换行').toBe('nowrap');
+  // 横排的徽标必然矮（竖排时高度会接近宽度）
+  expect(measured.height).toBeLessThan(measured.width);
+
+  // 手机宽度：长预告 + 徽标 + 营养入口不撑破 390
+  const overflow = await page.evaluate(() => {
+    const wide = [...document.querySelectorAll('*')].filter((el) => el.scrollWidth > el.clientWidth + 1);
+    return wide.map((el) => `${el.tagName}.${el.className}`).slice(0, 5);
+  });
+  expect(overflow).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});

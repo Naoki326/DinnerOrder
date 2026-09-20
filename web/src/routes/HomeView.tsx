@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState, type MouseEvent } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { apiBaseUrl } from '../config';
 import { useHealth } from '../api/health';
@@ -601,44 +601,124 @@ export function slotLabel(slotId: string, today: string | undefined): string {
   return `${dateLabel(slotId.slice(0, 10), today)}${meal}`;
 }
 
-/** 往下的餐槽：未定/已定都列出来，点了就进编辑器 */
+/**
+ * 往下的餐槽：未定/已定都列出来，点了就进编辑器。
+ *
+ * 已定的这一张也带**营养与食谱**入口（本票修的可达性缺口）：大卡只显示「最近未定餐槽」，
+ * 已定的餐会落到这里——若这一层没有入口，「每餐的营养 / 每道菜的食谱」就只有恰好轮到大卡
+ * 的那一餐能用上。菜名本身就是食谱入口（逐道菜，不是只给一道），营养是卡片底部的一枚小按钮。
+ *
+ * ⚠️ 整张卡是 `<Link>`（`<a>`）：里面的按钮必须自己挡住链接的默认行为，否则点按钮会顺带
+ * 跳进定餐编辑器。`preventDefault()` 让 react-router 的 Link 看到 `defaultPrevented` 而不再
+ * 导航，`stopPropagation()` 再挡一层合成事件冒泡——两个都要，缺一个在改版后都可能漏。
+ */
 function GhostCard({ slot, today }: { slot: SlotWithPortion; today: string | undefined }) {
   const decided = slot.status === 'decided';
   const dishes = slot.menu?.dishes ?? [];
-  const preview = dishes.slice(0, 3).map((dish) => dish.name).join('、');
+  // 预告只列前三道（卡片是买菜前的扫一眼）；超过就报总数，逐道的完整清单在编辑器里
+  const previewDishes = dishes.slice(0, 3);
   // 后面的餐卡只给本餐合计：买菜前扫一眼就够（每道菜/逐食材的读数在大卡与编辑器里）
   const totalGrams = slot.portion?.dishes.reduce((sum, dish) => sum + dish.totalGrams, 0) ?? 0;
+  const [nutritionOpen, setNutritionOpen] = useState(false);
+  const [recipeOf, setRecipeOf] = useState<{ recipeId: string; name: string } | null>(null);
+
+  // 卡内按钮的统一处理：先挡住整卡 Link 的跳转，再交给各自的 onClick
+  const blockCardOpen = (event: MouseEvent<HTMLButtonElement>): void => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
 
   return (
-    <Link
-      className={`card ${styles.ghostCard}`}
-      to={`/slot/${slot.id}`}
-      data-testid={decided ? 'ghost-slot-decided' : 'ghost-slot'}
-      data-slot-id={slot.id}
-    >
-      <div className="spread">
-        <span>
-          <b>
-            {dayLabel(slot, today)} · {slot.meal === 'lunch' ? '午餐' : '晚餐'}
-          </b>{' '}
-          <span className="sub">
-            {decided ? preview || '已定' : '未定'}
-            {decided && totalGrams > 0 ? ` · 共 ${totalGrams} g` : ''}
+    <>
+      <Link
+        className={`card ${styles.ghostCard}`}
+        to={`/slot/${slot.id}`}
+        data-testid={decided ? 'ghost-slot-decided' : 'ghost-slot'}
+        data-slot-id={slot.id}
+      >
+        <div className="spread">
+          {/* 左列可收缩 + min-width:0：长菜名预告在常态下会很长，不这样右侧「已定」徽标
+              会被 flex 挤成竖排（本票修的布局 bug） */}
+          <span className={styles.ghostMain}>
+            <b>
+              {dayLabel(slot, today)} · {slot.meal === 'lunch' ? '午餐' : '晚餐'}
+            </b>{' '}
+            <span className="sub">
+              {decided ? (
+                previewDishes.length > 0 ? (
+                  <>
+                    {previewDishes.map((dish, index) => (
+                      <Fragment key={dish.recipeId}>
+                        {index > 0 ? '、' : ''}
+                        <button
+                          type="button"
+                          className={styles.ghostDish}
+                          data-testid={`ghost-dish-recipe-${dish.recipeId}`}
+                          aria-haspopup="dialog"
+                          aria-expanded={recipeOf?.recipeId === dish.recipeId}
+                          aria-label={`${dish.name} 的食谱`}
+                          onClick={(event) => {
+                            blockCardOpen(event);
+                            setRecipeOf({ recipeId: dish.recipeId, name: dish.name });
+                          }}
+                        >
+                          {dish.name}
+                        </button>
+                      </Fragment>
+                    ))}
+                    {dishes.length > previewDishes.length ? ` 等 ${dishes.length} 道` : ''}
+                    {totalGrams > 0 ? ` · 共 ${totalGrams} g` : ''}
+                  </>
+                ) : (
+                  '已定'
+                )
+              ) : (
+                '未定'
+              )}
+            </span>
           </span>
-        </span>
-        <span className={decided ? 'badge ok' : 'badge'}>{decided ? '已定' : '点这定'}</span>
-      </div>
-      {/* 掌勺者（本票）：后面的餐卡也少给一眼——点进卡片就能改 */}
-      <div className="sub" data-testid={`ghost-cook-${slot.id}`} style={{ marginTop: 4 }}>
-        {slot.cook
-          ? `👨‍🍳 ${slot.cook.name}`
-          : decided
-            ? '掌勺者：未指定'
-            : slot.cookDefault
-              ? `👨‍🍳 ${slot.cookDefault.name}（照上一餐）`
-              : '掌勺者：未指定'}
-      </div>
-    </Link>
+          <span className={decided ? `badge ok ${styles.ghostBadge}` : `badge ${styles.ghostBadge}`}>
+            {decided ? '已定' : '点这定'}
+          </span>
+        </div>
+        <div className={styles.ghostFoot}>
+          {/* 掌勺者（本票）：后面的餐卡也少给一眼——点进卡片就能改 */}
+          <span className={`sub ${styles.ghostCook}`} data-testid={`ghost-cook-${slot.id}`}>
+            {slot.cook
+              ? `👨‍🍳 ${slot.cook.name}`
+              : decided
+                ? '掌勺者：未指定'
+                : slot.cookDefault
+                  ? `👨‍🍳 ${slot.cookDefault.name}（照上一餐）`
+                  : '掌勺者：未指定'}
+          </span>
+          {decided && slot.menu ? (
+            <button
+              type="button"
+              className={styles.ghostNutrition}
+              data-testid={`ghost-nutrition-${slot.id}`}
+              aria-haspopup="dialog"
+              aria-expanded={nutritionOpen}
+              onClick={(event) => {
+                blockCardOpen(event);
+                setNutritionOpen(true);
+              }}
+            >
+              📊 营养
+            </button>
+          ) : null}
+        </div>
+      </Link>
+      {/* 面板是 `<a>` 的兄弟节点而不是子节点：弹层塞进链接里，点面板内容同样会触发跳转 */}
+      {nutritionOpen ? <NutritionSheet slotId={slot.id} onClose={() => setNutritionOpen(false)} /> : null}
+      {recipeOf ? (
+        <RecipeSheet
+          recipeId={recipeOf.recipeId}
+          recipeName={recipeOf.name}
+          onClose={() => setRecipeOf(null)}
+        />
+      ) : null}
+    </>
   );
 }
 

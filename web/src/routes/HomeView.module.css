@@ -33,6 +33,57 @@
   box-shadow: none;
 }
 
+/* 首行左侧（日期 + 菜名预告 + 克数）：**可收缩**且 `min-width: 0`。
+   菜名预告变长是常态（本票后 3 道菜名 + 克数），不这样它会把右侧「已定」徽标挤扁、
+   逼成竖排（本票修的布局 bug ③）。收缩后允许换行——菜名截断成省略号更看不清。 */
+.ghostMain {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 右侧徽标不参与收缩、不换行：两个字的「已定」永远横着一行 */
+.ghostBadge {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 卡片底行：左边掌勺者、右边营养入口。营养入口是**卡内按钮**，而整张卡是 <Link>——
+   点击冲突的拦截在 TSX 里做（preventDefault + stopPropagation），这里只负责排下。 */
+.ghostFoot {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 掌勺者行：与 .cookLine 同一个根因（emoji 行高），显式给足 */
+.ghostCook {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.7;
+}
+
+/* 小卡上的「📊 营养」入口：只放得下小药丸，别用大卡的整条按钮 */
+.ghostNutrition {
+  flex: none;
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  line-height: 1.7;
+}
+
+/* 菜名预告里的**逐道菜食谱入口**：菜名本身可点（省下一列宽度），样式做得像链接 */
+.ghostDish {
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* 首屏大卡上的菜单行：菜名 + 本餐生重克数（S3 要求「每道菜」都看得见读数） */
 .dishList {
   display: flex;
@@ -189,10 +240,14 @@
   line-height: 1.5;
 }
 
-/* 掌勺者（本票）：餐槽卡上「这一餐谁做」那一行——它是菜单信息的一部分，不进克数那一列 */
+/* 掌勺者（本票）：餐槽卡上「这一餐谁做」那一行——它是菜单信息的一部分，不进克数那一列。
+   显式行高（本票修的 bug ②）：这一行含 emoji（👨‍🍳/👩），而 `line-height: normal` 由字体度量
+   决定——emoji 回退字体一换（不同机器/系统）行盒就会变矮，字形墨迹溢出到行盒外、被下方
+   有背景色的按钮压住。给一个能容纳 emoji 的确定行高，不让它随回退字体漂移。 */
 .cookLine {
   margin-top: 8px;
   font-size: 13px;
+  line-height: 1.7;
 }
 
 /* 菜单阶段的反馈（总纲 §2.5）：单道点踩 + 快捷标签 */
