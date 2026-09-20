@@ -365,6 +365,54 @@
 
 ## 归属 #26（验收收尾）
 
+- ✅ **已由本票处理**（掌勺者按餐指定，无独立 issue，由调度直接派发，
+  分支 `pi-web-agent-27823ed2-c3e5-4eff-a854-69afe0c94a66`，2026-09-20）：
+  **需求变更：掌勺者从「家人身上的全局标记」→ 「按餐槽指定」**（用户原话「掌勺者应该是随时可以改的」
+  +「掌勺者会跟具体的某一餐绑在一起」）。
+  * **存储**：迁移 `011_cook_per_meal` 给 `meal_events` 加 `cook_member_id` + 当时的姓名/头像快照
+    （`cook_member_name`/`cook_member_emoji`，跨列 CHECK 三列同生共死）。落在 append-only 事件流上
+    （ADR-0007；因 `meal_events` 的 append-only 触发器让 UPDATE/DELETE 都非法，**加列**是唯一合法变更）；
+    存快照不回头查 members——家人被软删（010）后历史菜单里也照旧读得出当时的名字（不留 undefined 的洞）。
+  * **`is_cook` 的最终处置：保留**（选项 A），不废掉。它收窄为「家里**通常**做菜的那位」，是**最底一层**
+    缺省值：开 app 默认身份取它（`identity.tsx`），掌勺者一路往前没有可继承时才回落到它
+    （服务端 `defaultCook`）。为此本票同时把它做成可改（`ProfilePatch.isCook` + 家人页勾选）。不废掉的
+    理由：`identity.tsx` 的「当前身份缺省 = 掌勺者」依赖它（废掉会让“开 app 默认是谁”失去依据），
+    且“家里通常谁做”是真实信息。
+  * **掌勺者的缺省层次（调度层口径修正：不指定就按上一餐继承）**：不传 `cook` 时，服务端取
+    **本餐槽自己或它之前最近一餐里当前生效的那位掌勺者**（只看每个餐槽的最后一条事件，所以取消/改掉的
+    旧值不算），一路往前都没有才回落 `is_cook`。读侧把推导结果单独下发为 `MealSlot.cookDefault`
+    （与 `leftoverSource` 同一性质：不是餐槽属性而是一个推导出来的缺省），前端不自己重算“上一餐是谁”。
+    继承时会 **JOIN 在用的家人**：上一餐那位若已被软删除就继续往前找（新写的餐里不出现已删家人，
+    与 `resolveDiners` 同一口径）。
+  * **转正入口按餐判定**：`ReviewView` 的 `PromotionForm` 原先看全局 `current.isCook`；
+    现改为看**那一餐的掌勺者**（`meal.cook.memberId === current.id`）。转正是「外部菜上桌后」的动作，
+    该由做了这一餐的人决定。**兜底**：那一餐没指定（NULL）时回落到全局 `is_cook`（“没指定就按家里的习惯”）。
+    ⚠️ 这里的“没指定”是**写进事件的 NULL**（定餐时显式不指定），与“不传 `cook` 时按上一餐继承”是两回事：
+    后者在写入时就已经继承成一个具体的人，不会存成 NULL。
+  * **三视图覆盖**：A（大卡 `hero-cook` / 小卡 `ghost-cook-*`）、B（展开行 `compact-cook-*`）、
+    C（主屏 `simple-cook`）**都显示**掌勺者；**改的入口是同一个定餐编辑器**（`/slot/:id` 的 `cook-picker`），
+    三视图不各造一套选择器（与总纲 §2.10「三视图共享同一操作语义」同口径）。
+  * **测试**：`server/src/api/slots.test.ts` 新增 15 条（指定/上一餐继承/餐次排序/继承只看当前有效事件/
+    继承跳过已删家人/cookDefault 下发/显式 null/改餐/只改掌勺者不标清单过期/unknown_member/
+    软删后历史快照+不能再指定/取消清掉/撤销退回/回顾带出）；`server/src/api/members.test.ts`
+    新增 1 条（isCook 可改）；`server/src/db/schema-011.test.ts` 新增 1 条（跨列 CHECK）；
+    `e2e/s11-cook.spec.ts` 新增 4 条；`e2e/promote.spec.ts` 新增 2 条（按餐判定 + NULL 回落，判别性）。
+
+- ✅ **已由本票处理**（同票配套的两个「今天页」真 bug）：
+  * **页头日期改成服务端下发**（原先 `AppHeader` 用 `new Date()` 浏览器本地时间，与餐槽卡的
+    家庭时区「今天」可能差一天）。修法：`AppHeader` 调 `useSlots(3)` 读 `slots.data.today`
+    （TanStack Query 与 HomeView 共用一个 `['slots',3]` 缓存，**不多打接口**）；`today` 未到位时不显示日期
+    （不用本地时间兜底——那正是要修的 bug）。E2E：`s11-cook.spec.ts` 断言页头文本与服务端 `today` 现算一致。
+  * **冷藏期文案「until 起」说反了**（`HomeView.tsx` 的 `hero-cooling`；`until` 是**解禁日**，
+    不是起始日）。修为「until 起可以再推」，与 `ReviewView.tsx` 的 `cooling-list` 一致。
+    全仓 grep 只有这两处（`grep -rn "until" web/src/`；服务端 `feedback.ts` 是算法不动）。
+
+- ✅ **已由本票处理**（同票第三件真 bug，由调度层追加）：**`release-notice` 把裸槽 id 念给用户听**
+  （`HomeView.tsx`：`released.join('、')` 直接渲染 `'2026-09-20:dinner'`）。修法：新增 `slotLabel(slotId, today)`
+  （与 `dayLabel` 共用 `dateLabel`，同时说清日期与餐次）；与 `leftoverSourceLabel` 的差别（一个恒“中午”、
+  一个要说餐次）在注释里说明。E2E：`e2e/s4-leftover.spec.ts` 的 `release-notice` 断言改为「不出现 `:` 形式的槽 id」
+  （原先 `toContainText(dinner)` 正是把裸 id 写进断言——已改准）。
+
 - ✅ **已由本票处理**（C 视图留量入口；无独立 issue，由调度直接派发，
   分支 `pi-web-agent-0027c7c7-9ac5-4e1f-b892-60b5963dd3b6`，2026-09-20）：
   **C 视图（长辈小孩极简）的「留量」入口已补**（`web/src/routes/SimpleView.tsx`：未定时

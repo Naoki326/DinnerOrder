@@ -161,6 +161,15 @@ function SlotRow({
               <div className="sub">
                 用餐者 {diners.map((diner) => `${diner.emoji}${diner.name}`).join(' ')}
               </div>
+              {/* 掌勺者（本票）：紧凑流的展开行给一眼。未定时用服务端下发的缺省
+                  （按上一餐继承）；改的入口与其它操作一样——进同一个编辑器 */}
+              <div className="sub" data-testid={`compact-cook-${slot.id}`}>
+                {slot.cook
+                  ? `👨‍🍳 掌勺者 ${slot.cook.emoji}${slot.cook.name}`
+                  : slot.cookDefault
+                    ? `👨‍🍳 掌勺者（照上一餐）${slot.cookDefault.emoji}${slot.cookDefault.name}`
+                    : '掌勺者：未指定'}
+              </div>
               <div className={styles.dishes}>
                 {dishes.map((dish) => {
                   const portion = slot.portion?.dishes.find((item) => item.recipeId === dish.recipeId);

@@ -81,6 +81,7 @@ interface PatchOptions {
   birthMonth?: string | null;
   avoid?: string[];
   loves?: { kind: 'ingredient' | 'recipe'; id: string }[];
+  isCook?: boolean;
 }
 
 async function patchMember(id: string, patch: PatchOptions) {
@@ -231,6 +232,27 @@ describe('画像编辑', () => {
 
     const { status } = await patchMember('nobody', { birthMonth: '2018-03' });
     expect(status).toBe(404);
+  });
+
+  it('掌勺者标记可改（本票：从“种子里写死”变成随时可勾）', async () => {
+    harness = createTestHarness();
+
+    // 种子里妈妈是掌勺者；把爸爸也勾上（允许并列多位，不强制单例）
+    const added = await patchMember('dad', { isCook: true });
+    expect(added.status).toBe(200);
+    expect(added.body.member?.isCook).toBe(true);
+    expect((await listMembers()).filter((member) => member.isCook).map((member) => member.id)).toEqual([
+      'mom',
+      'dad',
+    ]);
+
+    // 也能取消（只是“家里通常谁做菜”，不是权限位）
+    await patchMember('mom', { isCook: false });
+    expect((await getMember('mom')).isCook).toBe(false);
+
+    // 没传这一项时保持原样（与 birthMonth/avoid/loves 同一“没传就不动”语义）
+    await patchMember('dad', { avoid: ['chili'] });
+    expect((await getMember('dad')).isCook).toBe(true);
   });
 });
 

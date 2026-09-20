@@ -24,6 +24,7 @@ import {
   NothingToUndoError,
   parseSlotId,
   recentDishes,
+  sameMenuContent,
   SlotNotDecidedError,
   SlotPassedError,
   todayOf,
@@ -32,6 +33,7 @@ import {
   UnknownPromptVersionError,
   UnknownRecipeError,
   RecipeRetiredError,
+  UnknownCookError,
 } from '../domain/slots.js';
 
 /** 定餐 = 改餐（总纲 §2.1）：同一个编辑器、同一份入参，服务端按当前状态决定记「预定」还是「改餐」事件 */
@@ -49,6 +51,11 @@ const bookingSchema = z.object({
     .default([]),
   /** 「吃剩的」引用（#22）：填同日午餐的槽 id；`superRefine` 把「引用 ⟺ 不带菜单」说清 */
   leftoverOf: z.string().min(1).optional(),
+  /**
+   * 这一餐谁掌勺（本票）：不传 = 服务端**按上一餐继承**（一路往前没有才回落 `is_cook`）；
+   * 显式 null = 不指定；传了就只收在用的家人 id（否则 400 `unknown_member`）。
+   */
+  cook: z.string().min(1).nullable().optional(),
   source: z.enum(['manual', 'recommendation']).optional(),
   /** 接受推荐时回传的 LLM 元数据（形状见 wire-types；服务端只用它留痕，不参与判定） */
   llm: z
@@ -146,18 +153,24 @@ export function registerSlotRoutes(api: Hono, deps: AppDeps): void {
     const id = c.req.param('id');
     try {
       // 改餐 → 买菜清单标记过期（总纲 §2.7）。
-      // 只对**菜单真的变了**的提交标过期（拿留痕条数判）：`bookSlot` 对内容完全相同的提交
-      // 不追事件（防手机双击写两条同样的留痕），那种提交不该把清单标过期——否则界面上会冒出
+      // 只对**菜单真的变了**的提交标过期：`bookSlot` 对内容完全相同的提交不追事件
+      // （防手机双击写两条同样的留痕），那种提交不该把清单标过期——否则界面上会冒出
       // 一个「菜单变了」但菜单其实没变的警告。
+      //
+      // ⚠️ 本票（掌勺者按餐指定）：只改了「谁做这一餐」的提交也会追一条留痕，但它**不改**
+      // 要买的食材与克数——照事件条数判会把纯换掌勺者也标成「菜单变了」。所以拿折叠前后的
+      // 菜单内容比（`sameMenuContent`，**不比掌勺者、比用餐者**）而不是拿留痕条数。
       //
       // 「改餐」与「标过期」在**同一个事务**里（#23 评审 ⑤-2）：两条写语句各自自动提交时，
       // 中间有个极小的窗口（进程在同一时刻被杀），会留下「菜单已变、清单未过期」的静默不一致
       // ——而这件事正是本清单最不能静默的地方。领域层 `bookSlot` 自己的事务在外层事务里
       // 自动降级成 SAVEPOINT（better-sqlite3 的 `db.inTransaction` 分支），不会重复 BEGIN。
       const apply = db.transaction((): MealSlot => {
-        const eventsBefore = listSlotEvents(db, id).length;
+        const parsed = parseSlotId(id);
+        const before = parsed ? foldSlot(db, clock, parsed.date, parsed.meal).menu : null;
         const booked = bookSlot(db, clock, id, c.req.valid('json'));
-        if (listSlotEvents(db, id).length > eventsBefore) markGroceryStale(db, id, 'menu_changed');
+        // 菜单本身没变（只是换了掌勺者）：清单不动；真变了（菜/用餐者/留量/吃剩的引用）才过期
+        if (!sameMenuContent(before, booked.menu)) markGroceryStale(db, id, 'menu_changed');
         return booked;
       });
       const slot = apply();
@@ -222,6 +235,9 @@ function bookingError(c: Context, id: string | undefined, error: unknown): Respo
   if (error instanceof UnknownRecipeError) return c.json({ error: 'unknown_recipe', recipeId: error.recipeId }, 400);
   if (error instanceof RecipeRetiredError) return c.json({ error: 'recipe_retired', recipeId: error.recipeId }, 400);
   if (error instanceof UnknownMemberError) return c.json({ error: 'unknown_member', memberId: error.memberId }, 400);
+  // 掌勺者不是家人：界面要能指认是哪一条不对，而不是笼统一句失败（与 unknown_member 同一口径）。
+  // 复用同一个错误码：两者都是「家人列表里没这个人」，前端的 readErrorDetail 一句就够。
+  if (error instanceof UnknownCookError) return c.json({ error: 'unknown_member', memberId: error.memberId }, 400);
   if (error instanceof EmptyDinersError) return c.json({ error: 'empty_diners', id }, 400);
   if (error instanceof EmptyDishesError) return c.json({ error: 'empty_dishes', id }, 400);
   if (error instanceof DuplicateDishError) return c.json({ error: 'duplicate_dish', recipeId: error.recipeId }, 400);

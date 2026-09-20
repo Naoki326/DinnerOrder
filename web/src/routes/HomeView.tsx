@@ -46,7 +46,9 @@ export function HomeView() {
       {released.length > 0 ? (
         <div className="card" data-testid="release-notice">
           <span className="sub">
-            取消成功：{released.join('、')} 吃的是这一餐剩的，已经一起退回未定了。
+            {/* 服务端下发的 `released` 是**原始槽 id**（'2025-06-02:dinner'）：数据库主键不该念给用户听，
+                这里渲染成「今天晚餐」这种人话（与餐槽卡的 dayLabel 同一口径） */}
+            取消成功：{released.map((id) => slotLabel(id, today)).join('、')} 吃的是这一餐剩的，已经一起退回未定了。
           </span>
         </div>
       ) : null}
@@ -182,6 +184,8 @@ function HeroCard({
         booking: {
           diners: recommendation.diners.map((diner) => diner.memberId),
           dishes: recommendation.dishes.map((dish) => dish.recipeId),
+          // 掌勺者（本票）：已定餐槽保留当时那位；未定的不传（服务端按家里的习惯缺省）
+          ...(slot.cook ? { cook: slot.cook.memberId } : {}),
         },
         recommendation,
       },
@@ -205,6 +209,8 @@ function HeroCard({
         slotId: slot.id,
         leftoverOf: leftOverSource.slotId,
         diners: slot.menu?.diners.map((diner) => diner.memberId) ?? members.map((member) => member.id),
+        // 掌勺者（本票）：未定的餐槽不传（服务端按家里的习惯缺省）
+        ...(slot.cook ? { cook: slot.cook.memberId } : {}),
       },
       { onError: (cause) => setError(cause instanceof Error ? cause.message : '预定「吃剩的」失败') },
     );
@@ -222,9 +228,22 @@ function HeroCard({
         // 「吃剩的」那一餐：菜单是从被引用那一餐**现推导**的（总纲 §2.6），
         // 界面要把这一层说出来，否则家人看不出“为什么这顿没有新采购”
         <div className={styles.leftoverNote} data-testid="hero-leftover">
-          🌙 吃 {leftoverSourceLabel(leftover)} 剩的 —— 不另采购，做菜量已按留量上浮
+          🌙 吃 {leftoverSourceLabel(leftover, today)} 剩的 —— 不另采购，做菜量已按留量上浮
         </div>
       ) : null}
+
+      {/* 掌勺者（本票）：餐槽卡上看得见「这一餐谁做」。\n          已定用当时的快照；未定用服务端下发的 `cookDefault`（按上一餐继承，缺省口径只服务端一处），\n          并说清是「照上一餐」——真正的权威判定在服务端。已定但没指定就**不编**一个回头缺省\n          （那一餐就是没指定；写上一个名字会让人以为菜单上真记了他）。 */}
+      <div className={styles.cookLine} data-testid="hero-cook">
+        {slot.cook ? (
+          <>👨‍🍳 掌勺者：{slot.cook.emoji} {slot.cook.name}</>
+        ) : decided ? (
+          <span className="sub">掌勺者：未指定</span>
+        ) : slot.cookDefault ? (
+          <>👨‍🍳 掌勺者：{slot.cookDefault.emoji} {slot.cookDefault.name}（照上一餐）</>
+        ) : (
+          <span className="sub">掌勺者：未指定（定的时候可以指定）</span>
+        )}
+      </div>
 
       {decided && slot.menu ? (
         <div className={styles.dishList} data-testid="hero-dishes">
@@ -256,10 +275,12 @@ function HeroCard({
         </div>
       ) : null}
 
-      {/* 冷藏期的菜要说清为什么它暂时不在推荐里（「看不见的排除」与换菜候选的忌口排除同一纪律） */}
+      {/* 冷藏期的菜要说清为什么它暂时不在推荐里（「看不见的排除」与换菜候选的忌口排除同一纪律）。
+          ⚠️ 文案说的是 `until` 的**真实语义**：它是解除那天（feedback.ts：最后一次点踩 + 冷藏期天数），
+          所以是「起**可以再推**」——不能只说「`until` 起」，那会被读成「从这天开始不推」（语义反了）。 */}
       {decided && slot.menu && cooledInMenu(slot, cooling).length > 0 ? (
         <div className={styles.coolingNote} data-testid="hero-cooling">
-          有人点过踩，这道菜暂时不推：{cooledInMenu(slot, cooling).map((dish) => `${dish.name}（${dish.until} 起）`).join('、')}
+          有人点过踩，这道菜暂时不推：{cooledInMenu(slot, cooling).map((dish) => `${dish.name}（${dish.until} 起可以再推）`).join('、')}
         </div>
       ) : null}
 
@@ -519,11 +540,22 @@ function RecommendationPanel({
 
 /**
  * 「同一日的午餐」这种说法直接写给人看：'2025-06-02:lunch' → 「今天中午」/「6/2 中午」。
- * 引用永远指同日午餐（总纲 §2.6），所以不必渲染成完整槽 id。
+ * 引用永远指同日午餐（总纲 §2.6），所以不必渲染出餐次——日期部分与 `slotLabel` 共用 `dateLabel`。
  */
-function leftoverSourceLabel(slotId: string): string {
-  const date = slotId.slice(0, 10);
-  return `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))} 中午`;
+function leftoverSourceLabel(slotId: string, today?: string): string {
+  return `${dateLabel(slotId.slice(0, 10), today)} 中午`;
+}
+
+/**
+ * 槽 id → 人话，**同时说清日期与餐次**：'2025-06-02:dinner' → 「今天晚餐」/「6/2 晚餐」。
+ *
+ * 与 `leftoverSourceLabel` 不能合并成同一个函数：那个专说「同一日的午餐」（引用形态的语义是
+ * 晚餐吃中午剩的，餐次恒为「中午」，写进文案才读得通）；这里要覆盖午/晚两种餐次（取消联动
+ * 下发的 `released` 是晚餐，但助手本身不该假设）。两者共用日期部分（`dateLabel`），避免两份同形逻辑。
+ */
+export function slotLabel(slotId: string, today: string | undefined): string {
+  const meal = slotId.endsWith(':lunch') ? '午餐' : '晚餐';
+  return `${dateLabel(slotId.slice(0, 10), today)}${meal}`;
 }
 
 /** 往下的餐槽：未定/已定都列出来，点了就进编辑器 */
@@ -553,6 +585,16 @@ function GhostCard({ slot, today }: { slot: SlotWithPortion; today: string | und
         </span>
         <span className={decided ? 'badge ok' : 'badge'}>{decided ? '已定' : '点这定'}</span>
       </div>
+      {/* 掌勺者（本票）：后面的餐卡也少给一眼——点进卡片就能改 */}
+      <div className="sub" data-testid={`ghost-cook-${slot.id}`} style={{ marginTop: 4 }}>
+        {slot.cook
+          ? `👨‍🍳 ${slot.cook.name}`
+          : decided
+            ? '掌勺者：未指定'
+            : slot.cookDefault
+              ? `👨‍🍳 ${slot.cookDefault.name}（照上一餐）`
+              : '掌勺者：未指定'}
+      </div>
     </Link>
   );
 }
@@ -575,12 +617,17 @@ const KIND_LABEL: Record<string, string> = {
  * 不用浏览器本地日期：家里在手机上看的「今天」跟餐槽判定用的「今天」必须是一天。
  */
 export function dayLabel(slot: MealSlot, today: string | undefined): string {
-  if (!today) return slot.date;
-  const diff = daysBetween(today, slot.date);
+  return dateLabel(slot.date, today);
+}
+
+/** 'YYYY-MM-DD' → 「今天 / 明天 / 后天 / 6/5」（相对今天；`today` 是**家庭时区**的服务端下发值） */
+function dateLabel(date: string, today: string | undefined): string {
+  if (!today) return date;
+  const diff = daysBetween(today, date);
   if (diff === 0) return '今天';
   if (diff === 1) return '明天';
   if (diff === 2) return '后天';
-  return `${Number(slot.date.slice(5, 7))}/${Number(slot.date.slice(8, 10))}`;
+  return `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
 }
 
 /** 两个 'YYYY-MM-DD' 之间差几天（纯日期算术，不碰时区） */

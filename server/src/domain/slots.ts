@@ -9,6 +9,7 @@ import type {
   MealEventType,
   MealKind,
   MealSlot,
+  Menu,
   MenuDish,
   RecipeKind,
   RecentDish,
@@ -48,6 +49,10 @@ interface EventRow {
   llm_latency_ms: number | null;
   llm_degraded: number | null;
   leftover_menu_slot_id: string | null;
+  // 掌勺者快照（011）：三列同生共死（迁移里的跨列 CHECK 钉死）
+  cook_member_id: string | null;
+  cook_member_name: string | null;
+  cook_member_emoji: string | null;
 }
 
 interface DinersRow {
@@ -119,6 +124,12 @@ function toSlot(db: Db, clock: Clock, date: string, meal: MealKind, history: Mea
         ? { diners: last.diners, dishes: last.dishes, leftoverSlotId: null }
         : { diners: last.diners, dishes: leftover.dishes, leftoverSlotId: leftover.slotId }
       : null,
+    // 掌勺者（011，本票）：与菜单同一条折叠——未定/取消 = 没指定（null）。
+    // 已定时取**最后一条事件**的快照（家人后来改名/被删也不改写历史）。
+    cook: decided ? last.cook : null,
+    // “不指定时保存会写成谁”（本票）：按上一餐继承。未定餐槽的界面拿它显示缺省，
+    // 不自己拼一遍（“上一餐”是服务端的事件流知识，前端不一定看得见）。
+    cookDefault: inheritedCook(db, date, meal),
     editable: !hasMealPassed(db, clock, date, meal),
     canUndoSet: canUndoSet(history),
     leftoverSource: leftoverSourceOf(db, date, meal),
@@ -146,7 +157,8 @@ export function listSlotEvents(db: Db, id: string): MealEvent[] {
   const rows = db
     .prepare(
       `SELECT seq, slot_id, slot_date, meal, type, source, occurred_at,
-              llm_model, llm_prompt_version, llm_latency_ms, llm_degraded, leftover_menu_slot_id
+              llm_model, llm_prompt_version, llm_latency_ms, llm_degraded, leftover_menu_slot_id,
+              cook_member_id, cook_member_name, cook_member_emoji
          FROM meal_events WHERE slot_id = ? ORDER BY seq`,
     )
     .all(id) as EventRow[];
@@ -194,8 +206,19 @@ export function listSlotEvents(db: Db, id: string): MealEvent[] {
     diners: diners.get(row.seq) ?? [],
     dishes: dishes.get(row.seq) ?? [],
     leftoverSlotId: row.leftover_menu_slot_id,
+    cook: cookOf(row),
     llm: llmMeta(row),
   }));
+}
+
+/** 事件行上的掌勺者快照 → 线上形状；没指定（三列全空）为 null */
+function cookOf(row: EventRow): DinerRef | null {
+  if (row.cook_member_id === null) return null;
+  return {
+    memberId: row.cook_member_id,
+    name: row.cook_member_name!,
+    emoji: row.cook_member_emoji!,
+  };
 }
 
 // ---------------------------------------------------------------- 「吃剩的」引用（#22）
@@ -377,6 +400,8 @@ export function bookSlot(db: Db, clock: Clock, id: string, booking: SlotBooking)
 
   const diners = resolveDiners(db, booking.diners);
   const leftoverOf = booking.leftoverOf ?? null;
+  // 掌勺者（011）：不传 = 按**上一餐**继承（家里还没做过就按 is_cook）；显式 null = 这一餐不指定。
+  const cook = resolveCook(db, parsed.date, parsed.meal, booking.cook);
   // 「吃剩的」形态与自带菜单互斥：两份菜单（本餐的快照 vs 被引用那一餐的菜）一旦并存，
   // 「这一餐到底吃什么」就有两个说得通、但会漂移的答案。宁可 400 也不存一个要自己解释的菜单。
   if (leftoverOf !== null && booking.dishes.length > 0) throw new LeftoverWithDishesError(id);
@@ -401,6 +426,7 @@ export function bookSlot(db: Db, clock: Clock, id: string, booking: SlotBooking)
       !current ||
       current.type === 'cancel' ||
       !sameMenu(current, diners, dishes, leftoverOf) ||
+      !sameCook(current.cook, cook) ||
       current.source !== source;
     if (changed) {
       insertEvent(db, clock, {
@@ -411,6 +437,7 @@ export function bookSlot(db: Db, clock: Clock, id: string, booking: SlotBooking)
         source,
         diners,
         dishes,
+        cook,
         leftoverOf,
         llm: booking.llm,
       });
@@ -471,6 +498,8 @@ export function cancelSlot(db: Db, clock: Clock, id: string): string[] {
       source: 'manual',
       diners: [],
       dishes: [],
+      // 取消 = 这一餐没有了，掌勺者也一并清掉（没有餐就没有「谁做」）
+      cook: null,
       leftoverOf: null,
     });
     released = releaseReferencingSlots(db, clock, id);
@@ -501,6 +530,7 @@ function releaseReferencingSlots(db: Db, clock: Clock, id: string): string[] {
       source: 'manual',
       diners: [],
       dishes: [],
+      cook: null,
       leftoverOf: null,
     });
   }
@@ -548,6 +578,9 @@ export function undoSet(db: Db, clock: Clock, id: string): MealSlot {
       source: 'manual',
       diners: previous.diners,
       dishes: previous.dishes,
+      // 撤销退回的是上一条事件的**内容**：掌勺者也回到那一条的快照（本票），
+      // 只退菜不退人就等于把「谁做这一套」留在了被撤掉的那一套上。
+      cook: previous.cook,
       // 撤销退回的是上一条事件的**内容**，连同它的「吃剩的」引用一起：
       // 只退菜不退引用，会让一份「吃剩的」菜单失去它的由来（留痕就断了）。
       leftoverOf: previous.leftoverSlotId,
@@ -565,6 +598,8 @@ interface NewEvent {
   source: BookingSource;
   diners: DinerRef[];
   dishes: MenuDish[];
+  /** 这一餐的掌勺者快照（011）；取消/未指定为 null */
+  cook: DinerRef | null;
   /** 「吃剩的」引用（#22）：普通定餐（含改餐/撤销/取消）为空 */
   leftoverOf: string | null;
   /** 接受推荐时带的 LLM 元数据（手动定餐为 undefined） */
@@ -589,8 +624,9 @@ function insertEvent(db: Db, clock: Clock, event: NewEvent): void {
     .prepare(
       `INSERT INTO meal_events
          (slot_id, slot_date, meal, type, source, occurred_at,
-          llm_model, llm_prompt_version, llm_latency_ms, llm_degraded, leftover_menu_slot_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          llm_model, llm_prompt_version, llm_latency_ms, llm_degraded, leftover_menu_slot_id,
+          cook_member_id, cook_member_name, cook_member_emoji)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       event.id,
@@ -605,6 +641,10 @@ function insertEvent(db: Db, clock: Clock, event: NewEvent): void {
       event.llm?.latencyMs ?? null,
       event.llm === undefined ? null : event.llm.degraded ? 1 : 0,
       event.leftoverOf,
+      // 掌勺者快照（011）：三列同生共死，库里的跨列 CHECK 是最后一道（同 diners 的快照口径）
+      event.cook?.memberId ?? null,
+      event.cook?.name ?? null,
+      event.cook?.emoji ?? null,
     );
   const seq = Number(result.lastInsertRowid);
 
@@ -620,13 +660,86 @@ function insertEvent(db: Db, clock: Clock, event: NewEvent): void {
 }
 
 /**
- * 用餐者名单快照：按请求给的顺序存当时**姓名与头像**（家人后来改名/删号也不改写历史）。
- * 空名单拒收——忌口、家规、份量全以它为基数，空名单没有意义（宁可报错也别折出 0 份量的餐）。
+ * 这一餐的掌勺者（011，按餐指定）。三种输入对应三种语义：
+ *   * `undefined`（**不传**）= 按**上一餐继承**：取最近一次“已经定下来的掌勺者”（含本餐槽自己的
+ *     上一条事件）；一路往前没有就回落到家里通常做菜的那位（`is_cook`），再没有就是 null。
+ *     定餐界面三套视图都不必自己拼这个缺省，服务端一处说了算。
+ *   * `null` = 这一餐明确不指定掌勺者。
+ *   * 家人 id = 就这个人；已删/不存在报 `UnknownCookError`（与 `resolveDiners` 同一口径：
+ *     新写的菜单里不该出现已删的家人，历史里的快照另走读路径）。
  *
- * 已删的家人（010）与「从来没有过」同一语义：报 `UnknownMemberError`。
- * 软删除是「从此不再参与」，所以新写的名单里不该出现他；
- * 而**已经写过**的历史名单照旧读得出来（快照存在本表里，不回头查 members）。
+ * 存**快照**（本票）：把当时的姓名/头像一起写进事件（与 `meal_event_diners` 同一做法），
+ * 家人后来改名/删号也不改写历史——不留一个会显示 undefined 的洞。
  */
+function resolveCook(db: Db, date: string, meal: MealKind, memberId: string | null | undefined): DinerRef | null {
+  if (memberId === undefined) return inheritedCook(db, date, meal);
+  if (memberId === null) return null;
+  const row = db
+    .prepare(`SELECT id, name, emoji FROM members WHERE id = ? AND ${ACTIVE_MEMBERS_PREDICATE}`)
+    .get(memberId) as { id: string; name: string; emoji: string } | undefined;
+  if (!row) throw new UnknownCookError(memberId);
+  return { memberId: row.id, name: row.name, emoji: row.emoji };
+}
+
+/**
+ * 不指定掌勺者时的缺省：**按上一餐继承**。
+ *
+ * 取“本餐槽自己或它之前最近的一餐里，当前生效的那位掌勺者”（只看每个餐槽的**最后一条事件**，
+ * 所以取消/被改掉的旧掌勺者不算）。一路往前都没有（新库、从来没指定过）就回落到
+ * `defaultCook`（家里通常做菜的那位，`is_cook`）——两个缺省叠起来的语义是“跟上一餐走；
+ * 家里还没做过就按家里的习惯”。
+ *
+ * 为什么包含**本餐槽自己**（`<=`）：同一个餐槽再提交一次而不带 cook 时，应该是“保留原来那位”
+ * 而不是“跳回到再前一餐”。
+ *
+ * 餐次顺序必须显式排（`lunch` < `dinner`）：`meal` 是文本列，字符串序里 'dinner' < 'lunch'，
+ * 会把同日的晚餐当成午餐的“上一餐”。
+ *
+ * ⚠️ JOIN `members` 且限**在用**（`deleted_at IS NULL`）:被软删除的上一餐掌勺者不能继承给新餐。
+ * 只靠事件里的快照不够——那快照是为了**读历史**存在的，而这里要**写一条新事件**，
+ * 新写的餐里不该出现已删的家人（与 `resolveDiners` 同一口径）。所以上一餐那位被删了就继续
+ * 往前找；都没有才回落 `defaultCook`。名字/头像用 `members` 的**当前值**（新事件记的是当下的谁）。
+ */
+function inheritedCook(db: Db, date: string, meal: MealKind): DinerRef | null {
+  const mealRank = meal === 'lunch' ? 0 : 1;
+  const row = db
+    .prepare(
+      `SELECT m.id, m.name, m.emoji
+         FROM meal_events e
+         JOIN members m ON m.id = e.cook_member_id AND m.${ACTIVE_MEMBERS_PREDICATE}
+        WHERE cook_member_id IS NOT NULL
+          -- 只看每个餐槽的最后一条事件：取消/改掉的旧掌勺者不算“上一餐做了的人”
+          AND seq = (SELECT MAX(e2.seq) FROM meal_events e2 WHERE e2.slot_id = e.slot_id)
+          -- 本餐槽自己也算（再提交一次 = 保留原来那位），但不看未来的餐
+          AND (slot_date < ?
+               OR (slot_date = ? AND (CASE meal WHEN 'lunch' THEN 0 ELSE 1 END) <= ?))
+        ORDER BY slot_date DESC, (CASE meal WHEN 'lunch' THEN 0 ELSE 1 END) DESC
+        LIMIT 1`,
+    )
+    .get(date, date, mealRank) as { id: string; name: string; emoji: string } | undefined;
+  if (row === undefined) return defaultCook(db);
+  return { memberId: row.id, name: row.name, emoji: row.emoji };
+}
+
+/**
+ * 家里通常做菜的掌勺者：`is_cook` 的那位（多位时按 `sort_order` 取第一位），
+ * 家里没人标就是 null。这是“按上一餐继承”之后的最底一层缺省。
+ */
+function defaultCook(db: Db): DinerRef | null {
+  const row = db
+    .prepare(
+      `SELECT id, name, emoji FROM members
+        WHERE is_cook = 1 AND ${ACTIVE_MEMBERS_PREDICATE}
+        ORDER BY sort_order LIMIT 1`,
+    )
+    .get() as { id: string; name: string; emoji: string } | undefined;
+  return row ? { memberId: row.id, name: row.name, emoji: row.emoji } : null;
+}
+
+/** 两份掌勺者快照是不是同一个人（按 memberId 判：名字改了不该被当成一次菜单变化） */
+function sameCook(a: DinerRef | null, b: DinerRef | null): boolean {
+  return (a?.memberId ?? null) === (b?.memberId ?? null);
+}
 function resolveDiners(db: Db, memberIds: string[]): DinerRef[] {
   const unique = [...new Set(memberIds)];
   if (unique.length === 0) throw new EmptyDinersError();
@@ -683,6 +796,26 @@ function sameMenu(event: MealEvent, diners: DinerRef[], dishes: MenuDish[], left
   const sameDishes = event.dishes.every(
     (dish, index) =>
       dish.recipeId === dishes[index]!.recipeId && dish.keepLeftover === dishes[index]!.keepLeftover,
+  );
+  return sameDiners && sameDishes;
+}
+
+/**
+ * 两份菜单在**买菜清单关心的意义上**是不是同一份：用餐者、菜品与留量标记、吃剩的引用。
+ *
+ * 刻意**不比掌勺者**（本票）：改「谁做这一餐」不改要买的食材与克数，不该把进行中的清单
+ * 标成「菜单变了」——那是 #23 特意避免的假警告（读接口注释：“只对菜单真的变了的提交标过期”）。
+ * 用餐者却**要**比：折算系数按用餐者算，换了人就换了克数，清单必须重算。
+ * 路由层用它把「只改了掌勺者」的提交从 `menu_changed` 里排除。
+ */
+export function sameMenuContent(a: Menu | null, b: Menu | null): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.leftoverSlotId !== b.leftoverSlotId) return false;
+  if (a.diners.length !== b.diners.length || a.dishes.length !== b.dishes.length) return false;
+  const sameDiners = a.diners.every((diner, index) => diner.memberId === b.diners[index]!.memberId);
+  const sameDishes = a.dishes.every(
+    (dish, index) =>
+      dish.recipeId === b.dishes[index]!.recipeId && dish.keepLeftover === b.dishes[index]!.keepLeftover,
   );
   return sameDiners && sameDishes;
 }
@@ -770,6 +903,14 @@ export class UnknownMemberError extends Error {
   constructor(readonly memberId: string) {
     super(`家人列表里没有这个人：${memberId}`);
     this.name = 'UnknownMemberError';
+  }
+}
+
+/** 送来的掌勺者不是（在用的）家人——与用餐者同一道校验 */
+export class UnknownCookError extends Error {
+  constructor(readonly memberId: string) {
+    super(`掌勺者不是家人列表里的人：${memberId}`);
+    this.name = 'UnknownCookError';
   }
 }
 

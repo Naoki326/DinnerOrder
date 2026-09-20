@@ -389,6 +389,27 @@ function MemberCard({ member, isCurrent }: { member: Member; isCurrent: boolean 
       <div className={styles.blockLabel}>出生年月{member.kind === 'child' ? '（小孩必填 · 份量按年龄分带折算）' : '（选填）'}</div>
       <BirthMonthField member={member} onSave={(birthMonth) => save({ birthMonth })} />
 
+      {/* 掌勺者标记（本票起可改）：语义是「家里**通常**谁做菜」——是缺省值，不是权限位。
+          每一餐的掌勺者在餐槽编辑器里单独指定（`SlotView`），这里改的是开 app 的缺省身份
+          与新餐槽的缺省掌勺者。所以文案不说“谁做菜”，说清是「通常」。 */}
+      <div className={styles.blockLabel}>掌勺者（家里通常谁做菜 · 缺省值）</div>
+      <div className={styles.entries}>
+        <button
+          type="button"
+          className={member.isCook ? `${styles.entry} ${styles.loves}` : styles.entry}
+          data-testid={`member-cook-${member.id}`}
+          aria-pressed={member.isCook}
+          onClick={() => save({ isCook: !member.isCook })}
+        >
+          {member.isCook ? '👨‍🍳 是家里的掌勺者' : '也算掌勺者'}
+        </button>
+        <div className="sub" style={{ marginTop: 6 }} data-testid={`member-cook-hint-${member.id}`}>
+          {member.isCook
+            ? '开 app 默认用这个身份；新定的餐也默认由他掌勺（每一餐都能单独改）。'
+            : '勾上它，开 app 会优先用这个身份、新定的餐也默认算他掌勺。'}
+        </div>
+      </div>
+
       {/* 删除（本票）：破坏性操作，两步确认。文案说清是**软删除**——家人会问「那以前吃的还算吗」 */}
       <div className={styles.dangerRow}>
         {confirming ? (

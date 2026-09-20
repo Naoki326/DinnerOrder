@@ -291,6 +291,16 @@ export function updateMember(db: Db, id: string, patch: ProfilePatch): MemberPro
 
     if (patch.avoid !== undefined) replaceAvoid(db, id, dedupe(patch.avoid));
     if (patch.loves !== undefined) replaceLoves(db, id, dedupeTargets(patch.loves));
+    // 掌勺者标记（本票起可改）：「家里通常谁做菜」。它不再决定单餐的掌勺者
+    // （那是菜单上的 cook），但仍是开 app 缺省身份与新餐槽缺省掌勺者的依据。
+    // 允许并列多位（不强制单例），见 wire-types 的 ProfilePatch 注释。
+    if (patch.isCook !== undefined) {
+      db.prepare('UPDATE members SET is_cook = ?, updated_at = ? WHERE id = ?').run(
+        patch.isCook ? 1 : 0,
+        new Date().toISOString(),
+        id,
+      );
+    }
   });
 
   apply();

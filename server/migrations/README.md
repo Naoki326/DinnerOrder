@@ -65,6 +65,17 @@
     忌口/爱吃不再生效，但 `meal_event_diners` 的姓名/头像快照与 `dish_feedback` 的行都原样保留
     （硬删会经 006 的 `ON DELETE CASCADE` 把反馈带走，而那正是「历史积累喜好」的输入）。
     不建索引：家人是个位数行的家庭小表。
+  - `011_cook_per_meal` —— **掌勺者按餐指定**（需求变更）：掌勺者从 `members.is_cook`（001 的
+    家人全局标记）收窄为「家里**通常**做菜的那位」，真正的判定落到每一餐——给 `meal_events`
+    加 `cook_member_id` + 当时的姓名/头像快照（`cook_member_name` / `cook_member_emoji`）。
+    落在 append-only 事件流上而不是新开一张表：掌勺者是「这一餐由谁做」，属于菜单变化的一部分
+    （ADR-0007；与 007 给同一张表加 `leftover_menu_slot_id` 同一先例）。因 `meal_events` 的
+    append-only 触发器让 UPDATE/DELETE 都非法，**加列**是唯一合法的 schema 变更。三列要么都空
+    （未指定）、要么都齐（跨列 CHECK 钉死），存快照不回头查 members——家人被软删后历史菜单里
+    也照旧读得出当时的名字。未传 `cook` 时**按上一餐继承**（本餐槽之前最近一餐里当前生效的那位），
+    一路往前没有才回落 `is_cook`（读侧另下发 `MealSlot.cookDefault`）。**不改 `members.is_cook`**：
+    它是最底一层缺省（开 app 默认身份 + 掌勺者无上一餐可继承时的回落），本票同时把它做成可改
+    （`ProfilePatch.isCook`）。
   - 迁移里只种**规则资产与字典**，生数据（餐槽、菜单、推荐）一律不种：推荐永远现算不落库（总纲 §4）。
 - 种子数据写在迁移里（而不是启动时补种），这样测试 harness、E2E 的文件库、生产库三条路径拿到的是同一份初值。
 - 执行器自身的行为由 `src/db/migrate.test.ts`（临时目录 fixture）覆盖；本目录内容由 `src/db/schema.test.ts` 与

@@ -326,6 +326,76 @@ test('转正入口只给掌勺者、「待重标」项看得见（#19 台账点�
 });
 
 /**
+ * 转正的判据是**那一餐的掌勺者**（本票），不是全局 `is_cook`。
+ *
+ * 这一条是判别性的：把这一餐的掌勺者指定为**爸爸**（种子 `is_cook` 是妈妈），则
+ *   * 切成爸爸（不是全局掌勺者）**看得到**转正入口——他是这一餐的掌勺者；
+ *   * 切成妈妈（全局掌勺者）**看不到**——她不是这一餐的掌勺者。
+ * 按全局 `is_cook` 判定的实现（本票修之前的写法）会把这两条都反过来。
+ *
+ * 不提交转正（只验入口可见性），所以推荐/换菜那些 spec 依赖的「外部池还有草稿」不受影响。
+ */
+test('转正入口按**这一餐的掌勺者**判定，不是全局 is_cook（本票）', async ({ page }) => {
+  await clearDecidedSlots(page);
+  const slotId = await nextUndecidedSlot(page);
+  // 定这一餐时把掌勺者指定为爸爸（不是全局 is_cook 的妈妈）
+  const booked = await page.request.put(`${ROOT_URL}/api/slots/${slotId}`, {
+    data: { diners: DINNERS, dishes: [{ recipeId: PENDING_SAMPLE }], cook: 'dad' },
+  });
+  expect(booked.ok()).toBe(true);
+  await setClock(page, TWO_DAYS_MS);
+  clockShifted = true;
+
+  await page.goto(`${ROOT_URL}/review`);
+  const card = page.getByTestId(`review-meal-${slotId}`);
+  await expect(card).toBeVisible({ timeout: 15_000 });
+
+  // 缺省身份是妈妈（全局 is_cook）——她**不是**这一餐的掌勺者，看不到转正入口
+  await expect(card.getByTestId(`promote-${PENDING_SAMPLE}`)).toBeHidden();
+  await expect(card.getByTestId(`promote-cook-only-${PENDING_SAMPLE}`)).toBeVisible();
+
+  // 切成爸爸——他**是**这一餐的掌勺者，看得到转正入口
+  await page.getByTestId('identity-chip').click();
+  await page.getByTestId('identity-option-dad').click();
+  await expect(page.getByTestId('identity-name')).toHaveText('爸爸');
+  await expect(card.getByTestId(
+    `promote-open-${PENDING_SAMPLE}`,
+  )).toBeVisible();
+});
+
+/**
+ * 那一餐**没指定**掌勺者（NULL）时，转正入口回落到全局 `is_cook`（“没指定就按家里的习惯”）。
+ *
+ * 与上一条正好互补：同样是妈妈（全局掌勺者），上一餐她不是掌勺者就看不到，这一餐没指定
+ * （`cook: null`）就还能看到——这正是本票在“按餐指定”与“保留全局缺省”之间的兜底口径。
+ */
+test('那一餐没指定掌勺者时，转正入口回落到全局 is_cook', async ({ page }) => {
+  await clearDecidedSlots(page);
+  const slotId = await nextUndecidedSlot(page);
+  // 显式 cook:null = 这一餐不指定掌勺者
+  const booked = await page.request.put(`${ROOT_URL}/api/slots/${slotId}`, {
+    data: { diners: DINNERS, dishes: [{ recipeId: PENDING_SAMPLE }], cook: null },
+  });
+  expect(booked.ok()).toBe(true);
+  await setClock(page, TWO_DAYS_MS);
+  clockShifted = true;
+
+  await page.goto(`${ROOT_URL}/review`);
+  const card = page.getByTestId(`review-meal-${slotId}`);
+  await expect(card).toBeVisible({ timeout: 15_000 });
+
+  // 妈妈（全局 is_cook）看得到转正入口（回落到全局）
+  await expect(card.getByTestId(`promote-open-${PENDING_SAMPLE}`)).toBeVisible();
+
+  // 爸爸（不是全局掌勺者，也没被指定）看不到
+  await page.getByTestId('identity-chip').click();
+  await page.getByTestId('identity-option-dad').click();
+  await expect(page.getByTestId('identity-name')).toHaveText('爸爸');
+  await expect(card.getByTestId(`promote-${PENDING_SAMPLE}`)).toBeHidden();
+  await expect(card.getByTestId(`promote-cook-only-${PENDING_SAMPLE}`)).toBeVisible();
+});
+
+/**
  * 同一道菜同时出现在两张回顾卡上时，回执只挂在**点过的那一张**。
  *
  * 背景（评审点出）：回执原本以 `recipeId` 为键，两张卡会同时显示「已转正」——而掌勺者只点过一次。

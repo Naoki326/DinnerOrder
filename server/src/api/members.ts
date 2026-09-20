@@ -45,6 +45,9 @@ const patchSchema = z.object({
     .optional(),
   avoid: z.array(z.string().min(1)).optional(),
   loves: z.array(loveSchema).optional(),
+  // 掌勺者标记（本票起可改）：语义是「家里通常谁做菜」，是缺省值——
+  // 每一餐的掌勺者在菜单上（`SlotBooking.cook`）。允许并列多位，不强制单例。
+  isCook: z.boolean().optional(),
 });
 
 /**

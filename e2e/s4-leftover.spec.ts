@@ -217,7 +217,13 @@ test('S4：从编辑器取消援引的午餐时，首页提示晚餐也一起退
 
   // 回到首页：提示里点名晚餐已经跟着退回了（否则家人只会看到晚餐莫名其妙变回未定）
   await expect(page).toHaveURL(`${ROOT_URL}/`);
-  await expect(page.getByTestId('release-notice')).toContainText(dinner);
+  const notice = page.getByTestId('release-notice');
+  // ⚠️ `released` 是**原始槽 id**（'2025-06-02:dinner'）：数据库主键不该念给用户听。
+  // 断言界面渲染的是人话（含日期与餐次），并且**不出现冒号形式的槽 id**——
+  // 判别性就在这里：直接 `join('、')` 的实现会把 `2025-06-02:dinner` 原样写上屏。
+  await expect(notice).toContainText('晚餐');
+  await expect(notice).not.toContainText(dinner);
+  await expect(notice).not.toContainText(':');
 
   // 库里两边都是未定
   expect((await getSlot(page, lunch)).slot.status).toBe('undecided');

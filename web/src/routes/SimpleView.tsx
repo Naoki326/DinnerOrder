@@ -113,6 +113,7 @@ export function SimpleView() {
         leftoverOf: source.slotId,
         // 与 A 的大卡、编辑器的同一条口径：未定的餐槽没有名单快照，默认全员（总纲 §3）
         diners: slot.menu?.diners.map((diner) => diner.memberId) ?? members.map((member) => member.id),
+        // 掌勺者（本票）：未定餐槽不显式传——服务端按家里的习惯缺省（与 A 大卡同一口径）
       },
       {
         onSuccess: (saved) => setBooked(saved),
@@ -181,6 +182,15 @@ export function SimpleView() {
             {next.meal === 'lunch' ? '午餐' : '晚餐'}
             <br />
             还没定
+          </div>
+          {/* 掌勺者（本票）：未定餐槽先显示服务端下发的缺省（**按上一餐继承**，一路往前没有才回落
+              “家里通常那位”）。要换成别人：走下面的「自己挑菜」进编辑器——与 A/B 同一个编辑器。 */}
+          <div className="sub" data-testid="simple-cook" style={{ marginBottom: 12 }}>
+            {next.cook
+              ? `👨‍🍳 掌勺者 ${next.cook.emoji}${next.cook.name}`
+              : next.cookDefault
+                ? `👨‍🍳 掌勺者（照上一餐）${next.cookDefault.emoji}${next.cookDefault.name}`
+                : '👨‍🍳 掌勺者未指定'}
           </div>
           <button type="button" className={styles.main} data-testid="simple-recommend" onClick={() => setWizard(true)}>
             ✨ 给我们推荐

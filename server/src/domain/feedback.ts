@@ -201,6 +201,8 @@ export function mealsToReview(db: Db, clock: Clock, days = REVIEW_DAYS): ReviewM
       meal: parsed.meal,
       diners: last.diners as DinerRef[],
       dishes: last.dishes as MenuDish[],
+      // 这一餐的掌勺者快照（本票）：转正入口按它判定「当前身份是不是这一餐的掌勺者」
+      cook: last.cook,
       feedback: slotFeedback(db, slot_id),
     });
   }

@@ -57,12 +57,15 @@ export function useAcceptRecommendation(slotId: string) {
       booking,
       recommendation,
     }: {
-      booking: { diners: string[]; dishes: string[] };
+      booking: { diners: string[]; dishes: string[]; cook?: string | null };
       recommendation: MealRecommendation;
     }): Promise<SlotWithPortion> => {
       const payload: SlotBooking = {
         diners: booking.diners,
         dishes: booking.dishes.map((recipeId) => ({ recipeId })),
+        // 掌勺者（本票）：接受推荐是「整份菜单一次性提交」，所以带上当前这一餐的掌勺者
+        // （`undefined` = 按家里的习惯缺省；已定餐槽由调用方传当时那位，不被悄悄改掉）
+        ...(booking.cook === undefined ? {} : { cook: booking.cook }),
         source: 'recommendation',
         llm: {
           model: recommendation.llm.model,

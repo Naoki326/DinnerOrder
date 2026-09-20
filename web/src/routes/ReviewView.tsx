@@ -17,8 +17,10 @@ import styles from './ReviewView.module.css';
  *   * **常驻、不弹窗不推送**——它是底部导航的一个页，想看才点进来；吃完一顿系统不会主动跳出来。
  *   * **读者是掌勺者**：谁说了什么（「妈妈觉得不错」「小宝：太油」）都列出来——这条纪律写在
  *     `wire-types.ts` 的 `DishFeedback` 与任务书里；界面只是把它呈现出来。
- *     转正入口同理只给掌勺者看（`current.isCook`）：改的是全家的菜谱库，不该由随手拿了
- *     手机的人决定。无登录、无鉴权（总纲 §2.4：家庭 Wi-Fi 即门禁），这条约束靠 UI 引导。
+ *     转正入口（本票改了判据）：**看的是「当前身份是不是这一餐的掌勺者」**（`meal.cook`），
+ *     不是全局的 `isCook`——转正是「外部菜上桌后」的动作，该由**做了这一餐的人**决定。
+ *     那一餐没指定掌勺者（NULL）时**回落到全局 `isCook`**（“没指定就按家里的习惯”）。
+ *     无登录、无鉴权（总纲 §2.4：家庭 Wi-Fi 即门禁），这条约束靠 UI 引导。
  *   * **点踩的后果要说清**：踩完当场提示「这道菜 N 天内不再进推荐」——N 从家规读
  *     （`useFamilyRules` → `GET /api/family-rules` 的 `coolOffDays`），不把 14 硬编码进文案。
  *   * **标签与判定解耦**（总纲 §2.5 原文：「餐后回顾：点踩/点赞 + 同套快捷标签」）：
@@ -111,7 +113,8 @@ export function ReviewView() {
             memberId={current?.id}
             memberName={current?.name}
             memberCount={members.length}
-            isCook={current?.isCook ?? false}
+            /* 全局 is_cook：那一餐**没指定**掌勺者时的回落（“没指定就按家里的习惯”） */
+            fallbackCook={current?.isCook ?? false}
             recipes={byId}
             promoted={promoted}
             onPromoted={(result) =>
@@ -133,7 +136,7 @@ function ReviewCard({
   memberId,
   memberName,
   memberCount,
-  isCook,
+  fallbackCook,
   recipes,
   promoted,
   onPromoted,
@@ -142,13 +145,22 @@ function ReviewCard({
   memberId: string | undefined;
   memberName: string | undefined;
   memberCount: number;
-  isCook: boolean;
+  /** 全局 `is_cook`：那一餐没指定掌勺者时用它回落 */
+  fallbackCook: boolean;
   recipes: Map<string, Recipe>;
   promoted: Map<string, PromotionResult>;
   onPromoted(result: PromotionResult): void;
 }) {
   const mine = meal.feedback.filter((item) => item.memberId === memberId);
   const others = meal.feedback.filter((item) => item.memberId !== memberId);
+  /**
+   * 转正入口的可见性（本票改了判据）：**这一餐的掌勺者**才能转正。
+   *
+   * 转正是「外部菜上桌后」的动作，所以看的是**那一餐**的掌勺者，不是全局 `is_cook`；
+   * 那一餐**没指定**（`meal.cook === null`）时回落到全局 `is_cook`（“没指定就按家里的习惯”）。
+   * 而那个人可能已经被软删除（快照仍在）：这时 `memberId` 永远匹配不上，非掌勺者看不到入口。
+   */
+  const canPromote = meal.cook ? meal.cook.memberId === memberId : fallbackCook;
 
   return (
     <div className="card" data-testid={`review-meal-${meal.slotId}`} data-slot-id={meal.slotId}>
@@ -207,7 +219,7 @@ function ReviewCard({
                 <PromotionForm
                   recipe={recipe}
                   memberId={memberId}
-                  isCook={isCook}
+                  canPromote={canPromote}
                   onPromoted={onPromoted}
                 />
               ) : null}
@@ -223,8 +235,10 @@ function ReviewCard({
  * 一道草稿菜的转正表单（spec S6 的落点）。
  *
  * 三件事在这里合流：
- *   * **只给掌勺者**（`isCook`）：转正改的是全家的菜谱库（别的餐次也会推荐它），
- *     不是随手拿了手机的人能决定的事。非掌勺者看到一句说明，知道该找谁。
+ *   * **只给这一餐的掌勺者**（`canPromote`）：转正改的是全家的菜谱库（别的餐次也会推荐它），
+ *     不是随手拿了手机的人能决定的事。判据是**这一餐的掌勺者**（本票改了，原先是全局 `isCook`）
+ *     ——转正是「外部菜上桌后」的动作，该由做了这一餐的人决定；那一餐没指定掌勺者时
+ *     回落到全局 `is_cook`。非掌勺者看到一句说明，知道该找谁。
  *   * **待重标要看得见**（#19 台账点名交给 #21）：0 克项来自导入期的模糊份量
  *     （「适量」等 LLM 重标，迁移 005）。转正会把克数固化成家庭基准，所以先把它们列出来——
  *     LLM 会在改写时把它们重标掉（服务端保证：转正后的菜谱没有 0 克项）；
@@ -239,12 +253,13 @@ function ReviewCard({
 function PromotionForm({
   recipe,
   memberId,
-  isCook,
+  canPromote,
   onPromoted,
 }: {
   recipe: Recipe;
   memberId: string | undefined;
-  isCook: boolean;
+  /** 当前身份是不是**这一餐的掌勺者**（那一餐没指定时回落全局 `is_cook`） */
+  canPromote: boolean;
   onPromoted(result: PromotionResult): void;
 }) {
   const promote = usePromoteRecipe();
@@ -255,10 +270,10 @@ function PromotionForm({
 
   const pending = recipe.ingredients.filter((item) => item.adultGrams <= 0);
 
-  if (!isCook) {
+  if (!canPromote) {
     return (
       <div className="sub" data-testid={`promote-cook-only-${recipe.id}`}>
-        这道还是外部菜谱（没做过）——想让家里常做，让掌勺者来点「转正」。
+        这道还是外部菜谱（没做过）——想让家里常做，让这一餐的掌勺者来点「转正」。
       </div>
     );
   }

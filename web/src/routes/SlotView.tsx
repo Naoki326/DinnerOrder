@@ -118,6 +118,9 @@ function SlotEditor({
 
   // 本地草稿：编辑期间不动服务端，一次提交才是「菜单变了」的那个瞬间
   const [dinersDraft, setDinersDraft] = useState<string[] | null>(null);
+  // 掌勺者草稿（本票：「随时可以改」——包括改**任意一餐**，不只未定的那餐）：
+  // `undefined` = 还没动过，用下面的缺省值；一旦点选就固定成显式值（含 null = 不指定）。
+  const [cookDraft, setCookDraft] = useState<string | null | undefined>(undefined);
   const [dishes, setDishes] = useState<DraftDish[]>(
     () => slot.menu?.dishes.map((dish) => ({ recipeId: dish.recipeId, keepLeftover: dish.keepLeftover })) ?? [],
   );
@@ -142,6 +145,17 @@ function SlotEditor({
   const diners = dinersDraft ?? (slot.menu ? slot.menu.diners.map((diner) => diner.memberId) : members.map((m) => m.id));
 
   /**
+   * 这一餐的掌勺者（本票）：
+   *   * 已定餐槽用当时的快照（`slot.cook`）——家人后来被删也读得出当时的名字；**已定但没指定就
+   *     保持未指定**（不回头编一个缺省值，否则打开编辑器再保存会静默改成别人）；
+   *   * 未定餐槽用服务端下发的 `slot.cookDefault`（**按上一餐继承**，一路往前没有才回落 is_cook）
+   *     ——缺省口径只服务端一处（“上一餐”是事件流知识，前端不一定看得见）。
+   * 两者都拿不到就是 null（这一餐不指定）。
+   */
+  const defaultCookId = slot.status === 'decided' ? (slot.cook?.memberId ?? null) : (slot.cookDefault?.memberId ?? null);
+  const cook = cookDraft === undefined ? defaultCookId : cookDraft;
+
+  /**
    * 名单里**已不在家人列表**的那些人（含姓名与头像，来自菜单快照）。
    *
    * 为什么要有他们自己的一组 chip，而不是直接过滤掉：份量引擎对**显式名单**里的已删家人报
@@ -159,6 +173,9 @@ function SlotEditor({
     () => (membersQuery.isSuccess ? (slot.menu?.diners ?? []).filter((diner) => !knownIds.has(diner.memberId)) : []),
     [membersQuery.isSuccess, slot.menu, knownIds],
   );
+  // 掌勺者选项：在册家人 + （已定菜单快照里那位已被删的掌勺者）。
+  // 已删的也要渲染出来（与 `ghosts` 的用餐者同一理由）：否则编辑一份旧菜单会把它默默改成别人。
+  const cookGhost = slot.cook && !knownIds.has(slot.cook.memberId) ? slot.cook : undefined;
   const cleanup = useMemo(() => removeGhosts(diners, ghosts), [diners, ghosts]);
   /**
    * 「谁还在家人列表里」拿到之前，已定菜单的名单先别往外发（见 `usePortionPreview` 的 `ready`）：
@@ -260,6 +277,8 @@ function SlotEditor({
               booking: {
                 diners: result.diners.map((diner) => diner.memberId),
                 dishes: result.dishes.map((dish) => dish.recipeId),
+                // 换一整套不改掌勺者：把当前这一餐的草稿值原样带上（accept 是整份提交）
+                cook,
               },
               recommendation: result,
             },
@@ -289,7 +308,7 @@ function SlotEditor({
       return;
     }
     book.mutate(
-      { slotId: slot.id, booking: { diners, dishes, source: 'manual' } },
+      { slotId: slot.id, booking: { diners, dishes, cook, source: 'manual' } },
       {
         onSuccess: () => navigate('/'),
         onError: (cause) => setError(cause instanceof Error ? cause.message : '保存失败'),
@@ -361,7 +380,7 @@ function SlotEditor({
             onClick={() => {
               setError(undefined);
               leftover.mutate(
-                { slotId: slot.id, leftoverOf: slot.leftoverSource!.slotId, diners },
+                { slotId: slot.id, leftoverOf: slot.leftoverSource!.slotId, diners, cook },
                 { onError: (cause) => setError(cause instanceof Error ? cause.message : '预定「吃剩的」失败') },
               );
             }}
@@ -385,6 +404,51 @@ function SlotEditor({
           </span>
         </div>
       ) : null}
+
+      {/* 掌勺者（本票，按餐指定）：厨房里这一餐谁做。它是菜单信息的一部分（餐后回顾的读者、
+          买菜清单的读者），所以放在“谁吃”旁边；改任意一餐都走这里（包括已定餐槽）。 */}
+      <div className="card" data-testid="cook-picker">
+        <div className={styles.blockLabel}>这一餐谁掌勺（餐后回顾与买菜清单的读者）</div>
+        <div className={styles.diners}>
+          {members.map((member) => {
+            const on = cook === member.id;
+            return (
+              <button
+                key={member.id}
+                type="button"
+                className={on ? `${styles.diner} ${styles.on}` : styles.diner}
+                data-testid={`cook-${member.id}`}
+                aria-pressed={on}
+                onClick={() => setCookDraft(on ? null : member.id)}
+              >
+                {member.emoji} {member.name}
+              </button>
+            );
+          })}
+          {/* 快照里那位已被删的掌勺者（软删除）：照旧显示当时的名字，可点掉或留着 */}
+          {cookGhost ? (
+            <button
+              type="button"
+              className={
+                cook === cookGhost.memberId
+                  ? `${styles.diner} ${styles.on} ${styles.dinerGhost}`
+                  : `${styles.diner} ${styles.dinerGhost}`
+              }
+              data-testid={`cook-ghost-${cookGhost.memberId}`}
+              aria-pressed={cook === cookGhost.memberId}
+              onClick={() => setCookDraft(cook === cookGhost.memberId ? null : cookGhost.memberId)}
+            >
+              {cookGhost.emoji} {cookGhost.name}
+              <span className={styles.ghostTag}>已删</span>
+            </button>
+          ) : null}
+        </div>
+        <div className="sub" style={{ marginTop: 8 }} data-testid="cook-hint">
+          {cook
+            ? '点一下别人就换过去；再点一下当前这位 = 这一餐不指定。'
+            : '未指定 —— 保存后按“家里通常做菜的那位”缺省；点一位就钉死这一餐的掌勺者。'}
+        </div>
+      </div>
 
       {/* 用餐者名单：默认全员，可临时改（忌口、份量都按它算） */}
       <div className="card">

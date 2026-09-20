@@ -177,6 +177,12 @@
   line-height: 1.5;
 }
 
+/* 掌勺者（本票）：餐槽卡上「这一餐谁做」那一行——它是菜单信息的一部分，不进克数那一列 */
+.cookLine {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
 /* 菜单阶段的反馈（总纲 §2.5）：单道点踩 + 快捷标签 */
 .feedbackBlock {
   margin-top: 12px;

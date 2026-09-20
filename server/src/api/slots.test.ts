@@ -580,6 +580,312 @@ describe('换一整套的撤销', () => {
 });
 
 /**
+ * 掌勺者按**餐槽**指定（本票需求变更：从家人身上的全局标记 → 跟着每一餐走）。
+ *
+ * 覆盖四条钉子：
+ *   * 定餐/改餐接受「这餐谁掌勺」，读接口折叠出当前生效的那位；
+ *   * 不传时回落全局 `is_cook`（「家里通常谁做菜」是缺省值，不是权威判定）；
+ *   * 存的是**当时的快照**（姓名/头像），家人被软删除后历史菜单里也读得出当时的名字；
+ *   * 只改掌勺者（菜单内容不变）也要追一条留痕——「随时可以改」不是双击去重能吞掉的。
+ */
+describe('掌勺者按餐指定', () => {
+  it('定餐时指定掌勺者，嵌在读接口的响应里', async () => {
+    harness = createTestHarness();
+
+    const { status, body } = await book('2025-06-01:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'dad',
+    });
+    expect(status).toBe(200);
+    expect(body.slot?.cook).toMatchObject({ memberId: 'dad', name: '爸爸', emoji: '👨' });
+
+    // 单餐读接口也带得出来（同一条折叠）
+    expect((await getSlot('2025-06-01:dinner')).slot.cook?.name).toBe('爸爸');
+    // 列表接口同样（大卡/紧凑流/极简视图都从它取数）
+    const listed = (await listSlots(1)).slots.find((slot) => slot.id === '2025-06-01:dinner');
+    expect(listed?.cook?.memberId).toBe('dad');
+  });
+
+  it('不传 cook 时按上一餐继承，没有上一餐才回落 is_cook（种子里是妈妈）', async () => {
+    harness = createTestHarness();
+
+    // 新库、没有任何带掌勺者的餐：按上一餐继承落空 → 回落 is_cook（妈妈）
+    const first = await book('2025-06-01:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+    });
+    expect(first.status).toBe(200);
+    expect(first.body.slot?.cook).toMatchObject({ memberId: 'mom', name: '妈妈' });
+  });
+
+  it('不传 cook 时按**上一餐**继承（前一餐指定了爸爸，后一餐不传就是爸爸）', async () => {
+    harness = createTestHarness();
+
+    // 今晚的晚餐由爸爸掌勺
+    await book('2025-06-01:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'dad',
+    });
+    // 明天的午餐不传 cook：照上一餐（今晚晚餐）继承 → 爸爸，而不是全局 is_cook 的妈妈
+    const next = await book('2025-06-02:lunch', { diners: ALL, dishes: [{ recipeId: 'kelejichi' }] });
+    expect(next.status).toBe(200);
+    expect(next.body.slot?.cook).toMatchObject({ memberId: 'dad', name: '爸爸' });
+
+    // 继承链会继续往后传：再下一餐也是爸爸
+    const after = await book('2025-06-02:dinner', { diners: ALL, dishes: [{ recipeId: 'culutudousi' }] });
+    expect(after.body.slot?.cook?.memberId).toBe('dad');
+  });
+
+  it('餐次顺序按“同一日午餐 ≤ 晚餐”排：同日午餐不会误把晚餐当成上一餐', async () => {
+    harness = createTestHarness();
+
+    // 先定 6-02 晚餐（爸爸），再定**同日午餐**不传 cook（两餐都在未来，都定得下来）：
+    // 午餐的上一餐应该是更早的（无 → 回落 is_cook 妈妈），而不是把当天晚餐当成“上一餐”。
+    // 二者碰巧都可能是妈妈，所以把晚餐换成爸爸才能区分。
+    await book('2025-06-02:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'dad',
+    });
+    const lunch = await book('2025-06-02:lunch', { diners: ALL, dishes: [{ recipeId: 'kelejichi' }] });
+    // 如果没有显式排餐次（dinner < lunch 的字符串序），这里会错拿到爸爸；正确结果是妈妈（is_cook）
+    expect(lunch.body.slot?.cook?.memberId).toBe('mom');
+  });
+
+  it('继承只看**当前有效**的事件：前一餐被取消/改掉旧掌勺者后，继承走更早的那位', async () => {
+    harness = createTestHarness();
+
+    // 早上定午餐（妈妈）→ 改餐把掌勺者换成爸爸 → 取消这一餐
+    await book('2025-06-01:lunch', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'mom',
+    });
+    await book('2025-06-01:lunch', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'dad',
+    });
+    await cancel('2025-06-01:lunch');
+    // 取消之后这一餐没有掌勺者，且它是最后一个带 cook 的？→ 取消事件不带 cook，
+    // 但“上一餐”取的是**每个餐槽最后一条事件**里非空的掌勺者——取消事件那条不再携带，
+    // 所以午餐被取消后，它的掌勺者不再算数 → 落回 is_cook（妈妈）。
+    const dinner = await book('2025-06-01:dinner', { diners: ALL, dishes: [{ recipeId: 'kelejichi' }] });
+    expect(dinner.body.slot?.cook?.memberId).toBe('mom');
+  });
+
+  it('继承不会拿到一位已被软删除的上一餐掌勺者（新写的餐里不出现已删家人）', async () => {
+    harness = createTestHarness();
+
+    // 午餐由姥姥掌勺（新建一位，不碰种子）
+    const created = await harness.json<{ member: { id: string } }>('/api/members', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: '姥姥', emoji: '👵', kind: 'adult', gender: 'female' }),
+    });
+    const granny = created.body.member.id;
+    await book('2025-06-01:lunch', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: granny,
+    });
+    await harness.json(`/api/members/${granny}`, { method: 'DELETE' });
+
+    // 晚餐不传 cook：姥姥已被软删，不能把一位已删的人继承过来 → 跳过她，回落 is_cook（妈妈）
+    const dinner = await book('2025-06-01:dinner', { diners: ALL, dishes: [{ recipeId: 'kelejichi' }] });
+    expect(dinner.body.slot?.cook?.memberId).toBe('mom');
+  });
+
+  it('读接口下发 cookDefault：未定餐槽的界面不必自己拼“缺省会是谁”', async () => {
+    harness = createTestHarness();
+
+    // 把今晚晚餐定给爸爸
+    await book('2025-06-01:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'dad',
+    });
+    // 明天午餐未定：`cook` 为 null（未指定），`cookDefault` 是按上一餐继承出来的爸爸
+    const lunch = (await listSlots(3)).slots.find((slot) => slot.id === '2025-06-02:lunch');
+    expect(lunch?.cook).toBeNull();
+    expect(lunch?.cookDefault).toMatchObject({ memberId: 'dad', name: '爸爸' });
+    // 已定餐槽也带 cookDefault（同一个现算），但 `cook` 是当时的快照
+    const dinner = (await listSlots(3)).slots.find((slot) => slot.id === '2025-06-01:dinner');
+    expect(dinner?.cook?.memberId).toBe('dad');
+  });
+
+  it('显式 cook:null 表示这一餐不指定掌勺者', async () => {
+    harness = createTestHarness();
+
+    const { status, body } = await book('2025-06-01:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: null,
+    });
+    expect(status).toBe(200);
+    expect(body.slot?.cook).toBeNull();
+    expect((await getSlot('2025-06-01:dinner')).slot.cook).toBeNull();
+  });
+
+  it('改餐可以随时换掌勺者，留痕里每条都带当时的快照', async () => {
+    harness = createTestHarness();
+
+    await book('2025-06-01:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'mom',
+    });
+    await book('2025-06-01:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'dad',
+    });
+
+    const { slot, history } = await getSlot('2025-06-01:dinner');
+    expect(slot.cook?.memberId).toBe('dad');
+    expect(history.map((event) => event.cook?.memberId)).toEqual(['mom', 'dad']);
+    // 菜单内容没变但掌勺者变了：仍然要留痕（“随时可以改”不是双击去重能吞掉的）
+    expect(history.map((event) => event.type)).toEqual(['decide', 'replace']);
+  });
+
+  it('只改掌勺者、菜单内容一模一样，也追一条留痕（与“双击保存不重复”只对全同提交生效）', async () => {
+    harness = createTestHarness();
+
+    const menu = { diners: ALL, dishes: [{ recipeId: 'fanqiechaodan' }] };
+    await book('2025-06-01:dinner', { ...menu, cook: 'mom' });
+    // 全同提交（含 cook）不追事件
+    await book('2025-06-01:dinner', { ...menu, cook: 'mom' });
+    expect((await getSlot('2025-06-01:dinner')).history).toHaveLength(1);
+    // 只改掌勺者：追一条
+    await book('2025-06-01:dinner', { ...menu, cook: 'dad' });
+    expect((await getSlot('2025-06-01:dinner')).history).toHaveLength(2);
+  });
+
+  it('只改掌勺者不把买菜清单标成「菜单变了」（改的是谁做，不是要买什么）', async () => {
+    harness = createTestHarness();
+    const menu = { diners: ['mom', 'dad'], dishes: [{ recipeId: 'hongshaopaigu' }] };
+    await book('2025-06-01:dinner', { ...menu, cook: 'mom' });
+
+    // 建一份进行中的清单
+    const created = await harness.json<{ list: { stale: boolean } | null }>('/api/grocery');
+    expect(created.status, `开清单失败：${JSON.stringify(created.body)}`).toBe(200);
+    expect(created.body.list?.stale).toBe(false);
+
+    // 只换掌勺者：留痕追一条，但清单不该过期（否则界面上会冒出“菜单变了”的假警告）
+    await book('2025-06-01:dinner', { ...menu, cook: 'dad' });
+    const afterCook = await harness.json<{ list: { stale: boolean } | null }>('/api/grocery');
+    expect(afterCook.body.list?.stale).toBe(false);
+
+    // 真改菜单（换一道菜）：清单必须过期（“菜单变了”是真的）
+    await book('2025-06-01:dinner', {
+      diners: ['mom', 'dad'],
+      dishes: [{ recipeId: 'kelejichi' }],
+      cook: 'dad',
+    });
+    const afterMenu = await harness.json<{ list: { stale: boolean } | null }>('/api/grocery');
+    expect(afterMenu.body.list?.stale).toBe(true);
+  });
+
+  it('指定一位不是家人的人当掌勺者 → 400 unknown_member，一行不落', async () => {
+    harness = createTestHarness();
+
+    const { status, body } = await book('2025-06-01:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'nobody',
+    });
+    expect(status).toBe(400);
+    expect(body.error).toBe('unknown_member');
+    expect(body.memberId).toBe('nobody');
+    expect((await getSlot('2025-06-01:dinner')).history).toEqual([]);
+  });
+
+  it('掌勺者被软删除后：历史菜单里照旧读得出当时的名字（快照），新定餐不能再指定他', async () => {
+    harness = createTestHarness();
+
+    await book('2025-06-01:dinner', {
+      diners: ['dad', 'dabao'],
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'dad',
+    });
+    // 删掉爸爸（软删除，010）
+    const removed = await harness.json('/api/members/dad', { method: 'DELETE' });
+    expect(removed.status).toBe(200);
+
+    // 历史菜单/当前折叠照旧读得出当时的姓名与头像——不留一个会显示 undefined 的洞
+    const { slot, history } = await getSlot('2025-06-01:dinner');
+    expect(slot.cook).toMatchObject({ memberId: 'dad', name: '爸爸', emoji: '👨' });
+    expect(history[0]?.cook).toMatchObject({ memberId: 'dad', name: '爸爸' });
+
+    // 新定餐不能再把已删的家人指定为掌勺者（与用餐者同一口径）
+    const after = await book('2025-06-02:dinner', {
+      diners: ['dabao'],
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'dad',
+    });
+    expect(after.status).toBe(400);
+    expect(after.body.error).toBe('unknown_member');
+  });
+
+  it('取消之后掌勺者一并清掉（没有餐就没有“谁做”）', async () => {
+    harness = createTestHarness();
+
+    await book('2025-06-01:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'dad',
+    });
+    await cancel('2025-06-01:dinner');
+
+    const { slot, history } = await getSlot('2025-06-01:dinner');
+    expect(slot.cook).toBeNull();
+    expect(slot.status).toBe('undecided');
+    // 取消事件不带掌勺者；被取消那一餐的旧事件仍留着当时的掌勺者
+    expect(history[1]?.cook).toBeNull();
+    expect(history[0]?.cook?.memberId).toBe('dad');
+  });
+
+  it('撤销换一整套时掌勺者也回到上一套（与菜单内容一起退）', async () => {
+    harness = createTestHarness();
+
+    await book('2025-06-01:dinner', {
+      diners: ALL,
+      dishes: DINNERS.map((recipeId) => ({ recipeId })),
+      cook: 'mom',
+    });
+    // 换一整套（recommendation）时把掌勺者换成爸爸
+    await book('2025-06-01:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'kelejichi' }],
+      cook: 'dad',
+      source: 'recommendation',
+    });
+    expect((await getSlot('2025-06-01:dinner')).slot.cook?.memberId).toBe('dad');
+
+    await undoSet('2025-06-01:dinner');
+    expect((await getSlot('2025-06-01:dinner')).slot.cook?.memberId).toBe('mom');
+  });
+
+  it('餐后回顾的一餐带出掌勺者（转正入口按它判定“谁是这一餐的掌勺者”）', async () => {
+    harness = createTestHarness();
+    harness.clock.set('2025-05-31T02:00:00.000Z'); // 家庭时区 10:00
+    await book('2025-05-31:dinner', {
+      diners: ALL,
+      dishes: [{ recipeId: 'fanqiechaodan' }],
+      cook: 'dad',
+    });
+    harness.clock.set('2025-06-01T02:00:00.000Z'); // 那一餐已上桌
+
+    const { body } = await harness.json<{ meals: { slotId: string; cook: { memberId: string } | null }[] }>(
+      '/api/feedback?days=30',
+    );
+    expect(body.meals.find((meal) => meal.slotId === '2025-05-31:dinner')?.cook?.memberId).toBe('dad');
+  });
+});
+
+/**
  * `promptVersion` 收紧（#17 审查欠账）：`llm` 元数据由客户端回传（推荐不落库，总纲 §4），
  * 只校验形状的话任何字符串都能写进 append-only 的留痕——而留痕的全部价值是可信回溯。
  * 两条都要：版本号①在代码库里存在，②**是产生它的那条路该用的模板**。

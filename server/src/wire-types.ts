@@ -47,7 +47,14 @@ export interface MemberProfile {
   gender: 'male' | 'female';
   /** 出生年月 'YYYY-MM'；小孩必有（#16 按它现算年龄分带折算份量），大人可空 */
   birthMonth: string | null;
-  /** 掌勺者（餐后回顾的读者；M1 无权限判定，仅界面标注与默认当前身份） */
+  /**
+   * 掌勺者（本票前是「家人身上的全局标记」，M1 无权限判定，仅界面标注与默认当前身份）。
+   *
+   * 现在它的语义收窄为「家里**通常**做菜的那位」——是**缺省值**，不是权威判定：
+   * 每一餐的掌勺者由菜单上的 `MealSlot.cook` / `MealEvent.cook` 定（本票新增，按餐指定、随时可改）。
+   * 这里保留它是因为「家里通常谁做菜」是真实信息：`identity.tsx` 的开 app 默认身份取它，
+   * 新餐槽的掌勺者也默认取它。它同样可改（`ProfilePatch.isCook`）。
+   */
   isCook: boolean;
   /** 忌口：硬过滤，本餐任一用餐者命中即排除该菜 */
   avoid: ProfileEntry[];
@@ -63,6 +70,15 @@ export interface ProfilePatch {
   avoid?: string[];
   /** 爱吃清单（食材**或**菜）；传了就整体替换 */
   loves?: LoveTarget[];
+  /**
+   * 掌勺者标记（本票起可改）：语义是「家里通常谁做菜」，不是「这一餐谁做」——
+   * 每一餐的掌勺者在菜单上（`SlotBooking.cook`）。不传保持原样，传了就改。
+   *
+   * 允许**多位**家人同时是这个标记（真实家庭可能有两位常做菜的），本票不强制单例：
+   * 强制唯一要在一个事务里清掉其他行，并发添加时会打架，而「谁是默认掌勺者」本身
+   * 允许并列——列表顺序（`sort_order`）已经给出了一个稳定的缺省选取先后。
+   */
+  isCook?: boolean;
 }
 
 /**
@@ -245,6 +261,20 @@ export interface MealSlot {
    * 都不一定看得见（过了截止时刻的餐槽不在列表里）。
    */
   leftoverSource: LeftoverSource | null;
+  /**
+   * 这一餐当前生效的掌勺者（本票新增，按餐指定）：服务端从事件流折叠得出。
+   * 未指定为 null；已定餐槽有值时为**定这一餐时的快照**（家人后来被删也照旧读得出当时的名字）。
+   */
+  cook: DinerRef | null;
+  /**
+   * **不指定掌勺者时，保存会把谁写进去**（本票）：服务端现算的缺省值——按**上一餐继承**
+   * （本餐槽自己或它之前最近一餐里当前生效的那位），一路往前没有就回落到家里通常做菜的那位
+   * （`family.is_cook`）。未定餐槽的界面拿它显示“缺省会是谁”，不自己拼一遍。
+   *
+   * 与 `leftoverSource` 同一性质：它不是“这个餐槽的属性”，而是一个**推导出来的能力/缺省**，
+   * 所以单开一列而不是把 `cook` 在未定时填上它（那样 `cook` 就会有“真值 vs 缺省”两种含义）。
+   */
+  cookDefault: DinerRef | null;
 }
 
 /**
@@ -289,6 +319,11 @@ export interface MealEvent {
    * 普通事件与取消事件为 null。留痕要能回答「为什么这顿没有新采购」。
    */
   leftoverSlotId: string | null;
+  /**
+   * 这一餐当时的掌勺者快照（本票新增）：未指定为 null，取消事件同样为 null。
+   * 存姓名/头像快照——与 `diners` 同一口径，家人后来改名/删号也不改写历史。
+   */
+  cook: DinerRef | null;
   llm: LlmCallMeta | null;
 }
 
@@ -307,6 +342,19 @@ export interface SlotBooking {
    * （上浮生效 = 留量标记 ∧ 有效引用）。
    */
   leftoverOf?: string;
+  /**
+   * 这一餐谁掌勺（本票新增，按餐指定、随时可改）：家人 id。
+   *
+   *   * **不传**（`undefined`）= 按**上一餐继承**：用本餐槽自己或它之前最近一餐里当前生效的那位
+   *     掌勺者；一路往前没有就回落到家里通常做菜的那位（`members.is_cook`）。新餐槽据此自动
+   *     接着上一餐的掌勺者，三套视图与推荐/留量各条接受路径不必各自补一遍。
+   *   * **显式 `null`** = 这一餐不指定掌勺者（服务端存 NULL）。
+   *   * 传了已删/不存在的家人 → `unknown_member`（与 `diners` 同一道校验）。
+   *
+   * 语义与 `diners`/`dishes` 一致：整份菜单一次性提交，传什么就是什么。
+   * read 侧把推导出来的缺省值单独下发为 `MealSlot.cookDefault`，不要在客户端自己重算“上一餐是谁”。
+   */
+  cook?: string | null;
   /** 缺省 manual；#17 接受推荐时传 recommendation */
   source?: BookingSource;
   /**
@@ -448,6 +496,8 @@ export interface ReviewMeal {
   meal: MealKind;
   diners: DinerRef[];
   dishes: MenuDish[];
+  /** 这一餐的掌勺者快照（本票新增）；未指定为 null。转正入口按它判定（见 ReviewView） */
+  cook: DinerRef | null;
   /** 这一餐当前收到的全部反馈（菜品 × 家人） */
   feedback: DishFeedback[];
 }

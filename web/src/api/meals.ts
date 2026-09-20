@@ -132,8 +132,24 @@ export function useCancelSlot() {
 export function useBookLeftover() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ slotId, leftoverOf, diners }: { slotId: string; leftoverOf: string; diners: string[] }) =>
-      putSlot(slotId, { diners, dishes: [], leftoverOf }),
+    mutationFn: ({
+      slotId,
+      leftoverOf,
+      diners,
+      cook,
+    }: {
+      slotId: string;
+      leftoverOf: string;
+      diners: string[];
+      /** 掌勺者（本票）：与普通定餐同一条整份提交；不传 = 按家里的习惯缺省 */
+      cook?: string | null;
+    }) =>
+      putSlot(slotId, {
+        diners,
+        dishes: [],
+        leftoverOf,
+        ...(cook === undefined ? {} : { cook }),
+      }),
     onSuccess: (_slot, { slotId, leftoverOf }) => {
       queryClient.invalidateQueries({ queryKey: ['slots'] });
       queryClient.invalidateQueries({ queryKey: ['slot', slotId] });
