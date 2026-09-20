@@ -242,6 +242,22 @@ describe('解析杂讯过滤（story 5：受控食材表不被污染）', () => 
       ),
     ).toThrow(/解析杂讯已丢弃/);
   });
+
+  it('描述句当食材名的也判杂讯（不让包含匹配从一句话里「认」出一个食材）', () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+
+    // 「水的体积是米饭的体积的」是数据源里的一整句说明（快照里唯一一条以「的」结尾的原文名）。
+    // 不挡它的话，包含匹配会从那串字里认出「米饭」——于是「米粥」这道菜的**唯一食材**
+    // 变成了一句描述，落库成一道只有一样东西的空壳菜。
+    expect(isNoiseIngredientName('水的体积是米饭的体积的')).toBe(true);
+    // 中文食材名不会以助词「的」结尾（字典里一个也没有——schema-013 有断言），所以这条只杀杂讯
+    for (const name of ['五花肉', '米饭', '小苏打', '椒盐粉']) {
+      expect(isNoiseIngredientName(name), `${name} 不该判为杂讯`).toBe(false);
+    }
+    // 真菜不受影响：同名的好菜照旧归一（「水的用量为」前面那一截是真食材，剥完留下「水」）
+    expect(normalizeIngredientName(index, '水的用量为')?.id).toBe('water');
+  });
 });
 
 describe('连写名拆分（story 6：两个食材的克数都不丢）', () => {

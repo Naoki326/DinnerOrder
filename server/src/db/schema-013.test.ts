@@ -132,4 +132,16 @@ describe('013 迁移的字典补录纪律', () => {
       expect(names, `${variety} 是品种，不该进字典`).not.toContain(variety);
     }
   });
+
+  it('字典里没有以助词「的」结尾的名字（杂讯规则「的$」靠这条保证只杀杂讯）', () => {
+    harness = createTestHarness();
+
+    // 导入侧的 `isNoiseIngredientName` 把以「的」结尾的名字当描述句丢掉。
+    // 这条规则安全的前提就是**字典里一个以「的」结尾的名字也没有**——
+    // 否则那个真食材会被自己的规则误杀（而它永远也归不上，因为杂讯在归一之前就丢了）。
+    const withDe = (harness.db.prepare('SELECT name FROM ingredients').all() as { name: string }[])
+      .map((row) => row.name)
+      .filter((name) => name.endsWith('的'));
+    expect(withDe).toEqual([]);
+  });
 });
