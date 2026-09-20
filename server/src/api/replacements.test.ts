@@ -214,6 +214,39 @@ describe('忌口：硬过滤 + 排除原因', () => {
     expect(adultsOnly.body.excluded.map((entry) => entry.recipeId)).not.toContain('haoyoushengcai');
   });
 
+  it('忌「猪肉」→ 含猪里脊的菜也进 excluded 并说清原因（story 2 在换菜这条路上的同一条机制）', async () => {
+    harness = createTestHarness();
+    scriptLlm();
+    // 这位家人只忌基础类「猪肉」——细类菜要跟着出局，且原因要说得出
+    harness.db
+      .prepare("INSERT INTO members (id, name, emoji, kind, gender, is_cook, sort_order, created_at, updated_at) VALUES ('no_pork', '姥姥', '👵', 'adult', 'female', 0, 9, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
+      .run();
+    harness.db
+      .prepare("INSERT INTO member_avoid (member_id, ingredient_id, created_at) VALUES ('no_pork', 'pork', '2025-01-01T00:00:00Z')")
+      .run();
+    await seedDinner(['kelejichi', 'suanrongcaixin']);
+
+    // 换的是**荤位**（可乐鸡翅）——excluded 只列同位（荤位）的菜，而细类猪菜都在荤位。
+    // 糖醋里脊用里脊（含猪肉），应被基础类「猪肉」排掉。
+    const { status, body } = await candidates({ replacing: 'kelejichi', diners: ['no_pork'] });
+    expect(status).toBe(200);
+
+    const tenderloin = body.excluded.find((entry) => entry.recipeId === 'tangculiji');
+    expect(tenderloin?.reason).toBe('姥姥忌猪肉');
+    // 红烧排骨（猪排骨）同样被基础类排掉——这是 story 2 点名的那道菜
+    const ribs = body.excluded.find((entry) => entry.recipeId === 'hongshaopaigu');
+    expect(ribs?.reason).toBe('姥姥忌猪肉');
+    // excluded 与 candidates 是同一个同位集合的两面：被排掉的绝不在候选里
+    expect(body.candidates.map((candidate) => candidate.recipeId)).not.toContain('tangculiji');
+    expect(body.candidates.map((candidate) => candidate.recipeId)).not.toContain('hongshaopaigu');
+
+    // 反向对照：不忌猪肉的人这两道菜都不在 excluded 里（否则上面那两条可能因为别的原因成立）
+    harness.llm.clearCalls();
+    const normal = await candidates({ replacing: 'kelejichi' });
+    expect(normal.body.excluded.map((entry) => entry.recipeId)).not.toContain('tangculiji');
+    expect(normal.body.excluded.map((entry) => entry.recipeId)).not.toContain('hongshaopaigu');
+  });
+
   it('「再换一个」的会话排除会换出新的一批；exclude 累积后池干就放宽（relaxed=session）', async () => {
     harness = createTestHarness();
     scriptLlm();

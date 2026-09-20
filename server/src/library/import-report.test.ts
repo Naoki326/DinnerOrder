@@ -150,8 +150,37 @@ describe('导入报告（AC 的交付物：导入量 / 重标量 / 归一失败�
     const counts = report.unmatched.map((item) => item.occurrences);
     expect([...counts].sort((a, b) => b - a)).toEqual(counts);
 
+    // ④ 解析杂讯清单（本票新增）：它与归一失败**分开列**，因为下一步动作不同
+    //    （归一失败去补字典/别名；杂讯去改采集解析——research §10 的四分类结论）
+    expect(report.dropped.length).toBeGreaterThan(0);
+    expect(report.dropped[0]).toMatchObject({ name: expect.any(String), occurrences: expect.any(Number) });
+    expect(report.dropped[0]!.dishes.length).toBeGreaterThan(0);
+    // 两个清单**不相交**：一个名字不能既说「去补字典」又说「是杂讯」
+    const unmatchedNames = new Set(report.unmatched.map((item) => item.name));
+    expect(report.dropped.filter((item) => unmatchedNames.has(item.name))).toEqual([]);
+
     // 接收/被拒/采集量三者自洽
     expect(report.imported.length + report.rejected.length).toBe(loadSnapshot().length);
+  });
+
+  it('字典补录后，报告里的高频粗名不再出现在归一失败清单里（story 8：清单显著变短）', () => {
+    harness = createTestHarness();
+    const { report } = runImport();
+
+    // 本票补的那批裸名（导入报告里出现 ≥2 次的高频项）都不该再进失败清单：
+    // 它们要么归到新的基础条目（猪肉/鸡肉/芝麻/米饭），要么整项是杂讯（已在 dropped 里）
+    const stillFailing = new Set(report.unmatched.map((item) => item.name));
+    for (const name of ['芝麻', '米饭', '猪肉', '鸡肉', '蒜粉', '白葡萄酒', '葱结', '耗油', '姜粉', '椒盐粉', '芥末', '南乳', '肉', '小苏打', '肉蟹', '野山椒']) {
+      expect(stillFailing.has(name), `「${name}」应该已经被补录消化掉`).toBe(false);
+    }
+    // 份量表达式那批（「盐量 = 份数」类）也不在失败清单里：它们是尾巴，剥完留下真食材
+    expect(stillFailing.has('盐量 = 份数')).toBe(false);
+    expect(stillFailing.has('肉量 = 份数')).toBe(false);
+    expect(stillFailing.has('盐的用量为')).toBe(false);
+
+    // 长尾真缺项**仍然在清单里**（刻意留着的可见欠账：不为家里不做的菜系扩字典）
+    expect(stillFailing.has('印度综合香料粉')).toBe(true);
+    expect(stillFailing.has('白芷')).toBe(true);
   });
 
   it('来源字段是真实来源，不是一律写成同一个值（spec 的 AC：来源字段如实）', () => {

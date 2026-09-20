@@ -13,9 +13,12 @@ import type { RecipeCuisine, RecipeKind, RecipeSource, TasteTag } from '../wire-
  * 三条来源共用这一条管线（ADR-0006：HowToCook / 下厨房爬取 / LLM 生成都是「素材层」）：
  *
  *   1. **采集器**（`library/collectors.ts`）把外部数据源读成 `DraftRecipe[]`——纯函数、不碰库；
- *   2. **归一**（本文件 `normalize`）把采集到的食材名对到食材字典的规范名上，对不上的记进
+ *   2. **清洗**（本文件 `isNoiseIngredientName` / `splitCombinedIngredientName`）把数据源那侧的
+ *      **解析杂讯**（份量表达式「盐量 = 份数」、分段小标题、厨具、说明片段）整项丢掉，
+ *      把**连写名**（「姜蒜」「葱、姜、蒜共」）拆成两条——两件都发生在归一**之前**，是纯函数；
+ *   3. **归一**（本文件 `normalizeRecipe`）把采集到的食材名对到食材字典的规范名上，对不上的记进
  *      报告（不静默丢、不新建字典行——字典是全库唯一受控表，见 `library/collectors.ts` 的采集口径）；
- *   3. **落库**（本文件 `importDrafts`）写成 `recipes.status='draft'`（外部池的存储形态，
+ *   4. **落库**（本文件 `importDrafts`）写成 `recipes.status='draft'`（外部池的存储形态，
  *      见迁移 004 的文件头）+ 食材项 + 口味 + 时令月份 + 菜系 tag。
  *
  * **来源字段如实**（spec 的 AC）：`recipe.source` 是采集器的来源，管线不改写——
@@ -98,6 +101,21 @@ export interface UnmatchedIngredient {
   occurrences: number;
 }
 
+/**
+ * 解析杂讯的一条（issue #28：44 条「盐量 = 份数」类）。
+ *
+ * 它与 `UnmatchedIngredient` 分开列，理由是这个分栏**决定下一步动作**：
+ * 归一失败要去补字典/别名，而杂讯去补字典是白费（research §10 的四分类）——
+ * 要改的是采集解析。混在一起会让人按「出现次数最多」去补一条不该存在的字典行。
+ */
+export interface DroppedNoise {
+  /** 采集原文里的名字 */
+  name: string;
+  /** 哪几道菜里出现了它 */
+  dishes: string[];
+  occurrences: number;
+}
+
 /** 份量重标的可见结果（AC：「模糊份量重标为成人份克数，重标覆盖率可见」） */
 export interface RelabelReport {
   /** 全库草稿里需要重标的食材项（`adult_grams` 来源是模糊份量）总数 */
@@ -119,6 +137,11 @@ export interface ImportReport {
   rejected: RejectedRecipe[];
   /** 归一失败清单（跨全库：含本次被拒的与历史导入里留下的） */
   unmatched: UnmatchedIngredient[];
+  /**
+   * 被当作解析杂讯丢掉的项（本票新增）。**丢归丢，看得见**——不静默丢是本票的纪律，
+   * 而「丢了多少」与「为什么丢」是 review 这批清洗规则的唯一凭据。
+   */
+  dropped: DroppedNoise[];
   /** 重标覆盖率（跨全库草稿，不只本次） */
   relabel: RelabelReport;
   /** 备注（例如「dry-run：只算不写」、来源不可达时的降级说明） */
@@ -161,6 +184,119 @@ export function loadIngredientIndex(db: Db): IngredientIndex {
   return { byName, nameOf, contains };
 }
 
+/**
+ * 解析杂讯的形状（issue #28 的四分类之一：「盐量 = 份数」类）。
+ *
+ * 这一组是**整项丢掉**的：它们整条都不是食材名，而是外部数据源的排版被采集器当成了食材行——
+ * 段落小标题（「酱汁部分」「方法一」「其他调料」）、厨具（「不粘锅」「蒸锅用水」）、
+ * 说明片段（「单人，约」「无骨肉共需」「菜码 总量」）。
+ *
+ * 与它成对的是 `cleanName` 里的**份量表达式尾巴**：「盐量 = 份数」「牛肉用量为」这类名字里
+ * **前面那一截是真食材**，不能整项丢掉（丢了就是故事 1 的「买菜清单缺项」），
+ * 所以那一路是剥掉尾巴留下「盐」「牛肉」。只有剥完仍然什么都不剩的（「量 = 份数」）才丢。
+ *
+ * 为什么在**导入管线**清洗而不是补字典：research §10 的四分类结论是「补字典没用」——
+ * 给「酱汁部分」建一条字典行，受控食材表就被污染了（story 5），而那条行永远不会被任何菜谱
+ * 合理地用到。为什么不在采集器里清洗：数据源快照（`library-data/*.jsonl`）是**既成文件**，
+ * 改采集器救不了已经落盘的快照——清洗得发生在读快照之后的管线上。
+ */
+const NOISE_NAME_PATTERNS: RegExp[] = [
+  // 分段/部分小标题：`酱汁部分`、`米饭部分`、`腌鸡部分`、`组装部分`
+  /部分$/,
+  // 段落标题本身（`方法一`、`其他调料`、`香料包`、`调`、`一般`）
+  /^(主料|调料|香料包|调|一般|方法[一二三四五六七八九十]|其他调料|风味调料|蘸料|卤料|卤料包)$/,
+  // 厨具：`不粘锅`、`铁锅`、`蒸锅用水`、`煲汤盅，按`
+  /(不粘锅|铁锅|蒸锅|砂锅|高压锅|电饭煲|烤箱|空气炸锅|砧板|锅铲|煲汤盅)/,
+  // 说明片段：`单人，约`、`单人，能支撑`、`无骨肉共需`、`菜码 总量`、`鱼 建议新手以`、`河粉料可按`、
+  // `油的质量 Mo`（整句描述）。`总量`/`共需` 前后可能带空格（`菜码 总量`），所以不锚边界。
+  /(单人|能支撑|共需|总量|按自己喜好|建议新手|依次累加|分别为|的质量|可按$)/,
+  // 整条就是一个单位/份量词（剥完尾巴什么都不剩的那种：`量 = 份数`）
+  /^(量|数量|用量|份数)$/,
+];
+
+/** 这一条原文名字是不是解析杂讯（整项丢掉，且**不进归一失败清单**） */
+export function isNoiseIngredientName(rawName: string): boolean {
+  const cleaned = cleanName(rawName);
+  if (cleaned === '') return true;
+  // 同时拿**剥尾巴前后**两个名字去匹配：`菜码 总量` 的 `总量` 会被份量尾巴剥成 `总`，
+  // 只看剥后的名字就漏判了；而 `酱汁部分` 这类剥不剥都一样。两个都判，取并集。
+  const stripped = stripQuantityTail(cleaned);
+  if (stripped === '') return true;
+  return NOISE_NAME_PATTERNS.some((pattern) => pattern.test(cleaned) || pattern.test(stripped));
+}
+
+/** 连写名里的分隔符：`盐、糖`、`青葱，葱白`、`玉米粒和青豆` */
+const NAME_SEPARATORS = /[、，,和]/;
+
+/**
+ * 连写名拆成多条食材名（story 6：「姜蒜」连写拆成两条，两个食材的克数都不丢）。
+ *
+ * 数据源里真出现过的形状：`姜蒜`、`葱姜蒜`、`葱、姜、蒜共`、`葱姜水`、`盐、糖`、`玉米粒和青豆总共`。
+ * **别名救不了它们**——字典的别名是「一个叫法指向一个食材」（别名全局唯一），而这里一条名字里
+ * 有两个食材（`library.ts` 文件头与 001 的注释都写着这条纪律），所以只能拆。
+ *
+ * 三条保守边界（与 `normalizeIngredientName` 的「宁可少认」同一纪律）：
+ *   * **整串精确命中字典的不拆**：`蒜蓉辣酱`（自己的条目）能切成「蒜蓉 + 辣酱」两个真食材，
+ *     但它是字典里的一条，拆了就错；
+ *   * **拆出来的每一段都要归得上字典，且至少两个不同食材**：`青葱，葱白` 两段都指向「葱」，
+ *     拆了会把 25g 变成 12.5g；`黑鳕鱼，带皮` 第一段就归不上——这两种都原样交回既有归一
+ *     （含「包含匹配」）处理；
+ *   * 拆不出来就返回一条（原样），**不制造新的归一失败项**。
+ *
+ * 克数是**合计量**（「姜蒜 50g」= 姜与蒜合计 50g），所以调用方拆分时要均分（见 `normalizeRecipe`）。
+ */
+export function splitCombinedIngredientName(index: IngredientIndex, rawName: string): string[] {
+  const cleaned = stripQuantityTail(cleanName(rawName));
+  if (cleaned === '' || index.byName.has(cleaned)) return [rawName];
+  // 「A 或 B」与「A / B」不是连写（那是「两个都要」）：名字里含分隔符就不拆，
+  // 原样交回 `normalizeIngredientName`（它的包含匹配已经能认出 `五花肉/瘦肉` 里的五花肉）
+  if (/或者|或|\//.test(cleaned)) return [rawName];
+
+  // ① 分隔符路径：`盐、糖`、`葱、姜、蒜`（`共`/`各`/`总共` 这类尾巴已在 cleanName 里剥掉）
+  const parts = cleaned.split(NAME_SEPARATORS).filter((part) => part !== '');
+  if (parts.length >= 2 && isDistinctIngredients(index, parts)) return parts;
+
+  // ② 连写路径：`姜蒜`、`葱姜蒜`、`葱姜水`——整串刚好由若干个字典名拼成
+  const segmented = segmentByIngredientNames(index, cleaned);
+  if (segmented && isDistinctIngredients(index, segmented)) return segmented;
+
+  return [rawName];
+}
+
+/** 这几段是不是「都归得上字典 ∧ 至少两个不同的食材」（拆分值不值得做的唯一判据） */
+function isDistinctIngredients(index: IngredientIndex, parts: string[]): boolean {
+  const ids = new Set<string>();
+  for (const part of parts) {
+    const hit = normalizeIngredientName(index, part);
+    if (!hit) return false;
+    ids.add(hit.id);
+  }
+  return ids.size >= 2;
+}
+
+/**
+ * 把整串名字切成若干个**字典名/别名**（最长优先），切不干净就返回 undefined。
+ * 最长优先是为了让 `芝麻酱`、`蒜蓉辣酱` 这类自带条目的名字整段命中（它们在上面的精确命中里
+ * 已经返回了，这里是第二道保险）。
+ */
+function segmentByIngredientNames(index: IngredientIndex, name: string): string[] | undefined {
+  const tokens = [...index.byName.keys()].sort((a, b) => b.length - a.length);
+  const parts: string[] = [];
+  let rest = name;
+  while (rest !== '') {
+    const hit = tokens.find((token) => rest.startsWith(token));
+    if (!hit) return undefined;
+    parts.push(hit);
+    rest = rest.slice(hit.length);
+  }
+  return parts.length >= 2 ? parts : undefined;
+}
+
+/** 一位小数（拆分的克数均分后不留下 `16.666666666666668` 这种尾巴） */
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
 export interface NormalizedIngredient {
   ingredientId: string;
   /** 字典里的规范名（落库前的可读形式；报告与测试断言它） */
@@ -168,10 +304,16 @@ export interface NormalizedIngredient {
   adultGrams: number | null;
   quantity: string;
   scaling: 'linear' | 'fixed';
-  /** 原文名字（报告里说「它是从哪个叫法归过来的」） */
+  /**
+   * 原文名字（报告里说「它是从哪个叫法归过来的」）。
+   * 连写名拆出来的每一条也带着它——「姜蒜 50g」拆成姜/蒜两条时，两条的 `rawName` 都是
+   * 「姜蒜」，所以它同时也是「这一项是从哪个连写名来的」的依据，不另设字段。
+   */
   rawName: string;
   /** 这一项的名字整串都对不上字典，但名字里**包含**某个字典名字（保守归一，见 normalizeIngredientName） */
   loose?: boolean;
+  /** 拆分标记：这条是连写名里的一段（克数已按段数均分），报告与测试靠它认出来 */
+  split?: boolean;
 }
 
 /**
@@ -187,7 +329,9 @@ export interface NormalizedIngredient {
  * 返回 undefined = 归不上（进报告，不落库）。
  */
 export function normalizeIngredientName(index: IngredientIndex, rawName: string): { id: string; loose: boolean } | undefined {
-  const cleaned = cleanName(rawName);
+  // 名字的清洗有两层：外层剥数据源的书写痕迹（括号/等号尾巴/份量表达式尾巴），
+  // 内层（`trimModifiers`）剥切法与品相修饰。两者都只做**确定性的**剥除，不猜词干。
+  const cleaned = stripQuantityTail(cleanName(rawName));
   if (cleaned === '') return undefined;
 
   const exact = index.byName.get(cleaned);
@@ -198,6 +342,11 @@ export function normalizeIngredientName(index: IngredientIndex, rawName: string)
   // 所以这不放松任何约束，只是把「同一个食材的另一种写法」认出来。
   const trimmed = trimModifiers(index, cleaned);
   if (trimmed) return trimmed;
+
+  // 切口修整之后仍然要经过包含匹配：`五花肉/瘦肉`、`酸奶或牛奶` 这类名字里确实含一个真食材，
+  // 既有的「唯一候选才认」已经足够保守（多个候选并列时判失败）。
+  // 本票**不在这里加「含 或/ 就判失败」的闸门**：那会把包含匹配本来认得出的名字收紧成失败，
+  // 是「归一失败清单变短」这个目标的反向操作。
 
   let best: { id: string; length: number } | undefined;
   let ambiguous = false;
@@ -222,7 +371,7 @@ export function normalizeIngredientName(index: IngredientIndex, rawName: string)
  * 白名单是封闭的，不搞「猜词干」：猜错一个字的代价是把忌口关联挂错食材
  * （隐性忌口靠食材清单展开），所以宁可少认、把没认出的东西列给人看。
  */
-const PREP_SUFFIXES = ['末', '片', '段', '丝', '蓉', '碎', '丁', '条', '块', '粒'];
+const PREP_SUFFIXES = ['末', '沫', '片', '段', '丝', '蓉', '碎', '丁', '条', '块', '粒'];
 const QUALITY_PREFIXES = ['食用', '鲜', '干', '生', '纯', '瘦', '精', '大', '小', '老', '嫩', '新', '熟'];
 
 function trimModifiers(index: IngredientIndex, name: string): { id: string; loose: boolean } | undefined {
@@ -245,13 +394,63 @@ function trimModifiers(index: IngredientIndex, name: string): { id: string; loos
  * 去掉原文名字里的修饰：反引号/星号（HowToCook 用它们标主料）、全角括号注释、
  * 前后空白、数量词尾巴（「盐量 = 份数」）。
  */
+/** 尾巴上的标点/比较符（`姜，`、`食盐 ，`、`水 ≥`）——剥一次后可能又露出新的（`葱、姜、蒜共`），
+ * 所以单独抽成一个小函数，与「共/各/总共」「大约/适量」那些尾巴词配合循环剥 */
+const TRAILING_PUNCT = /[\s、,，。;；:：≥≤<>~～]+$/g;
+
+/**
+ * 名字的**书写痕迹**清洗：反引号/星号、括号注释、`= …` 尾巴、落单的开括号、尾巴上的
+ * 标点/聚合词/份量副词。这一层只做**确定性的剥除**，不猜词干（猜词的活交给 `trimModifiers` 的白名单）。
+ *
+ * 剥的顺序有依赖：先剥标点才能让 `(共|各|总共)$` 锚到真尾巴（`葱、姜、蒜共`），
+ * 剥完聚合词又可能露出新标点，所以那两行成对出现。
+ */
 function cleanName(raw: string): string {
-  return raw
+  const withoutDecoration = raw
     .replace(/[`*]/g, '')
     .replace(/[（(].*?[）)]/g, '')
     .replace(/\s*[=＝].*$/, '')
-    .replace(/[\s:：]+$/g, '')
-    .trim();
+    // 落单的开括号及其后（`猪肉 (`、`盐(`、`蒜水 (`、`鸭肉（`）：闭合的括号已在上一行整体剥掉，
+    // 剩下这些是数据源截断的痕迹，留着会让名字永远对不上字典
+    .replace(/[（(【[「『].*$/, '');
+  // 尾巴上的标点、聚合词（共/各/总共）、份量副词（大约/约/适量）交替剥，直到稳定。
+  // 有界循环（最多 4 轮）：尾巴词是封闭集合，剥不完的情况不存在，上限只是防御性写法。
+  let current = withoutDecoration;
+  for (let round = 0; round < 4; round += 1) {
+    const next = current
+      .replace(TRAILING_PUNCT, '')
+      .replace(/(共|各|总共)$/, '')
+      .replace(/[\s]*(大约|大概|约|左右|适量|少许)$/u, '');
+    if (next === current) break;
+    current = next;
+  }
+  return current.replace(TRAILING_PUNCT, '').trim();
+}
+
+/**
+ * 剥掉名字尾巴上的**份量表达式**，留下前面那个真食材名（issue #28 的 44 条杂讯里
+ * 最容易被误伤的一类：「牛肉用量为」「盐的用量为」「青椒的数量 = 份数」）。
+ *
+ * 为什么不能整项丢掉：这些名字里**前面那一截就是真食材**（`牛肉用量为` 就是牛肉、
+ * `青椒的数量` 就是青椒）。整项丢就是故事 1 的「买菜清单缺项」。
+ * 为什么不能补字典：那是**无穷的写法变体**（`盐量 = 份数`/`盐用量为`/`盐的用量为`/`盐量用量为`），
+ * 字典是全库唯一受控表，不能拿它当正则替代品（story 5）。
+ *
+ * 剥的边界是**封闭的一小组尾巴词**（与 `cleanName` 同一纪律：不猜词干）：
+ *   * `量 = …` / `数量 = …` / `用量 = …`（等号后面的整段已在 `cleanName` 里剥掉）
+ *   * `的用量为` / `用量为` / `用量` / `的数量` / `数量` / `量`（尾巴词）
+ * 剥完剩下空串的（`量 = 份数`）交给 `isNoiseIngredientName` 整项丢掉。
+ */
+function stripQuantityTail(name: string): string {
+  // 循环剥：`盐量用量为` 要剥两层（`用量为` → `量`）才能得到 `盐`。
+  // 有界循环（最多 3 轮）：尾巴词是封闭集合，不存在剥不完的情况；上限只是防御性写法。
+  let current = name;
+  for (let round = 0; round < 3; round += 1) {
+    const next = current.replace(/(的)?(用)?(数量|用量|量)(为|＝|=)?$/u, '').trim();
+    if (next === current) break;
+    current = next;
+  }
+  return current;
 }
 
 /** 归一后仍归不上的、或身份冲突的，怎么处理：拒整道菜（不半截落库） */
@@ -281,6 +480,12 @@ export interface NormalizedRecipe {
    * 与「份量待重标」是两件事——名字归上了、只是原文没写克数，那是 `relabel.pending` 的事。
    */
   unmatchedNames: string[];
+  /**
+   * 这道菜里被判为**解析杂讯**、整项丢掉的原文名（「盐量 = 份数」类）。
+   * 它们与 `unmatchedNames` 分开记：杂讯补字典救不了（research §10 的四分类），
+   * 混进「归一失败清单」会让人去补一条不该存在的字典行。丢归丢，报告里**看得见**。
+   */
+  droppedNames: string[];
 }
 
 /**
@@ -295,21 +500,38 @@ export function normalizeRecipe(index: IngredientIndex, draft: DraftRecipe): { n
 
   const normalized: NormalizedIngredient[] = [];
   const unmatched: string[] = [];
+  const dropped: string[] = [];
   for (const item of draft.ingredients) {
-    const hit = normalizeIngredientName(index, item.name);
-    if (!hit) {
-      unmatched.push(item.name);
+    // ① 解析杂讯整项丢弃（「盐量 = 份数」类）：不进归一失败清单，但记下来给报告
+    if (isNoiseIngredientName(item.name)) {
+      dropped.push(item.name);
       continue;
     }
-    normalized.push({
-      ingredientId: hit.id,
-      name: index.nameOf.get(hit.id) ?? hit.id,
-      adultGrams: item.adultGrams,
-      quantity: item.quantity,
-      scaling: item.scaling,
-      rawName: item.name,
-      loose: hit.loose ? true : undefined,
-    });
+    // ② 归一：**先整串归**（含别名/修饰词/包含匹配那三道既有闸门），归不上才尝试拆分。
+    //    顺序要紧：「猪五花肉」自己就能归到五花肉（包含匹配），而拆分会把它变成
+    //    「猪五花 + 肉」——那是把一道菜的主料拆成了两个食材，克数还对半分。
+    //    所以拆分只是**整串归不上时的降级路**（「姜蒜」这种），不是前置清洗。
+    const whole = normalizeIngredientName(index, item.name);
+    const names = whole ? [item.name] : splitCombinedIngredientName(index, item.name);
+    const split = names.length > 1;
+    for (const name of names) {
+      const hit = whole ?? normalizeIngredientName(index, name);
+      if (!hit) {
+        unmatched.push(name);
+        continue;
+      }
+      normalized.push({
+        ingredientId: hit.id,
+        name: index.nameOf.get(hit.id) ?? hit.id,
+        adultGrams: split && item.adultGrams !== null ? round1(item.adultGrams / names.length) : item.adultGrams,
+        // 原文照留：报告与 LLM 重标都要能回看「这一笔是怎么来的」
+        quantity: item.quantity,
+        scaling: item.scaling,
+        rawName: item.name,
+        loose: hit.loose ? true : undefined,
+        split: split ? true : undefined,
+      });
+    }
   }
 
   // 同名字段去重：一道菜里同一个食材只留一条（采集器偶尔会给「葱」与「小葱」两条，
@@ -322,7 +544,10 @@ export function normalizeRecipe(index: IngredientIndex, draft: DraftRecipe): { n
   });
 
   if (deduped.length === 0) {
-    throw new NormalizationError(`食材名全都没对上字典：${unmatched.join('、')}`);
+    // 杂讯丢弃与「归不上」是两件事，拒绝理由要说清是哪种（否则报告会指错方向：
+    // 「全是杂讯」该改采集解析，「全是真缺项」才该补字典）
+    const noiseNote = dropped.length > 0 ? `（另有 ${dropped.length} 条解析杂讯已丢弃：${dropped.join('、')}）` : '';
+    throw new NormalizationError(`食材名全都没对上字典：${unmatched.join('、')}${noiseNote}`);
   }
 
   for (const month of draft.seasonMonths) {
@@ -346,6 +571,7 @@ export function normalizeRecipe(index: IngredientIndex, draft: DraftRecipe): { n
       steps: draft.steps,
       ingredients: deduped,
       unmatchedNames: unmatched,
+      droppedNames: dropped,
     },
     unmatched,
   };
@@ -357,6 +583,8 @@ export interface ImportOutcome {
   imported: ImportedRecipe[];
   rejected: RejectedRecipe[];
   unmatched: UnmatchedIngredient[];
+  /** 被当作解析杂讯丢掉的项（本批，按名字聚合） */
+  dropped: DroppedNoise[];
   /**
    * 这一批落库后的重标覆盖率（**在事务里读出来的**）。
    * 为什么不由 `buildReport` 事后查一次库：dry-run 会把事务回滚掉，事后查库读到的是
@@ -391,6 +619,7 @@ export function importDrafts(db: Db, options: ImportOptions): ImportOutcome {
   const imported: ImportedRecipe[] = [];
   const rejected: RejectedRecipe[] = [];
   const unmatchedByRecipe: { dish: string; names: string[] }[] = [];
+  const droppedByRecipe: { dish: string; names: string[] }[] = [];
   let relabel = relabelReport(db);
 
   const write = db.transaction((abort: boolean) => {
@@ -399,6 +628,8 @@ export function importDrafts(db: Db, options: ImportOptions): ImportOutcome {
       // 重跑导入时同名草稿全被 skip，若只记写进去的那些，报告会说「0 条归一失败」——
       // 而库里明明还缺那些别名。清单要能回答「这批快照还有哪些名字对不上字典」。
       if (recipe.unmatchedNames.length > 0) unmatchedByRecipe.push({ dish: recipe.name, names: recipe.unmatchedNames });
+      // 杂讯丢弃与归一失败分开收：两者要去的地方不同（改解析 vs 补字典）
+      if (recipe.droppedNames.length > 0) droppedByRecipe.push({ dish: recipe.name, names: recipe.droppedNames });
 
       const clash = db.prepare('SELECT name, status FROM recipes WHERE name = ?').get(recipe.name) as
         | { name: string; status: string }
@@ -516,7 +747,8 @@ export function importDrafts(db: Db, options: ImportOptions): ImportOutcome {
     imported,
     rejected,
     // 这次导入里「名字归不上」的那些（跨菜去重后计数）
-    unmatched: aggregateUnmatched(unmatchedByRecipe),
+    unmatched: aggregateByName(unmatchedByRecipe),
+    dropped: aggregateByName(droppedByRecipe),
     relabel,
     notes,
   };
@@ -525,7 +757,11 @@ export function importDrafts(db: Db, options: ImportOptions): ImportOutcome {
 /** dry-run 的回滚信号（不是错误，只是让事务回滚） */
 const DRY_RUN_ROLLBACK = Symbol('dry-run rollback');
 
-function aggregateUnmatched(entries: { dish: string; names: string[] }[]): UnmatchedIngredient[] {
+/**
+ * 把「哪几道菜里有这个原文名」的清单按名字聚起来（归一失败清单与杂讯清单共用一份口径：
+ * 同一个名字跨菜去重、按出现次数降序——报告首先是给人看的，先补影响面最大的）。
+ */
+function aggregateByName(entries: { dish: string; names: string[] }[]): UnmatchedIngredient[] {
   const byName = new Map<string, { dishes: Set<string>; occurrences: number }>();
   for (const entry of entries) {
     for (const name of entry.names) {
@@ -634,6 +870,7 @@ export function buildReport(
     rejected: outcome.rejected,
     // 归一失败清单来自本次落库的结果（`normalizeRecipe` 把原文名带下来了）
     unmatched: outcome.unmatched,
+    dropped: outcome.dropped,
     // 覆盖率缺省用事务里带走的那份（dry-run 唯一能看到「若真跑」数字的地方：回滚后再查库
     // 读到的是导入前的小库）。但真跑且已做过 LLM 重标时，**必须**传重读库的那份
     // （`relabelReport(db)`）——重标之后库已经变了，事务里的快照是过期数字，

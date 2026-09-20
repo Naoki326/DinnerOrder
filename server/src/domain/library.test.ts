@@ -5,6 +5,7 @@ import {
   classifyCuisines,
   importDrafts,
   ingredientsWithoutSeason,
+  isNoiseIngredientName,
   loadIngredientIndex,
   normalizeIngredientName,
   normalizeRecipe,
@@ -12,6 +13,7 @@ import {
   relabelReport,
   seasonGrid,
   seasonIngredientCount,
+  splitCombinedIngredientName,
   tagDraftCuisines,
   type DraftRecipe,
 } from './library.js';
@@ -115,6 +117,210 @@ describe('食材字典归一', () => {
     expect(normalized.ingredients[0]!.loose).toBe(true);
     expect(normalized.unmatchedNames).toEqual(['白芷']);
     expect(unmatched).toEqual(['白芷']);
+  });
+});
+
+/**
+ * 字典补录（issue #28 三件套）在**归一这一侧**的可观察行为。
+ *
+ * 只测外部行为：粗名落到哪条字典行、杂讯被滤、连写被拆、克数不丢——都是领域可观察的行为，
+ * 不测 SQL 细节（迁移本身的约束由 `db/schema-013.test.ts` 钉）。
+ */
+describe('裸名基础条目（story 1：菜谱的粗粒度语言有处落）', () => {
+  it('「猪肉」「鸡肉」「芝麻」「米饭」这类粗名都能归一（不再是「买菜清单缺项」）', () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+
+    // 导入报告里出现次数最高的那几个裸名（§10 的四分类表第一行）
+    expect(normalizeIngredientName(index, '芝麻')?.id).toBe('sesame');
+    expect(normalizeIngredientName(index, '米饭')?.id).toBe('cooked_rice');
+    expect(normalizeIngredientName(index, '猪肉')?.id).toBe('pork');
+    expect(normalizeIngredientName(index, '鸡肉')?.id).toBe('chicken');
+    // 粉状调料与西式调料（同一张表里的其余高频项）
+    expect(normalizeIngredientName(index, '蒜粉')?.id).toBe('garlic_powder');
+    expect(normalizeIngredientName(index, '姜粉')?.id).toBe('ginger_powder');
+    expect(normalizeIngredientName(index, '椒盐粉')?.id).toBe('salt_pepper_powder');
+    expect(normalizeIngredientName(index, '芥末')?.id).toBe('mustard');
+    expect(normalizeIngredientName(index, '白葡萄酒')?.id).toBe('white_wine');
+    expect(normalizeIngredientName(index, '小苏打')?.id).toBe('baking_soda');
+  });
+
+  it('裸名与细名是两条（story 4：清单分两行，细条目的部位硬要求看得见）', () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+
+    // 同一个东西的两副面孔：裸名归到基础条目，细名归到部位条目——**不合并且不互相吞**
+    expect(normalizeIngredientName(index, '猪肉')?.id).toBe('pork');
+    expect(normalizeIngredientName(index, '猪梅花肉')?.id).toBe('pork_loin');
+    expect(normalizeIngredientName(index, '猪排骨')?.id).toBe('pork_ribs');
+    // 「猪五花肉」不能被拆成「猪五花 + 肉」：整串归得上（包含匹配）就不拆
+    expect(normalizeIngredientName(index, '猪五花肉')?.id).toBe('pork_belly');
+    // 米饭（熟）与大米（生）是两条：拿 200g 米饭当 200g 大米买就是买少了
+    expect(normalizeIngredientName(index, '米饭')?.id).toBe('cooked_rice');
+    expect(normalizeIngredientName(index, '大米')?.id).toBe('rice');
+  });
+
+  it('错别字与口语写法归到规范名（story 7：耗油→蚝油）', () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+
+    expect(normalizeIngredientName(index, '耗油')?.id).toBe('oyster_sauce');
+    expect(normalizeIngredientName(index, '肉')?.id).toBe('pork');
+    expect(normalizeIngredientName(index, '鸡')?.id).toBe('chicken');
+    // 水的口语写法（温度不是另一个食材，它是做法信息）
+    expect(normalizeIngredientName(index, '温水')?.id).toBe('water');
+    expect(normalizeIngredientName(index, '冷水')?.id).toBe('water');
+    expect(normalizeIngredientName(index, '沸水')?.id).toBe('water');
+  });
+
+  it('长尾真缺项仍然不认（Out of Scope：不为家里不做的菜系扩字典）', () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+
+    expect(normalizeIngredientName(index, '印度综合香料粉')).toBeUndefined();
+    expect(normalizeIngredientName(index, '白芷')).toBeUndefined();
+    expect(normalizeIngredientName(index, '酥油')).toBeUndefined();
+  });
+});
+
+describe('解析杂讯过滤（story 5：受控食材表不被污染）', () => {
+  it('「盐量 = 份数」类份量表达式剥掉尾巴留下真食材（不是整项丢掉）', () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+
+    // 尾巴上是份量表达式，**前面那一截就是真食材**——整项丢就是 story 1 的缺项
+    expect(normalizeIngredientName(index, '盐量 = 份数')?.id).toBe('salt');
+    expect(normalizeIngredientName(index, '肉量 = 份数')?.id).toBe('pork');
+    expect(normalizeIngredientName(index, '盐的用量为')?.id).toBe('salt');
+    expect(normalizeIngredientName(index, '葱的数量 =')?.id).toBe('scallion');
+    expect(normalizeIngredientName(index, '姜的用量为')?.id).toBe('ginger');
+    expect(normalizeIngredientName(index, '耗油的用量为')?.id).toBe('oyster_sauce');
+  });
+
+  it('分段小标题 / 厨具 / 说明片段整项判为杂讯（不进字典也不进失败清单）', () => {
+    harness = createTestHarness();
+
+    for (const name of ['酱汁部分', '米饭部分', '腌鸡部分', '方法一', '其他调料', '不粘锅', '蒸锅用水', '单人，约', '无骨肉共需', '菜码 总量']) {
+      expect(isNoiseIngredientName(name), `${name} 应判为杂讯`).toBe(true);
+    }
+    // 真食材一个都不能误判（否则就是 story 1 的缺项）
+    for (const name of ['番茄', '五花肉', '芝麻', '米饭', '盐量 = 份数']) {
+      expect(isNoiseIngredientName(name), `${name} 不应判为杂讯`).toBe(false);
+    }
+  });
+
+  it('杂讯不进归一失败清单，但进报告的 dropped 清单（丢归丢，看得见）', () => {
+    harness = createTestHarness();
+    const outcome = ingest([
+      {
+        ...draft({ id: 'htc_noise', name: '测试杂讯菜' }),
+        ingredients: [
+          { name: '番茄', adultGrams: 100, quantity: '100g', scaling: 'linear' },
+          { name: '酱汁部分', adultGrams: null, quantity: '**', scaling: 'fixed' },
+          { name: '不粘锅', adultGrams: null, quantity: '1 个', scaling: 'fixed' },
+        ],
+      },
+    ]);
+
+    // 杂讯不在归一失败清单里（那清单是「去补字典」的待办，杂讯补字典救不了）
+    expect(outcome.unmatched).toEqual([]);
+    // 但它进 dropped（报告要说清丢了多少、为什么丢）
+    expect(outcome.dropped.map((item) => item.name).sort()).toEqual(['不粘锅', '酱汁部分'].sort());
+    expect(outcome.dropped[0]!.dishes).toContain('测试杂讯菜');
+    // 落库的只有真食材那一条
+    const rows = harness.db.prepare("SELECT COUNT(*) AS n FROM recipe_ingredients WHERE recipe_id = 'htc_noise'").get() as { n: number };
+    expect(rows.n).toBe(1);
+  });
+
+  it('全是杂讯的菜被拒，且拒绝理由说得清是「杂讯丢弃」而不是「缺字典」', () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+    expect(() =>
+      normalizeRecipe(
+        index,
+        draft({ id: 'htc_all_noise', ingredients: [{ name: '主料', adultGrams: null, quantity: '**', scaling: 'linear' }] }),
+      ),
+    ).toThrow(/解析杂讯已丢弃/);
+  });
+});
+
+describe('连写名拆分（story 6：两个食材的克数都不丢）', () => {
+  it('「姜蒜」「葱姜蒜」拆成两条，克数是**合计量**按段数均分', () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+
+    expect(splitCombinedIngredientName(index, '姜蒜')).toEqual(['姜', '蒜']);
+    expect(splitCombinedIngredientName(index, '葱姜蒜')).toEqual(['葱', '姜', '蒜']);
+    expect(splitCombinedIngredientName(index, '葱、姜、蒜共')).toEqual(['葱', '姜', '蒜']);
+    expect(splitCombinedIngredientName(index, '盐、糖')).toEqual(['盐', '糖']);
+
+    // 落库时合计量均分：姜蒜 50g → 姜 25g + 蒜 25g（合计仍是 50g，没有凭空多一倍）
+    const { normalized } = normalizeRecipe(
+      index,
+      draft({
+        id: 'htc_split',
+        ingredients: [{ name: '姜蒜', adultGrams: 50, quantity: '50g', scaling: 'linear' }],
+      }),
+    );
+    expect(normalized.ingredients.map((item) => [item.ingredientId, item.adultGrams])).toEqual([
+      ['ginger', 25],
+      ['garlic', 25],
+    ]);
+    // 拆出来的每一条都带着原文名（「姜蒜」）与拆分标记——报告里说得清这一笔是怎么来的
+    expect(normalized.ingredients.every((item) => item.rawName === '姜蒜' && item.split === true)).toBe(true);
+  });
+
+  it('拆不干净就不拆（宁可进失败清单，也不把克数拆错）', () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+
+    // 整串自己就是字典里的条目：`蒜蓉辣酱` 能切成「蒜蓉 + 辣酱」两个真食材，但拆了就错
+    expect(splitCombinedIngredientName(index, '蒜蓉辣酱')).toEqual(['蒜蓉辣酱']);
+    // 拆出来都指向同一个食材（`青葱，葱白` 都是葱）：拆了会把 25g 变成 12.5g
+    expect(splitCombinedIngredientName(index, '青葱，葱白')).toEqual(['青葱，葱白']);
+    // 有一段归不上（`黑鳕鱼，带皮` 的「黑鳕鱼」不在字典里）：原样交回既有归一
+    expect(splitCombinedIngredientName(index, '黑鳕鱼，带皮，')).toEqual(['黑鳕鱼，带皮，']);
+  });
+
+  it('「A 或 B」不是连写：选项指向同一个食材才归一，真二选一交给包含匹配', () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+
+    // 同一个东西的两种写法（`料酒或者黄酒` 都是 cooking_wine）：可以直接归一
+    expect(normalizeIngredientName(index, '料酒或者黄酒')?.id).toBe('cooking_wine');
+    // 真二选一（`土豆或南瓜`）不归一——两个候选并列，包含匹配的「唯一候选才认」自然判失败
+    expect(normalizeIngredientName(index, '土豆或南瓜')).toBeUndefined();
+    // 但**名字里含一个确定食材的仍要认**（这是既有包含匹配的能力，本票不得收紧）：
+    // `五花肉/瘦肉` 里「五花肉」是唯一能定下来的候选
+    expect(normalizeIngredientName(index, '五花肉/瘦肉')?.id).toBe('pork_belly');
+    expect(normalizeIngredientName(index, '培根或其他肉类')?.id).toBe('bacon');
+    // 两个选项**长度并列**的真二选一（`酸奶` 与 `牛奶`）仍然判失败：既有的「唯一候选才认」在管
+    expect(normalizeIngredientName(index, '酸奶或牛奶')).toBeUndefined();
+    // 「A 或 B」也不该被当成连写拆开（那是「两个都要」）
+    expect(splitCombinedIngredientName(index, '土豆或南瓜')).toEqual(['土豆或南瓜']);
+  });
+});
+
+describe('忌口向上传播（story 2：忌「猪肉」时含猪排骨的菜也被排除）', () => {
+  it('细粒度条目带「含」指针指向基础类，展开后能命中忌口', () => {
+    harness = createTestHarness();
+    const index = loadIngredientIndex(harness.db);
+
+    // 指针方向：细粒度 → 基础类（猪排骨含猪肉、白芝麻含芝麻）
+    expect(index.contains.get('pork_ribs')).toContain('pork');
+    expect(index.contains.get('pork_loin')).toContain('pork');
+    expect(index.contains.get('sesame_seed')).toContain('sesame');
+    expect(index.contains.get('chicken_legs')).toContain('chicken');
+    // 反向不存在（忌猪排骨不连带排除所有猪肉）
+    expect(index.contains.get('pork') ?? []).not.toContain('pork_ribs');
+  });
+
+  it('基础类与细类在展开后是并集（菜谱的 avoidIngredientIds 两者都在）', async () => {
+    harness = createTestHarness();
+    // 红烧排骨：主料猪排骨 → 展开后带 pork（忌猪肉的家人吃不到这道菜）
+    const { status, body } = await harness.json<{ recipe: Recipe }>('/api/recipes/hongshaopaigu');
+    expect(status).toBe(200);
+    expect(body.recipe.avoidIngredientIds).toEqual(expect.arrayContaining(['pork_ribs', 'pork']));
   });
 });
 
@@ -555,8 +761,11 @@ describe('食材字典与 WS/T 554 互换表对齐（AC「WS/T 554 互换表 + �
     expect(index.byName.get('干黄豆')).toBe('soybean');
     expect(index.byName.get('豆浆')).toBe('soy_milk');
     expect(index.byName.get('北豆腐')).toBe('tofu');
-    // 字典里没有「米饭」这个食材（它是主食组的熟重中转口径，不是买菜项）
-    expect(index.byName.get('米饭')).toBeUndefined();
+    // 字典里没有「米饭（粳米）」这个食材（它是主食组的熟重中转口径，不是买菜项）。
+    // 注意与 013 新增的「米饭」（`cooked_rice`）不是一回事：那一条是**菜谱里的食材**
+    // （「可乐炒饭」写「米饭 200g」），本条说的是互换表里那个「50g 大米 ≈ 110g 米饭（粳米）」
+    // 的熟重中转口径——它的名字带括注，两条不会撞。
+    expect(index.byName.get('米饭（粳米）')).toBeUndefined();
   });
 });
 

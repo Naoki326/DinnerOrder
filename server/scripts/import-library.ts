@@ -236,6 +236,9 @@ async function main(): Promise<void> {
     console.log(`跳过/被拒：${report.rejected.length} 条（见报告的 rejected 清单）`);
     console.log(`归一失败：${report.unmatched.length} 条（见报告的 unmatched 清单）`);
     console.log(
+      `解析杂讯丢弃：${report.dropped.length} 条（份量表达式/小标题/厨具类，见报告的 dropped 清单——这类补字典救不了）`,
+    );
+    console.log(
       `份量重标：${coverage.done}/${coverage.needed}（覆盖率 ${(coverage.coverage * 100).toFixed(1)}%），待重标 ${coverage.pending.length} 项`,
     );
     console.log(`时令手工表：${report.season.ingredients} 种食材 × ${report.season.months} 个月`);

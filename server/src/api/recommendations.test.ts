@@ -106,6 +106,69 @@ describe('规则引擎：忌口硬过滤与时令检索', () => {
     expect(promptOf()).toContain('麻婆豆腐');
   });
 
+  it('忌「猪肉」→ 含猪排骨/猪梅花肉/五花肉的菜一并出局（013 的「含」指针向上传播）', async () => {
+    harness = createTestHarness();
+    scriptPoolSelection();
+
+    // 这位家人只忌基础类「猪肉」——细类菜（猪排骨/猪梅花肉/五花肉）全要跟着出局
+    harness.db
+      .prepare("INSERT INTO members (id, name, emoji, kind, gender, is_cook, sort_order, created_at, updated_at) VALUES ('pork_free', '忌猪', '🙅', 'adult', 'female', 0, 9, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
+      .run();
+    harness.db
+      .prepare("INSERT INTO member_avoid (member_id, ingredient_id, created_at) VALUES ('pork_free', 'pork', '2025-01-01T00:00:00Z')")
+      .run();
+
+    await recommend({ diners: ['pork_free'] });
+    const prompt = promptOf();
+    // 家庭池里三道细类猪菜：红烧排骨（猪排骨）、土豆炖牛腩里没有、糖醋里脊（里脊）
+    expect(prompt).not.toContain('红烧排骨');
+    expect(prompt).not.toContain('糖醋里脊');
+    // 反向对照：不忌猪肉的人看得到它们（否则上面那两条可能因为别的原因成立）
+    harness.llm.clearCalls();
+    await recommend({ diners: ['mom'] });
+    expect(promptOf()).toContain('红烧排骨');
+  });
+
+  it('忌「鸡肉」→ 含鸡腿/鸡翅/整鸡的菜一并出局（同一个机制的另一条基础类）', async () => {
+    harness = createTestHarness();
+    scriptPoolSelection();
+
+    harness.db
+      .prepare("INSERT INTO members (id, name, emoji, kind, gender, is_cook, sort_order, created_at, updated_at) VALUES ('no_chicken', '忌鸡', '🙅', 'adult', 'male', 0, 9, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
+      .run();
+    harness.db
+      .prepare("INSERT INTO member_avoid (member_id, ingredient_id, created_at) VALUES ('no_chicken', 'chicken', '2025-01-01T00:00:00Z')")
+      .run();
+
+    await recommend({ diners: ['no_chicken'] });
+    const prompt = promptOf();
+    expect(prompt).not.toContain('可乐鸡翅');
+    expect(prompt).not.toContain('黄焖鸡');
+    expect(prompt).not.toContain('虫草花蒸鸡');
+
+    harness.llm.clearCalls();
+    await recommend({ diners: ['mom'] });
+    expect(promptOf()).toContain('可乐鸡翅');
+  });
+
+  it('反向不成立：忌细类不连带排除基础类（忌猪排骨 ≠ 忌所有猪肉）', async () => {
+    harness = createTestHarness();
+    scriptPoolSelection();
+
+    harness.db
+      .prepare("INSERT INTO members (id, name, emoji, kind, gender, is_cook, sort_order, created_at, updated_at) VALUES ('no_ribs', '忌排骨', '🙅', 'adult', 'female', 0, 9, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
+      .run();
+    harness.db
+      .prepare("INSERT INTO member_avoid (member_id, ingredient_id, created_at) VALUES ('no_ribs', 'pork_ribs', '2025-01-01T00:00:00Z')")
+      .run();
+
+    await recommend({ diners: ['no_ribs'] });
+    const prompt = promptOf();
+    expect(prompt).not.toContain('红烧排骨');
+    // 忌排骨不影响其他猪部位（指针是单向的：只有「忌基础类连细类排」）
+    expect(prompt).toContain('糖醋里脊');
+  });
+
   it('荤/素/汤位分组进池，每位家庭池最多 8 道', async () => {
     harness = createTestHarness();
     scriptPoolSelection();

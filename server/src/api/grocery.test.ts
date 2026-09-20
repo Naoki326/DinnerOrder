@@ -136,6 +136,45 @@ describe('聚合（总纲 §2.7：跨已定餐槽同一食材生重合计 + 来�
     expect(grocery.stale).toBe(false);
   });
 
+  it('基础类与细类**分列不合**（story 4：B 的部位硬要求看得见）', async () => {
+    harness = createTestHarness();
+    // 一餐里同时有「猪排骨」（细类，有部位硬要求）与「猪肉」（基础类，随意买哪种）。
+    // 字典里的「猪肉」是 013 的裸名基础条目，这里直接用它——菜谱是测试自己造的。
+    harness.db
+      .prepare(
+        `INSERT INTO recipes (id, name, kind, effort, status, source, cuisine, steps)
+         VALUES ('grocery_pork_plain', '青菜炒肉片', 'meat', 'quick', 'active', 'oral', '家常', '炒。')`,
+      )
+      .run();
+    harness.db
+      .prepare(
+        `INSERT INTO recipe_ingredients (recipe_id, ingredient_id, position, adult_grams, scaling, raw_cooked_anchor, source_quantity)
+         VALUES ('grocery_pork_plain', 'pork', 0, 80, 'linear', NULL, NULL)`,
+      )
+      .run();
+
+    await book('2025-06-02:lunch', {
+      diners: ALL,
+      dishes: [{ recipeId: 'hongshaopaigu' }, { recipeId: 'grocery_pork_plain' }],
+    });
+
+    const grocery = await listOrFail();
+    // 两行都在、各自带自己的克数——**不合并**：合并会让「猪排骨」的部位要求消失
+    const ribs = itemOf(grocery, 'pork_ribs');
+    const plain = itemOf(grocery, 'pork');
+    expect(ribs.name).toBe('猪排骨');
+    expect(plain.name).toBe('猪肉');
+    expect(gramsOf(grocery, 'pork_ribs')).toBeGreaterThan(0);
+    expect(gramsOf(grocery, 'pork')).toBeGreaterThan(0);
+    // 两行的克数分别等于份量引擎给的读数（没有把合计算到某一行上）
+    const sums = await portionSums(['2025-06-02:lunch']);
+    expect(gramsOf(grocery, 'pork_ribs')).toBe(sums.get('pork_ribs'));
+    expect(gramsOf(grocery, 'pork')).toBe(sums.get('pork'));
+    // 来源各说各的：细类那行只来自红烧排骨，基础类那行只来自青菜炒肉片
+    expect(ribs.sources.map((source) => source.recipeName)).toEqual(['红烧排骨']);
+    expect(plain.sources.map((source) => source.recipeName)).toEqual(['青菜炒肉片']);
+  });
+
   it('每一个食材都与份量引擎的读数逐个对得上（清单不自己重算份量）', async () => {
     harness = createTestHarness();
     await book('2025-06-02:lunch', {
