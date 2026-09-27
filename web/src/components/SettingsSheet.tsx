@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router';
 import { VIEW_MODE_OPTIONS, useViewMode } from '../viewMode';
 import styles from './SettingsSheet.module.css';
 
@@ -13,6 +14,7 @@ import styles from './SettingsSheet.module.css';
  */
 export function SettingsSheet() {
   const { mode, setMode } = useViewMode();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
 
   return (
@@ -71,6 +73,28 @@ export function SettingsSheet() {
             <div className={`sub ${styles.note}`}>
               三套视图的数据与操作完全一样（定餐/换菜/留量），只是摆法不同。切换只在这台手机生效。
             </div>
+
+            {/*
+              菜谱库（issue #30）：设置里的一个入口，进一个**独有页面** `/recipes`。
+              不占用底部导航、不影响今天/买菜/回顾/家人这四页——它就是「你翻设置时能发现它」的那个位置。
+              形态与上面「视图模式」三选项一致（同一个 `option` 样式）。
+            */}
+            <div className={`sub ${styles.section}`}>菜谱</div>
+            <button
+              type="button"
+              className={styles.option}
+              data-testid="settings-recipes-entry"
+              onClick={() => {
+                setOpen(false);
+                navigate('/recipes');
+              }}
+            >
+              <span className={styles.who}>
+                <span className={styles.name}>菜谱库</span>
+                <div className="sub">录入新菜、改做法、退役不做的菜</div>
+              </span>
+              <span className="badge">进入</span>
+            </button>
           </div>
         </div>
       ) : null}

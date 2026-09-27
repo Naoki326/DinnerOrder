@@ -41,6 +41,11 @@
   margin-top: 12px;
 }
 
+/* 分组小标题（「视图模式」「菜谱」这类），与选项块拉开一点距离 */
+.section {
+  margin-top: 16px;
+}
+
 .option {
   display: flex;
   align-items: center;

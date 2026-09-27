@@ -42,6 +42,9 @@ function recipe(overrides: Partial<Recipe> = {}): Recipe {
       { ingredientId: 'bean_sprouts', name: '豆芽', adultGrams: 160, scaling: 'linear', rawCookedAnchor: null },
       { ingredientId: 'garlic', name: '蒜', adultGrams: 8, scaling: 'fixed', rawCookedAnchor: null },
     ],
+    // 线上形状新增的两个派生字段（issue #30）：本文件的 fixture 只关心 llm 改写路径，给缺省值
+    neverServed: false,
+    hasPendingRelabel: false,
     ...overrides,
   };
 }

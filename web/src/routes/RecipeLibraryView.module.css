@@ -1,0 +1,158 @@
+/* 菜谱库页面（issue #30）：三档 tab + 档内搜索。
+   手机优先：tab 允许横向铺满，列表行允许换行，390 px 下不横向溢出。 */
+
+.backRow {
+  padding: 10px 12px 0;
+}
+
+.back {
+  display: inline-block;
+  font-size: 14px;
+  padding: 6px 12px;
+  border-radius: 99px;
+  background: var(--chip);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin: 10px 12px 0;
+}
+
+.tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 9px 4px;
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--sub);
+  font-size: 13px;
+  box-shadow: 0 1px 3px rgba(60, 50, 30, 0.06);
+}
+
+.tabOn {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  outline: 1.5px solid var(--accent);
+}
+
+.count {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: var(--chip);
+  color: var(--sub);
+}
+
+.search {
+  width: 100%;
+  font: inherit;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+
+.filterRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.filterLabel {
+  flex: none;
+  width: 32px;
+  padding-top: 6px;
+  font-size: 12px;
+  color: var(--sub);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chip {
+  padding: 5px 10px;
+  border-radius: 99px;
+  background: var(--chip);
+  color: var(--sub);
+  font-size: 13px;
+}
+
+.chipOn {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.empty {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--chip);
+  color: var(--sub);
+  font-size: 13px;
+}
+
+/* 列表行：整行可点（点开详情）。左侧菜名 + 小字，右侧标记 */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+.rowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.name {
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.badges {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+  max-width: 45%;
+}
+
+.rowAction {
+  flex: none;
+  font-size: 12px;
+  padding: 4px 9px;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}

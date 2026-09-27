@@ -101,6 +101,14 @@
     按 002/005 的口径「不录月份 = 四季有售」（给四季常售的东西填月份等于把时令信号抹成常量）。
     **不建 parent_id 层级**（部位与品种是两个维度，层级化后「忌子类不忌基础类」的语义分叉必须回答）——
     将来若真要按品种追踪，须另立 ADR。
+  - `014_recipe_edits` —— **菜谱修订台账**（M1-15「菜谱库：掌勺者可写」/ issue #30）：新建
+    `recipe_edits`（`recipe_id` / `edited_at` / `member_id`（`ON DELETE SET NULL`，同
+    `recipe_promotions`）/ `changed_fields`（逗号分隔的字段名，CHECK 非空））。
+    **不塞进 `recipe_promotions`**：那张表的列名（`cuisine_from`/`cuisine_to`、LLM 三件套）
+    全是转正专属语义，而 ADR-0006 的核心门槛判定的正是那张表，混表会让门槛越来越难读。
+    粒度是**字段级**（能回答「改了做法」），不做食材级 diff；`changed_fields` 存字符串不拆子表
+    ——它是「这一次改了哪几块」的描述，不是会被单独查询的实体。
+    与 `recipe_promotions` 一样不进 `meal_events`（ADR-0007）。不种任何生数据。
   - 迁移里只种**规则资产与字典**，生数据（餐槽、菜单、推荐）一律不种：推荐永远现算不落库（总纲 §4）。
 - 种子数据写在迁移里（而不是启动时补种），这样测试 harness、E2E 的文件库、生产库三条路径拿到的是同一份初值。
 - 执行器自身的行为由 `src/db/migrate.test.ts`（临时目录 fixture）覆盖；本目录内容由 `src/db/schema.test.ts` 与

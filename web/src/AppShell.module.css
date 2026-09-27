@@ -9,3 +9,8 @@
   /* 给底部固定导航条留出空间 */
   padding-bottom: 96px;
 }
+
+/* 从属页面（如设置里的「菜谱库」）藏了底部导航，就不必给它留那 96px */
+.noTabs {
+  padding-bottom: 24px;
+}

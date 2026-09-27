@@ -8,6 +8,7 @@ import { FamilyView } from './routes/FamilyView';
 import { GroceryView } from './routes/GroceryView';
 import { HomeRoute } from './routes/HomeRoute';
 import { NotFoundView } from './routes/Placeholders';
+import { RecipeLibraryView } from './routes/RecipeLibraryView';
 import { ReviewView } from './routes/ReviewView';
 import { SlotView } from './routes/SlotView';
 
@@ -58,6 +59,16 @@ const router = createBrowserRouter(
       element: (
         <AppShell>
           <ReviewView />
+        </AppShell>
+      ),
+    },
+    {
+      // 菜谱库（issue #30）：设置里钻进来的**从属页面**，不占底部导航（`hideTabBar`）、
+      // 不影响今天/买菜/回顾/家人这四页。顶部一个「← 设置」返回。
+      path: '/recipes',
+      element: (
+        <AppShell hideTabBar>
+          <RecipeLibraryView />
         </AppShell>
       ),
     },

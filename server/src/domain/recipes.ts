@@ -121,6 +121,23 @@ function hydrate(db: Db, rows: RecipeRow[]): Recipe[] {
     else monthsByRecipe.set(row.recipe_id, [row.month]);
   }
 
+  // 「还没上过桌」（ADR-0009）：派生的两个否定——没有转正记录 ∧ 没有任何一餐的菜单引用过它。
+  // 一次查两张表（而不是每道菜问两遍），与上面几条关联表同一纪律。
+  const promoted = new Set(
+    (
+      db
+        .prepare(`SELECT DISTINCT recipe_id FROM recipe_promotions WHERE recipe_id IN (${placeholders})`)
+        .all(...params) as { recipe_id: string }[]
+    ).map((row) => row.recipe_id),
+  );
+  const served = new Set(
+    (
+      db
+        .prepare(`SELECT DISTINCT recipe_id FROM meal_event_dishes WHERE recipe_id IN (${placeholders})`)
+        .all(...params) as { recipe_id: string }[]
+    ).map((row) => row.recipe_id),
+  );
+
   // 忌口关联现算（总纲 §3「食材清单推导 + 隐性忌口」）：清单里的食材 ∪「含」指针递归展开的结果。
   // 不落列的理由见迁移 002 的说明：食材或指针一改，落列就要同步维护，那正是会漂移的地方。
   const expanded = expandContains(db);
@@ -143,6 +160,9 @@ function hydrate(db: Db, rows: RecipeRow[]): Recipe[] {
     cuisine: row.cuisine,
     steps: row.steps,
     ingredients: ingredientsByRecipe.get(row.id) ?? [],
+    neverServed: !promoted.has(row.id) && !served.has(row.id),
+    // 判定只有一处（`hasPendingRelabel`）；这里不另写一遍 `some(adultGrams <= 0)`
+    hasPendingRelabel: (ingredientsByRecipe.get(row.id) ?? []).some((item) => item.adultGrams <= 0),
   }));
 }
 

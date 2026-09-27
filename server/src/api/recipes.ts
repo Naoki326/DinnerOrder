@@ -4,6 +4,21 @@ import { zodValidator } from './validation.js';
 import type { AppDeps } from '../app.js';
 import type { RecipeCuisine } from '../wire-types.js';
 import { findRecipe, listRecipes } from '../domain/recipes.js';
+import {
+  createRecipe,
+  patchRecipe,
+  recipeEditsOf,
+  RecipeAlreadyRetiredError,
+  RecipeDuplicateIngredientError,
+  RecipeIngredientGramsError,
+  RecipeIngredientNotFoundError,
+  RecipeNameEmptyError,
+  RecipeNoChangesError,
+  RecipeNotActiveError,
+  RecipeNotRetiredError,
+  restoreRecipe,
+  retireRecipe,
+} from '../domain/recipe-library.js';
 import { recipeDetail } from '../domain/nutrition.js';
 import {
   MAX_DIFFERENCES_LENGTH,
@@ -46,6 +61,41 @@ const promotionSchema = z.object({
   memberId: z.string().min(1).optional(),
 });
 
+/** 荤素汤位 / 难度 / 口味 / 月份的值域：与迁移 002/005/006 的 CHECK 同源，只此一处 */
+const KINDS = ['meat', 'veg', 'soup_meat', 'soup_veg'] as const;
+const EFFORTS = ['quick', 'medium', 'heavy'] as const;
+const TASTES = ['甜', '辣', '酸', '咸鲜', '清淡'] as const;
+
+/** 修订/录入里的一项食材：只给字典 id + 克数（规范名由字典决定，客户端送的名字不作数） */
+const ingredientInputSchema = z.object({
+  ingredientId: z.string().min(1),
+  /** 必须为正：0 克是「待重标」的存储形态（迁移 005），不是掌勺者能手工写的值 */
+  adultGrams: z.number().positive('克数必须大于 0'),
+  scaling: z.enum(['linear', 'fixed']).optional(),
+  rawCookedAnchor: z.string().nullable().optional(),
+});
+
+const maxNameLength = 60;
+
+/** `POST /recipes` 入参：name + kind 必填，其余缺省即可用（见 `RecipeCreate` 的注释） */
+const recipeCreateSchema = z.object({
+  name: z.string().trim().min(1, '菜名不能为空').max(maxNameLength, `菜名最多 ${maxNameLength} 字`),
+  kind: z.enum(KINDS),
+  effort: z.enum(EFFORTS).optional(),
+  cuisine: z.enum(CUISINES).nullable().optional(),
+  tastes: z.array(z.enum(TASTES)).optional(),
+  seasonMonths: z.array(z.number().int().min(1).max(12)).optional(),
+  steps: z.string().optional(),
+  ingredients: z.array(ingredientInputSchema).optional(),
+  memberId: z.string().min(1).optional(),
+});
+
+/** `PATCH /recipes/:id` 入参：部分更新（未传的块保持原样），**状态不在这里** */
+const recipePatchSchema = recipeCreateSchema.partial();
+
+/** 退役/还原的入参（谁点的，进台账）；两条动词路径共用 */
+const statusActionSchema = z.object({ memberId: z.string().min(1).optional() });
+
 export function registerRecipeRoutes(api: Hono, deps: AppDeps): void {
   api.get('/recipes', zodValidator('query', listQuerySchema), (c) => {
     const { status } = c.req.valid('query');
@@ -86,6 +136,69 @@ export function registerRecipeRoutes(api: Hono, deps: AppDeps): void {
     return c.json({ promotions: promotionsOf(deps.db, recipe.id) });
   });
 
+  /**
+   * 某道菜的**修订**台账（CONTEXT「修订」；ADR-0009）。与 `/promotions` 并列但不同表：
+   * 那张回答「怎么从外部变成家里的」，这张回答「最近被改成什么样」。
+   */
+  api.get('/recipes/:id/edits', (c) => {
+    const recipe = findRecipe(deps.db, c.req.param('id'));
+    if (!recipe) return c.json({ error: 'not_found', id: c.req.param('id') }, 404);
+    return c.json({ edits: recipeEditsOf(deps.db, recipe.id) });
+  });
+
+  /**
+   * 掌勺者**录入一道新菜**（ADR-0009）：直接 `status='active'`、`source='oral'`，录完就能定餐与推荐。
+   *
+   * 为什么不复用 `POST /recipes/:id/promotion` 那条路：转正是「把外部菜改写成家里版本」，
+   * 必带 LLM 改写与「上过桌」的门槛；手写的菜本来就已是家里版本，没有可改写的对象。
+   */
+  api.post('/recipes', zodValidator('json', recipeCreateSchema), (c) => {
+    try {
+      return c.json({ recipe: createRecipe(deps.db, c.req.valid('json')) }, 201);
+    } catch (error) {
+      return recipeWriteError(c, '', error);
+    }
+  });
+
+  /**
+   * 掌勺者**修订一道菜**（CONTEXT「修订」）：字段级部分更新 + 留痕。
+   *
+   * **PATCH 而不是 PUT**：修订是部分更新、且要留痕；与 `POST .../promotion` 把动作写进路径同一思路。
+   */
+  api.patch('/recipes/:id', zodValidator('json', recipePatchSchema), (c) => {
+    const recipeId = c.req.param('id');
+    try {
+      return c.json({ recipe: patchRecipe(deps.db, deps.clock, recipeId, c.req.valid('json')) });
+    } catch (error) {
+      return recipeWriteError(c, recipeId, error);
+    }
+  });
+
+  /**
+   * **退役**：`active → retired`，历史保留。
+   *
+   * 做成动词路径而不是 `PATCH { status }`：状态机不是用户的表单字段，可任意选的下拉
+   * 会让「draft→active」那条 ADR-0006 核心门槛变成用户能绕过的开关。
+   */
+  api.post('/recipes/:id/retire', zodValidator('json', statusActionSchema), (c) => {
+    const recipeId = c.req.param('id');
+    try {
+      return c.json({ recipe: retireRecipe(deps.db, deps.clock, recipeId, c.req.valid('json').memberId) });
+    } catch (error) {
+      return recipeWriteError(c, recipeId, error);
+    }
+  });
+
+  /** **还原**：`retired → active`（退役错了不是不可挽回的），同样走动词路径 */
+  api.post('/recipes/:id/restore', zodValidator('json', statusActionSchema), (c) => {
+    const recipeId = c.req.param('id');
+    try {
+      return c.json({ recipe: restoreRecipe(deps.db, deps.clock, recipeId, c.req.valid('json').memberId) });
+    } catch (error) {
+      return recipeWriteError(c, recipeId, error);
+    }
+  });
+
   api.post('/recipes/:id/promotion', zodValidator('json', promotionSchema), async (c) => {
     const recipeId = c.req.param('id');
     try {
@@ -124,5 +237,43 @@ function promotionError(c: Context, recipeId: string, error: unknown): Response 
   if (error instanceof PromotionRewriteFailedError) {
     return c.json({ error: 'rewrite_failed', id: recipeId, notes: error.notes }, 502);
   }
+  throw error;
+}
+
+/**
+ * 菜谱写接口（录入 / 修订 / 退役 / 还原）的领域错误 → 明确的 4xx。
+ *
+ * 每种失败都要告诉掌勺者下一步做什么：
+ *   * 404 `not_found`：这道菜不在库里（界面该刷新）
+ *   * 400 `unknown_member`：身份对不上家人列表
+ *   * 409 `not_active` / `not_retired` / `already_retired`：状态机不允许这个动作（界面该刷新）
+ *   * 400 `ingredient_grams` / `unknown_ingredient` / `duplicate_ingredient`：清单这一项不合法
+ *   * 400 `no_changes`：这一次提交什么都没改（不写台账，也不假装成功）
+ *   * 400 `invalid_request`：zod 已拦在前面（名字空、克数非正、值域不对）
+ *
+ * 与 `promotionError` 同一纪律：**共用领域错误类型，不共用响应映射**（对外报的字段名与
+ * 上下文跟着本路由的入参走）。
+ */
+function recipeWriteError(c: Context, recipeId: string, error: unknown): Response {
+  if (error instanceof RecipeNotFoundError) return c.json({ error: 'not_found', id: recipeId }, 404);
+  if (error instanceof MemberNotFoundError) return c.json({ error: 'unknown_member', memberId: error.id }, 400);
+  if (error instanceof RecipeNotActiveError) {
+    return c.json({ error: 'not_active', id: error.recipeId, status: error.status }, 409);
+  }
+  if (error instanceof RecipeNotRetiredError) {
+    return c.json({ error: 'not_retired', id: error.recipeId, status: error.status }, 409);
+  }
+  if (error instanceof RecipeAlreadyRetiredError) return c.json({ error: 'already_retired', id: error.recipeId }, 409);
+  if (error instanceof RecipeIngredientGramsError) {
+    return c.json({ error: 'ingredient_grams', ingredientId: error.ingredientId, grams: error.grams }, 400);
+  }
+  if (error instanceof RecipeIngredientNotFoundError) {
+    return c.json({ error: 'unknown_ingredient', ingredientId: error.ingredientId }, 400);
+  }
+  if (error instanceof RecipeDuplicateIngredientError) {
+    return c.json({ error: 'duplicate_ingredient', ingredientId: error.ingredientId }, 400);
+  }
+  if (error instanceof RecipeNoChangesError) return c.json({ error: 'no_changes', id: error.recipeId }, 400);
+  if (error instanceof RecipeNameEmptyError) return c.json({ error: 'invalid_request', issues: [{ path: 'name', message: '菜名不能为空' }] }, 400);
   throw error;
 }

@@ -1,0 +1,144 @@
+/* 菜谱编辑（issue #30）：字段行 + 食材克数行 + 修改历史。
+   手机优先：每行允许换行，克数输入框窄而大，390 px 下不横向溢出。 */
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.fieldTop {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.label {
+  flex: none;
+  width: 42px;
+  padding-top: 6px;
+  font-size: 12px;
+  color: var(--sub);
+}
+
+.input,
+.select,
+.textarea {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+
+.textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.select {
+  /* 手机上原生下拉是拇指友好的（与加菜器的菜系筛选同一处理） */
+  appearance: none;
+  background-image: none;
+}
+
+.chips {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.chip {
+  padding: 5px 10px;
+  border-radius: 99px;
+  background: var(--chip);
+  color: var(--sub);
+  font-size: 13px;
+}
+
+.chipOn {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 食材行：名字 + 克数 + 单位 + 去掉 */
+.ingredientRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.ingredientName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 14px;
+}
+
+.grams {
+  flex: none;
+  width: 86px;
+  font: inherit;
+  text-align: right;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+
+/* 0 克 / 空 = 「待重标」：标红，让它在列表里一眼看得见 */
+.gramsBad {
+  border-color: var(--hun);
+  background: #fff5f5;
+}
+
+.unit {
+  flex: none;
+  color: var(--sub);
+  font-size: 12px;
+}
+
+.remove {
+  flex: none;
+  font-size: 12px;
+  color: var(--sub);
+  padding: 4px 6px;
+}
+
+.add {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.addOption {
+  display: inline-block;
+  margin: 6px 6px 0 0;
+  padding: 6px 12px;
+  border-radius: 99px;
+  background: var(--chip);
+  font-size: 13px;
+}
+
+.ok {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--ok);
+}
+
+.error {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--hun);
+}

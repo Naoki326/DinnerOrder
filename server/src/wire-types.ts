@@ -206,6 +206,20 @@ export interface Recipe {
   /** 做法步骤自由文本，掌勺者参考用，**不进推荐管线** */
   steps: string;
   ingredients: RecipeIngredient[];
+  /**
+   * **还没上过桌**（ADR-0009、CONTEXT）：家里新录入、但还没有任何一餐吃过它。
+   * 判定源是**派生的**（没有转正记录 ∧ 没有任何一餐的菜单引用过它），不是一列、也不是 `source`。
+   * 上桌吃过之后自动变 false。
+   *
+   * **必须与「没做过」区分**：「没做过」是外部菜的（判定源 `status === 'draft'`），
+   * 两者判定源不同、措辞刻意不同，**不得在同一渲染点混用**。
+   */
+  neverServed: boolean;
+  /**
+   * 这道菜里有「待重标」的食材项（`adult_grams = 0`）：列表页不用逐道点进去就知道它有问题。
+   * 判定只有一处（`domain/recipes.ts` 的 `hasPendingRelabel`），这里只是把它随线上形状下发。
+   */
+  hasPendingRelabel: boolean;
 }
 
 /** 餐次：午 / 晚（早餐不进模型） */
@@ -1217,4 +1231,116 @@ export interface PromotionRecord {
 /** `GET /api/recipes/:id/promotions` 的响应 */
 export interface PromotionListResponse {
   promotions: PromotionRecord[];
+}
+
+// ---------------------------------------------------------------- 菜谱库：掌勺者可写（issue #30）
+
+/**
+ * `POST /api/recipes` 的入参：掌勺者录入一道新菜。
+ *
+ * 录完**直接可用**（`status='active'`、`source='oral'`）——ADR-0009 部分修正 ADR-0006：
+ * 掌勺者手写的菜不需要先做过（他既是录入者也是那个要确认它的人）。**外部数据仍须转正**。
+ *
+ * `name` 与 `kind` 是必填的（一道菜至少得有名字与荤素汤位）；其余缺省即可用：
+ * `effort` 缺省 `medium`、`cuisine` 缺省 null（还没打 tag）、`steps` 缺省空串、
+ * `tastes`/`seasonMonths`/`ingredients` 缺省空数组。空食材清单合法——菜谱可以先录个名字，
+ * 之后再补清单（这不是「待重标」，是「还没录」；两者在界面上措辞不同）。
+ */
+export interface RecipeCreate {
+  name: string;
+  kind: RecipeKind;
+  effort?: RecipeEffort;
+  cuisine?: RecipeCuisine | null;
+  tastes?: TasteTag[];
+  seasonMonths?: number[];
+  steps?: string;
+  ingredients?: RecipeIngredientInput[];
+  /** 谁录的（界面送当前身份，进台账）；不传 = 不记名 */
+  memberId?: string;
+}
+
+/**
+ * 修订入参里的一个食材项（`POST /api/recipes` 与 `PATCH /api/recipes/:id` 共用）。
+ *
+ * 与 `RecipeIngredient` 的差别：读侧带 `name`（界面直接展示，前端不必再查字典），
+ * 写侧只给 `ingredientId`——规范名由字典决定，客户端送来的名字不作数。
+ * `scaling` / `rawCookedAnchor` 缺省继承原项（新建时 `linear` / null）。
+ */
+export interface RecipeIngredientInput {
+  ingredientId: string;
+  /** 成人份生重克数；必须 > 0（0 克是「待重标」的存储形态，掌勺者手工编辑时不许写 0） */
+  adultGrams: number;
+  scaling?: RecipeIngredient['scaling'];
+  rawCookedAnchor?: string | null;
+}
+
+/**
+ * `PATCH /api/recipes/:id` 的入参：掌勺者**修订**一道菜（ADR-0009、CONTEXT「修订」）。
+ *
+ * 部分更新：没传的块保持原样（与 `ProfilePatch` 同一纪律）。传了的块**整体替换**
+ * （`tastes`/`seasonMonths`/`ingredients` 是清单，手机上的编辑是一次性提交完整清单）。
+ *
+ * **不是 `PUT`**：修订是部分更新、且要留痕；与 `POST .../promotion` 把动作写进路径同一思路。
+ * 状态**不在**这份入参里——状态机不是用户的表单字段，做成可任意选的下拉会让
+ * 「draft→active」这条 ADR-0006 核心门槛变成用户能绕过的开关。退役与还原是各自的动词路径。
+ */
+export interface RecipePatch {
+  name?: string;
+  kind?: RecipeKind;
+  effort?: RecipeEffort;
+  cuisine?: RecipeCuisine | null;
+  tastes?: TasteTag[];
+  seasonMonths?: number[];
+  steps?: string;
+  ingredients?: RecipeIngredientInput[];
+  /** 谁改的（界面送当前身份，进台账）；不传 = 不记名 */
+  memberId?: string;
+}
+
+/**
+ * `POST /api/recipes/:id/retire` 与 `POST /api/recipes/:id/restore` 的入参。
+ *
+ * 退役/还原是**动词路径**而不是 `PATCH { status }`：状态机不是用户的表单字段（见 `RecipePatch`）。
+ */
+export interface RecipeStatusActionInput {
+  /** 谁点的（界面送当前身份，进台账）；不传 = 不记名 */
+  memberId?: string;
+}
+
+/** `POST /api/recipes` 的响应（201）：落库后的完整菜谱，调用方不必再查一次 */
+export interface RecipeCreateResponse {
+  recipe: Recipe;
+}
+
+/** `PATCH /api/recipes/:id` 的响应：修订后的完整菜谱 */
+export interface RecipePatchResponse {
+  recipe: Recipe;
+}
+
+/** `POST /api/recipes/:id/retire`、`POST /api/recipes/:id/restore` 的响应：状态翻转后的菜谱 */
+export interface RecipeStatusActionResponse {
+  recipe: Recipe;
+}
+
+/**
+ * 一条修订留痕（CONTEXT「修订」；ADR-0009）。
+ *
+ * 与 `PromotionRecord` 并列但**不同表**（`recipe_edits` vs `recipe_promotions`）：
+ * 那张表回答「这道菜是怎么从外部变成家里的」，这张回答「这道菜最近被改成什么样」。
+ * 粒度是字段级（`changedFields`），不做食材级 diff。
+ */
+export interface RecipeEditRecord {
+  recipeId: string;
+  /** 修订的瞬间（ISO） */
+  editedAt: string;
+  /** 谁改的（家人被删后为 null，历史行留下） */
+  memberId: string | null;
+  memberName: string | null;
+  /** 这一次改了哪几个字段（字段名，按提交顺序） */
+  changedFields: string[];
+}
+
+/** `GET /api/recipes/:id/edits` 的响应（与 `PromotionListResponse` 同形、并列） */
+export interface RecipeEditListResponse {
+  edits: RecipeEditRecord[];
 }

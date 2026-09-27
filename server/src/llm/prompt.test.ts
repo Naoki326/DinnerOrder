@@ -56,6 +56,9 @@ function recipe(id: string, overrides: Partial<Recipe> = {}): Recipe {
       { ingredientId: 'pork_ribs', name: '猪排骨', adultGrams: 150, scaling: 'linear', rawCookedAnchor: null },
       { ingredientId: 'salt', name: '盐', adultGrams: 2, scaling: 'fixed', rawCookedAnchor: null },
     ],
+    // 线上形状新增的两个派生字段（issue #30）：本文件只关心 prompt 组装，给缺省值
+    neverServed: false,
+    hasPendingRelabel: false,
     ...overrides,
   };
 }

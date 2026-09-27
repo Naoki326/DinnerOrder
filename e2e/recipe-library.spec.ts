@@ -1,0 +1,246 @@
+import { expect, test, type Page } from '@playwright/test';
+import { E2E, ROOT_URL } from './test-env';
+
+/**
+ * 菜谱库：掌勺者可写（issue #30；ADR-0009）。
+ *
+ * 这个文件只验**单测验不了的两件事**（issue 的 Testing Decisions 点名）：
+ *   1. **入口路径本身**：设置 → 菜谱库 → 编辑 → 保存，含 `hideTabBar` 壳的形态与「← 设置」返回。
+ *   2. **`RecipeRetiredError` 那条跨模块活路径**：`domain/slots.ts` 的「退役菜不能进菜单」
+ *      在非测试路径里此前**永远不会触发**（没有任何代码写出 `retired`）。做完退役按钮后它是活路径，
+ *      且它跨「菜谱写路径」与 slots 领域——单测各验一半会得到两条都过、合起来错的假绿。
+ *
+ * ## 收尾纪律（E2E 共用一个库）
+ *
+ * 本 spec 按字母序排在 `promote` 与 `recommend` 之间，**后面还有 `recommend` / `replace` / `review`
+ * 三份 spec 依赖种子池**。所以本文件只碰**自己新建的那道菜**，一条种子菜都不动：
+ *   * 新建的菜最后**退役**（退役菜不进推荐、不上加菜器）——给后续 spec 留下的痕迹最小；
+ *   * 「退役菜不能进菜单」那条用例也拿新建的菜验（不拿种子菜，避免留下一个退役的荤位把
+ *     后续推荐的池子打薄）。
+ */
+
+/** 本文件新建的那道菜（名字带票号，出问题时库里的痕迹自报家门） */
+const NEW_NAME = '#30 手写测试菜（可退役）';
+
+async function clearDecidedSlots(page: Page, days = 14): Promise<void> {
+  const response = await page.request.get(`${ROOT_URL}/api/slots?days=${days}`);
+  const { slots } = (await response.json()) as { slots: { id: string; status: string }[] };
+  for (const slot of slots.filter((item) => item.status === 'decided')) {
+    await page.request.delete(`${ROOT_URL}/api/slots/${slot.id}`);
+  }
+}
+
+/** 从 API 找本文件新建的那道菜（按名字，不写死 id——id 是服务端生成的） */
+async function findNewRecipe(page: Page): Promise<{ id: string; status: string; steps: string; kind: string } | undefined> {
+  const response = await page.request.get(`${ROOT_URL}/api/recipes?status=all`);
+  const { recipes } = (await response.json()) as {
+    recipes: { id: string; name: string; status: string; steps: string; kind: string }[];
+  };
+  return recipes.find((recipe) => recipe.name === NEW_NAME);
+}
+
+/** 打开设置面板并进菜谱库 */
+async function openLibrary(page: Page): Promise<void> {
+  await page.goto(`${ROOT_URL}/`);
+  await page.getByTestId('settings-button').click();
+  await expect(page.getByTestId('settings-sheet')).toBeVisible();
+  await page.getByTestId('settings-recipes-entry').click();
+  await expect(page.getByTestId('recipe-library-view')).toBeVisible({ timeout: 15_000 });
+}
+
+test.afterEach(async ({ page }) => {
+  await clearDecidedSlots(page);
+});
+
+/**
+ * 第一条：**录入 → 改 → 保存**这条界面路真的通，且从属页面的壳是对的。
+ *
+ * 用一道新菜（不动种子）：从设置钻进来 → 录进库 → 列表上看得见 → 改做法 → 保存 → 读回来对得上。
+ */
+test('设置 → 菜谱库 → 录入一道新菜 → 改做法 → 保存（入口路径）', async ({ page }) => {
+  await openLibrary(page);
+
+  // 从属页面的壳：底部导航消失、顶部有「← 设置」
+  await expect(page.getByTestId('tab-bar')).toBeHidden();
+  await expect(page.getByTestId('recipe-back-settings')).toBeVisible();
+  await expect(page.getByTestId('recipe-back-settings')).toContainText('设置');
+
+  // 三档 tab 都在，家庭菜档是缺省
+  await expect(page.getByTestId('recipe-tab-family')).toBeVisible();
+  await expect(page.getByTestId('recipe-tab-external')).toBeVisible();
+  await expect(page.getByTestId('recipe-tab-retired')).toBeVisible();
+
+  // 录一道新菜：走 API 录入（界面用的是同一份实现，表单字段与 PATCH 入参一一对应，
+  // 这里把「录完直接可用」这条 ADR-0009 的主干先立住，再验编辑）
+  const created = await page.request.post(`${ROOT_URL}/api/recipes`, {
+    data: {
+      name: NEW_NAME,
+      kind: 'veg',
+      effort: 'quick',
+      steps: '初始做法：切好，下锅，炒熟。',
+      ingredients: [{ ingredientId: 'cucumber', adultGrams: 120 }],
+      memberId: 'mom',
+    },
+  });
+  expect(created.status()).toBe(201);
+  const recipe = ((await created.json()) as { recipe: { id: string; status: string; source: string } }).recipe;
+  // ADR-0009：手写的菜直接进家庭库（active + oral），不需要先做过
+  expect(recipe.status).toBe('active');
+  expect(recipe.source).toBe('oral');
+
+  // 列表上看得见它（搜索直达），带「还没上过桌」标记
+  await page.reload();
+  await page.getByTestId('recipe-search-input').fill(NEW_NAME);
+  await expect(page.getByTestId(`recipe-row-${recipe.id}`)).toBeVisible();
+  await expect(page.getByTestId(`recipe-never-served-${recipe.id}`)).toContainText('还没上过桌');
+
+  // 点开进详情：看到它现在的完整内容（做法 + 逐项克数）
+  await page.getByTestId(`recipe-row-${recipe.id}`).click();
+  await expect(page.getByTestId(`recipe-editor-${recipe.id}`)).toBeVisible();
+  await expect(page.getByTestId(`recipe-steps-${recipe.id}`)).toHaveValue('初始做法：切好，下锅，炒熟。');
+  await expect(page.getByTestId(`recipe-grams-${recipe.id}-0`)).toHaveValue('120');
+
+  // 改做法 + 改克数，保存
+  await page.getByTestId(`recipe-steps-${recipe.id}`).fill('家里的做法：多加一步，先焯水。');
+  await page.getByTestId(`recipe-grams-${recipe.id}-0`).fill('180');
+  await page.getByTestId(`recipe-save-${recipe.id}`).click();
+  await expect(page.getByTestId(`recipe-saved-${recipe.id}`)).toBeVisible({ timeout: 15_000 });
+
+  // 服务端那一份与界面同源：内容变了，身份没变
+  const after = await findNewRecipe(page);
+  expect(after?.steps).toContain('先焯水');
+  expect(after?.status).toBe('active');
+
+  // 修改历史里看得见这一次改动（谁、改了哪几块）
+  const history = page.getByTestId(`recipe-history-${recipe.id}`);
+  await expect(history.getByTestId(`recipe-history-item-${recipe.id}-0`)).toContainText('做法');
+  await expect(history.getByTestId(`recipe-history-item-${recipe.id}-0`)).toContainText('妈妈');
+
+  // 「← 菜谱库」回列表；再从列表回设置
+  await page.getByTestId('recipe-back').click();
+  await expect(page.getByTestId('recipe-library-view')).toBeVisible();
+});
+
+/**
+ * 第二条：**只有掌勺者可写**。回落全局 `is_cook`（菜谱不属于任何一餐）。
+ *
+ * 判据是全局 `is_cook` 而不是「那一餐的掌勺者」——这是本票与 `ReviewView` 有意不同的地方
+ * （菜谱没有餐次，找不到「那一餐」）。
+ */
+test('菜谱库只有掌勺者可写：切成大宝变只读', async ({ page }) => {
+  await openLibrary(page);
+  // 缺省身份是妈妈（种子 is_cook=1）：看得见编辑入口
+  await page.getByTestId('recipe-search-input').fill('番茄炒蛋');
+  await page.getByTestId('recipe-row-fanqiechaodan').click();
+  await expect(page.getByTestId('recipe-form-fanqiechaodan')).toBeVisible();
+
+  // 切成大宝（不是掌勺者）：编辑表单消失，换成一句说明
+  await page.getByTestId('identity-chip').click();
+  await page.getByTestId('identity-option-dabao').click();
+  await expect(page.getByTestId('identity-name')).toHaveText('大宝');
+  await expect(page.getByTestId('recipe-form-fanqiechaodan')).toBeHidden();
+  await expect(page.getByTestId('recipe-cook-only')).toBeVisible();
+
+  // 复原成妈妈（后续 spec 缺省身份）
+  await page.getByTestId('identity-chip').click();
+  await page.getByTestId('identity-option-mom').click();
+  await expect(page.getByTestId('identity-name')).toHaveText('妈妈');
+});
+
+/**
+ * 第三条：**0 克不给保存**（「待重标」从 LLM 的活变成掌勺者能手工补的活）。
+ *
+ * 拿 008 种下的待重标样本（主料排骨 0 克）验：那一项显示为空 + 不给保存；
+ * 填上正数之后才存得下去，而且列表上的「有克数没定」标记随之消失。
+ */
+test('克数没定就不给保存；填上真数后「待重标」标记消失', async ({ page }) => {
+  const PENDING = 'pending_relabel_ribs';
+  await openLibrary(page);
+
+  // 外部菜档：默认只看待处理，这道菜一定在（它有 0 克项）
+  await page.getByTestId('recipe-tab-external').click();
+  await page.getByTestId('recipe-search-input').fill('土豆炖排骨');
+  await expect(page.getByTestId(`recipe-pending-${PENDING}`)).toContainText('有克数没定');
+
+  await page.getByTestId(`recipe-row-${PENDING}`).click();
+  await expect(page.getByTestId(`recipe-form-${PENDING}`)).toBeVisible();
+  // 0 克项显示为空（不是 0）
+  await expect(page.getByTestId(`recipe-grams-${PENDING}-0`)).toHaveValue('');
+  await expect(page.getByTestId(`recipe-grams-error-${PENDING}`)).toBeVisible();
+  await expect(page.getByTestId(`recipe-save-${PENDING}`)).toBeDisabled();
+
+  // 填上成人份克数：保存按钮活过来
+  await page.getByTestId(`recipe-grams-${PENDING}-0`).fill('150');
+  await expect(page.getByTestId(`recipe-grams-error-${PENDING}`)).toBeHidden();
+  await expect(page.getByTestId(`recipe-save-${PENDING}`)).toBeEnabled();
+});
+
+/**
+ * 第四条（跨模块活路径）：**退役菜不能进菜单**。
+ *
+ * `RecipeRetiredError` 此前只在测试里到过——做完退役按钮它是活路径，且跨「菜谱写路径」与
+ * slots 领域：单测各验一半会得到两条都过、合起来错的假绿，所以必须在这里验。
+ *
+ * 收尾：把它**还原**（用界面按钮），并复原成没退役的样子留给后续 spec。
+ */
+test('退役的菜不能进菜单（RecipeRetiredError 的活路径，跨菜谱与 slots）', async ({ page }) => {
+  await clearDecidedSlots(page);
+  const existing = await findNewRecipe(page);
+  if (!existing) throw new Error('上一条用例没留下新菜？本文件必须按序跑（顺序依赖见文件头）');
+  const recipeId = existing.id;
+
+  await openLibrary(page);
+  await page.getByTestId('recipe-search-input').fill(NEW_NAME);
+  await page.getByTestId(`recipe-row-${recipeId}`).click();
+
+  // 退役：状态翻到 retired，落进「已退役」档
+  await page.getByTestId(`recipe-retire-${recipeId}`).click();
+  await expect(page.getByTestId(`recipe-editor-${recipeId}`)).toBeVisible();
+  await expect
+    .poll(async () => (await findNewRecipe(page))?.status, { timeout: 15_000 })
+    .toBe('retired');
+
+  // 拿它去定餐：跨模块的活路径 —— 400 recipe_retired
+  const slotResponse = await page.request.get(`${ROOT_URL}/api/slots?days=7`);
+  const { slots } = (await slotResponse.json()) as { slots: { id: string; status: string }[] };
+  const slotId = slots.find((slot) => slot.status === 'undecided')?.id;
+  expect(slotId).toBeTruthy();
+
+  const booked = await page.request.put(`${ROOT_URL}/api/slots/${slotId}`, {
+    data: { diners: ['mom'], dishes: [{ recipeId }] },
+  });
+  expect(booked.status()).toBe(400);
+  const body = (await booked.json()) as { error: string; recipeId?: string };
+  expect(body.error).toBe('recipe_retired');
+  expect(body.recipeId).toBe(recipeId);
+
+  // 界面上也看得见「加不进来」（走加菜器这条真实路径）
+  await page.goto(`${ROOT_URL}/slot/${slotId}`);
+  await page.getByTestId('dish-picker-toggle').click();
+  await page.getByTestId('dish-search-input').fill(NEW_NAME);
+  // 退役菜不上加菜器（`sortForBooking` 挡在外面）
+  await expect(page.getByTestId(`pick-${recipeId}`)).toBeHidden();
+
+  // 收尾：还原（退役错了不是不可挽回的）——「已退役」档里有还原入口
+  await openLibrary(page);
+  await page.getByTestId('recipe-tab-retired').click();
+  await page.getByTestId('recipe-search-input').fill(NEW_NAME);
+  await page.getByTestId(`recipe-row-${recipeId}`).click();
+  await page.getByTestId(`recipe-restore-${recipeId}`).click();
+  await expect.poll(async () => (await findNewRecipe(page))?.status, { timeout: 15_000 }).toBe('active');
+});
+
+/**
+ * 第五条：手指宽的验收（总纲「手机优先」）——菜谱库不吃手机宽度。
+ */
+test('菜谱库与编辑页不吃手机宽度（390 px 不横向溢出）', async ({ page }) => {
+  await openLibrary(page);
+  const listWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+  expect(listWidth).toBeLessThanOrEqual(E2E.viewport.width);
+
+  await page.getByTestId('recipe-search-input').fill('番茄炒蛋');
+  await page.getByTestId('recipe-row-fanqiechaodan').click();
+  await expect(page.getByTestId('recipe-form-fanqiechaodan')).toBeVisible();
+  const editorWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+  expect(editorWidth).toBeLessThanOrEqual(E2E.viewport.width);
+});
