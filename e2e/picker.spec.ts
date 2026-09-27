@@ -285,6 +285,7 @@ test('退役菜照旧不进加菜器；搜索与筛选是本次打开的临时�
   await page.getByTestId('dish-picker-toggle').click();
   await expect(page.getByTestId('dish-search-input')).toHaveValue('');
   await expect(page.getByTestId('filter-status-all')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('filter-kind-all')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByTestId('filter-effort-all')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByTestId('filter-cuisine')).toHaveValue('all');
   await expect(page.getByTestId('dish-filter-count')).toContainText(`共 ${(await filterCounts(page)).total} 道`);
@@ -304,6 +305,7 @@ test('加菜器默认收起：一行行头，点开才铺开；收起不丢已�
   await expect(toggle).toContainText('展开');
   await expect(page.getByTestId('dish-search-input')).toBeHidden();
   await expect(page.getByTestId('filter-status-all')).toBeHidden();
+  await expect(page.getByTestId('filter-kind-all')).toBeHidden();
   await expect(pickButtons(page)).toHaveCount(0);
 
   // 点一下展开：搜索 + 筛选 + 按钮都回来了
@@ -361,4 +363,53 @@ test('不是掌勺者也照样能搜能筛（不按身份门控），且不吃�
   });
   expect(overflow).toEqual([]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(E2E.viewport.width);
+});
+
+test('按荤素汤位筛选：三档各只出该位的菜，「汤」同时盖住荤汤与素汤，且清空能复位', async ({ page }) => {
+  await clearDecidedSlots(page);
+  await openEditor(page);
+
+  // 「全部」是缺省：三档都没按下（与其余筛选同一口径）
+  await expect(page.getByTestId('filter-kind-all')).toHaveAttribute('aria-pressed', 'true');
+
+  const groups = () =>
+    page.locator('[data-testid^="dish-group-"]').evaluateAll((nodes) =>
+      nodes.map((node) => (node.getAttribute('data-testid') ?? '').replace('dish-group-', '')),
+    );
+
+  // 荤：只剩荤菜分组
+  await page.getByTestId('filter-kind-meat').click();
+  await expect(page.getByTestId('filter-kind-meat')).toHaveAttribute('aria-pressed', 'true');
+  expect(await groups()).toEqual(['meat']);
+  await expectCountMatches(page);
+
+  // 素：只剩素菜分组
+  await page.getByTestId('filter-kind-veg').click();
+  expect(await groups()).toEqual(['veg']);
+  await expectCountMatches(page);
+
+  // 汤：**荤汤与素汤都要在**（家里想的是「来个汤」，不先分荤素），且没有非汤分组。
+  // 不拿「素」比多少：素菜与汤是两组不同的菜，汤少是正常的（那条断言会拿库里的
+  // 菜量去碰运气）。真正的不变量是「汤 = 荤汤 + 素汤」，在下面分组上逐个累加核对。
+  await page.getByTestId('filter-kind-soup').click();
+  const soupGroups = await groups();
+  expect(soupGroups.length).toBeGreaterThan(0);
+  expect(soupGroups.every((kind) => kind.startsWith('soup_'))).toBe(true);
+  const soupCount = (await filterCounts(page)).shown;
+  const perGroup = await page
+    .locator('[data-testid^="dish-group-"]')
+    .evaluateAll((nodes) =>
+      nodes.map((node) => node.querySelectorAll('[data-testid^="pick-"]').length),
+    );
+  expect(perGroup.reduce((sum, count) => sum + count, 0)).toBe(soupCount);
+
+  // 叠加：「汤」+「没做过」仍然只有汤分组——两个筛选是「与」，不是「或」
+  await page.getByTestId('filter-status-untried').click();
+  expect(await groups()).toEqual(expect.arrayContaining(soupGroups));
+  await expectCountMatches(page);
+
+  // 清空筛选把荤素汤位也复位（它是 `Filters` 里的一项，漏了就会留一个看得见的残留筛选）
+  await page.getByTestId('dish-filter-clear').click();
+  await expect(page.getByTestId('filter-kind-all')).toHaveAttribute('aria-pressed', 'true');
+  expect((await groups()).length).toBeGreaterThan(1);
 });

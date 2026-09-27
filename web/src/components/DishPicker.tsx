@@ -60,6 +60,9 @@ export function DishPicker({
       if (filters.triedness === 'tried' && recipe.status !== 'active') return false;
       if (filters.triedness === 'untried' && recipe.status !== 'draft') return false;
       if (filters.effort !== 'all' && recipe.effort !== filters.effort) return false;
+      // 董素汤位：用户说的是「董/素/汤」三档，而库里是四个 kind（汤分董汤/素汤）——
+      // 「汤」那一档同时命中两个汤位。一个 kind 只归一档（见 `kindMatches`）。
+      if (!kindMatches(recipe.kind, filters.kind)) return false;
       // 菜系：「未标」那一档专门捞 `cuisine === null` 的（导入期 LLM 初打没跑成），其余档按值相等比
       if (filters.cuisine === 'none' && recipe.cuisine !== null) return false;
       if (filters.cuisine !== 'all' && filters.cuisine !== 'none' && recipe.cuisine !== filters.cuisine) return false;
@@ -67,10 +70,10 @@ export function DishPicker({
       return true;
     });
     return { visible: list, ingredientHits: hits };
-  }, [pool, keyword, filters.triedness, filters.cuisine, filters.effort]);
+  }, [pool, keyword, filters.triedness, filters.cuisine, filters.effort, filters.kind]);
 
   const shownIds = useMemo(() => new Set(visible.map((recipe) => recipe.id)), [visible]);
-  /** 有没有在筛：逐项与缺省值比，所以**加第四个筛选只需改类型与 `DEFAULT_FILTERS`**（不必记得来这里补一笔） */
+  /** 有没有在筛：逐项与缺省值比，所以**加一个新筛选只需改类型与 `DEFAULT_FILTERS`**（不必记得来这里补一笔） */
   const filtering = (Object.keys(filters) as (keyof Filters)[]).some((key) => filters[key] !== DEFAULT_FILTERS[key]);
   /**
    * 被筛掉的**已选**菜有几道。只数加菜器池子里（非退役）的：退役菜本来就不上加菜器（这条规则先于
@@ -122,6 +125,14 @@ export function DishPicker({
             options={TRIEDNESS_OPTIONS}
             value={filters.triedness}
             onPick={(triedness) => setFilters((current) => ({ ...current, triedness }))}
+          />
+
+          <FilterRow
+            label="荤素"
+            testIdPrefix="filter-kind"
+            options={KIND_OPTIONS}
+            value={filters.kind}
+            onPick={(kind) => setFilters((current) => ({ ...current, kind }))}
           />
 
           <FilterRow
@@ -259,6 +270,12 @@ type TriednessFilter = 'all' | 'tried' | 'untried';
 /** `'none'` = 菜系未标（`cuisine === null`，导入期 LLM 初打没跑成）；`'all'` = 不筛 */
 type CuisineFilter = 'all' | 'none' | RecipeCuisine;
 type EffortFilter = 'all' | RecipeEffort;
+/**
+ * 董素汤位筛选：**用户口径是三档**（董/素/汤），不是库里的四个 `kind`。
+ * 「汤」同时包括董汤与素汤——家里想「今晚来个汤」时不会先分辨汤里有没有肉，
+ * 而分组标题（董汤/素汤）说的是同一批菜，两边不矛盾。
+ */
+type KindFilter = 'all' | 'meat' | 'veg' | 'soup';
 
 interface Filters {
   query: string;
@@ -267,11 +284,21 @@ interface Filters {
    * 就在旁边参与判定，两个 status 贴在一起读，正是台账警告过的「同页双口径」那种坑。
    */
   triedness: TriednessFilter;
+  /** 董素汤位（三档，见 `KindFilter`） */
+  kind: KindFilter;
   cuisine: CuisineFilter;
   effort: EffortFilter;
 }
 
-const DEFAULT_FILTERS: Filters = { query: '', triedness: 'all', cuisine: 'all', effort: 'all' };
+const DEFAULT_FILTERS: Filters = { query: '', triedness: 'all', kind: 'all', cuisine: 'all', effort: 'all' };
+
+/** 董素汤位的三档选项（顺序与预览分组一致：董 → 素 → 汤） */
+const KIND_OPTIONS: { value: KindFilter; label: string }[] = [
+  { value: 'all', label: '全部' },
+  { value: 'meat', label: '荤' },
+  { value: 'veg', label: '素' },
+  { value: 'soup', label: '汤' },
+];
 
 const TRIEDNESS_OPTIONS: { value: TriednessFilter; label: string }[] = [
   { value: 'all', label: '全部' },
@@ -320,6 +347,16 @@ function matchKeyword(recipe: Recipe, keyword: string): { hit: boolean; ingredie
   }
   const ingredient = recipe.ingredients.find((item) => item.name.includes(keyword));
   return ingredient ? { hit: true, ingredient: ingredient.name } : { hit: false };
+}
+
+/**
+ * 荤素汤位三档 → 库里四个 `kind` 的映射（**只此一处**：筛选与分组不会各维护一份判定）。
+ * 「汤」一档吃掉荤汤 + 素汤：家里想的是「来个汤」，不是「荤汤还是素汤」。
+ */
+function kindMatches(kind: Recipe['kind'], filter: KindFilter): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'soup') return kind === 'soup_meat' || kind === 'soup_veg';
+  return kind === filter;
 }
 
 /**
