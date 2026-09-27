@@ -232,6 +232,17 @@
   font-weight: 600;
 }
 
+/* 「删」：紧贴着「换」的另一枚小按钮。刻意**不给强调色**——删是减法，
+   与「换」同一个视觉重量会让人以为两者是一组平级的正向动作。 */
+.recommendRemove {
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 99px;
+  background: var(--chip);
+  color: var(--sub);
+  font-weight: 600;
+}
+
 /* 冷藏期的菜：说清「为什么这道暂时不推」（与换菜候选的忌口排除同一纪律） */
 .coolingNote {
   margin-top: 8px;

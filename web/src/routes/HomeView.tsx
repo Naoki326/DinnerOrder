@@ -11,7 +11,9 @@ import {
 } from '../api/recommendations';
 import { feedbackOf, useFeedback, type CoolingDish, type DishFeedback } from '../api/feedback';
 import { CandidateList, type SwapCandidate } from '../components/CandidateList';
+import { DishPicker } from '../components/DishPicker';
 import { FeedbackBar } from '../components/FeedbackBar';
+import { useRecipes, type Recipe } from '../api/recipes';
 import { NutritionSheet } from '../components/NutritionSheet';
 import { RecipeSheet } from '../components/RecipeSheet';
 import styles from './HomeView.module.css';
@@ -360,6 +362,36 @@ function HeroCard({
                 : current,
             )
           }
+          onRemove={(recipeId) =>
+            setRecommendation((current) =>
+              current
+                ? { ...current, dishes: current.dishes.filter((dish) => dish.recipeId !== recipeId) }
+                : current,
+            )
+          }
+          onAdd={(recipe) =>
+            setRecommendation((current) =>
+              current
+                ? {
+                    ...current,
+                    // 手动加进来的菜**没有理由**：它不来自推荐管线，编一句理由就是假证据
+                    // （与简化推荐、换菜候选同一纪律：没有理由时界面写实情，不编）。
+                    // 荤素位取自菜谱本身——「删一道荤菜再自己补一道荤菜」不该改动结构读数。
+                    dishes: [
+                      ...current.dishes,
+                      {
+                        recipeId: recipe.id,
+                        name: recipe.name,
+                        kind: recipe.kind,
+                        // 与加菜器、`CandidateList` 同一口径：草稿 = 没做过（不按 source 判定）
+                        origin: recipe.status === 'draft' ? 'external' : 'family',
+                        reason: null,
+                      },
+                    ],
+                  }
+                : current,
+            )
+          }
         />
       ) : null}
 
@@ -474,6 +506,8 @@ function RecommendationPanel({
   onUndo,
   onDiscard,
   onSwap,
+  onRemove,
+  onAdd,
 }: {
   slotId: string;
   recommendation: MealRecommendation;
@@ -484,11 +518,19 @@ function RecommendationPanel({
   onUndo: () => void;
   onDiscard: () => void;
   onSwap: (recipeId: string, candidate: SwapCandidate) => void;
+  /** 从这份草稿里删掉一道（本地改草稿，落库与否由「就这一套，定下来」决定） */
+  onRemove: (recipeId: string) => void;
+  /** 往草稿里加一道（候选来自加菜器，不是推荐管线） */
+  onAdd: (recipe: Recipe) => void;
 }) {
   const simplified = recommendation.llm.format === 'rules_only';
   const structure = recommendation.structure;
   const [swapping, setSwapping] = useState<{ recipeId: string; name: string } | null>(null);
   const [sessionExcludes, setSessionExcludes] = useState<string[]>([]);
+  // 加菜器的菜谱池与它在编辑器里读到的是同一份（`status=all`：草稿也在池里，退役的由
+  // `DishPicker` 内部挡住）。已经在这一套里的菜要显示成已选，否则会以为能重复加。
+  const recipes = useRecipes('all');
+  const chosen = new Set(recommendation.dishes.map((dish) => dish.recipeId));
 
   return (
     <div className={styles.recommendPanel} data-testid="recommendation-panel">
@@ -531,6 +573,17 @@ function RecommendationPanel({
               >
                 换
               </button>
+              {/* 删一道（本票）：本地改这份草稿，不是写库——定不定得下来仍由底部的那个按钮决定，
+                  所以删错了可以「先不要」退出去重来。不设下限：家规结构是参考，不是闸门。 */}
+              <button
+                type="button"
+                className={styles.recommendRemove}
+                data-testid={`recommend-remove-${dish.recipeId}`}
+                aria-label={`删掉 ${dish.name}`}
+                onClick={() => onRemove(dish.recipeId)}
+              >
+                删
+              </button>
               <span className={styles.recommendReason}>{dish.reason ?? '规则直接拼的，没有理由'}</span>
             </div>
             {swapping?.recipeId === dish.recipeId ? (
@@ -553,6 +606,26 @@ function RecommendationPanel({
           </div>
         ))}
       </div>
+
+      {recommendation.dishes.length === 0 ? (
+        <div className={styles.recommendNote} data-testid="recommendation-empty">
+          这一套一道菜都不剩了——从下面的「加一道」补回来，或者「先不要」退出去重新配一份。
+        </div>
+      ) : null}
+
+      {/* 加一道（本票）：复用编辑器那个加菜器（搜索 + 筛选 276 道菜），零新接口。
+          它默认收起，所以不会把这份草稿挤下去；已在这一套里的菜显示为已选，再点一下就是**去掉**
+          ——两处改的是同一份草稿，与上面行内的「删」是同一个结果。 */}
+      <DishPicker
+        recipes={recipes.data ?? []}
+        chosen={chosen}
+        onToggle={(recipeId) => {
+          const picked = recipes.data?.find((recipe) => recipe.id === recipeId);
+          if (!picked) return;
+          if (chosen.has(recipeId)) onRemove(recipeId);
+          else onAdd(picked);
+        }}
+      />
 
       <div className={styles.actions}>
         <button

@@ -531,3 +531,66 @@ test('推荐面板上的「换一整套」可撤销回上一份草稿（spec §2
   const after = await page.request.get(`${ROOT_URL}/api/slots/${slotId}`);
   expect(((await after.json()) as { slot: SlotJson }).slot.status).toBe('undecided');
 });
+
+test('推荐面板上能删掉一道、也能加一道，接受后落库的就是改过的那一份', async ({ page }) => {
+  await clearDecidedSlots(page);
+  await page.goto(`${ROOT_URL}/`);
+
+  await page.getByTestId('recommend-button').click();
+  const panel = page.getByTestId('recommendation-panel');
+  await expect(panel).toBeVisible({ timeout: 15_000 });
+
+  const dishIds = () =>
+    panel
+      .locator('[data-testid^="recommend-dish-"]')
+      .evaluateAll((nodes) =>
+        nodes.map((node) => (node.getAttribute('data-testid') ?? '').replace('recommend-dish-', '')),
+      );
+
+  const before = await dishIds();
+  expect(before.length).toBeGreaterThanOrEqual(2);
+  const removed = before[0]!;
+
+  // 删一道：它从草稿里消失，别的菜还在
+  await page.getByTestId(`recommend-remove-${removed}`).click();
+  await expect(page.getByTestId(`recommend-dish-${removed}`)).toBeHidden();
+  const afterRemove = await dishIds();
+  expect(afterRemove.length).toBe(before.length - 1);
+
+  // 加一道：从加菜器里挑一道**不在**这份草稿里的菜。它是草稿=`没做过`判定之外的手动添加，
+  // 界面上不该凭空给它编一个理由（与规则推荐、候选同一纪律）。
+  const hero = page.getByTestId('empty-slot');
+  const slotId = (await hero.getAttribute('data-slot-id'))!;
+  await page.getByTestId('dish-picker-toggle').click();
+  await page.getByTestId('dish-search-input').fill('土豆');
+  // 挑一道**不在**afterRemove 里、也不等于刚删掉那道的（搜索命中的菜可能正是刚删的那道：
+  // 把它加回来会让「删除生效」的断言自相矛盾）。
+  const picks = panel.locator('[data-testid^="pick-"]');
+  const candidates = (await picks.evaluateAll((nodes) =>
+    nodes.map((node) => (node.getAttribute('data-testid') ?? '').replace('pick-', '')),
+  )).filter((id) => !afterRemove.includes(id) && id !== removed);
+  expect(candidates.length).toBeGreaterThan(0);
+  const added = candidates[0]!;
+  await page.getByTestId(`pick-${added}`).click();
+  await expect(page.getByTestId(`recommend-dish-${added}`)).toBeVisible();
+
+  // 加到草稿里的那道菜没有理由，界面写实情而不是编一句
+  await expect(page.getByTestId(`recommend-dish-${added}`)).toContainText('没有理由');
+
+  // 这一路都只是草稿：餐槽仍然未定
+  const duringEdit = await page.request.get(`${ROOT_URL}/api/slots/${slotId}`);
+  expect(((await duringEdit.json()) as { slot: SlotJson }).slot.status).toBe('undecided');
+
+  // 接受之后落库的是改过的那一份：删掉的不在、加上的在
+  await page.getByTestId('accept-recommendation').click();
+  await expect
+    .poll(async () => {
+      const saved = await page.request.get(`${ROOT_URL}/api/slots/${slotId}`);
+      const { slot } = (await saved.json()) as { slot: SlotJson };
+      return slot.menu?.dishes.map((dish) => dish.recipeId).join(',') ?? '';
+    }, { timeout: 15_000 })
+    .toContain(added);
+  const saved = ((await (await page.request.get(`${ROOT_URL}/api/slots/${slotId}`)).json()) as { slot: SlotJson })
+    .slot;
+  expect(saved.menu?.dishes.map((dish) => dish.recipeId)).not.toContain(removed);
+});
