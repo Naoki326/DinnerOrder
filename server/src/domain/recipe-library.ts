@@ -144,9 +144,18 @@ export function createRecipe(db: Db, input: RecipeCreate): Recipe {
 
   const apply = db.transaction((): void => {
     db.prepare(
-      `INSERT INTO recipes (id, name, kind, effort, status, source, cuisine, steps)
-       VALUES (?, ?, ?, ?, 'active', 'oral', ?, ?)`,
-    ).run(id, name, input.kind, input.effort ?? 'medium', input.cuisine ?? null, input.steps ?? '');
+      `INSERT INTO recipes (id, name, kind, effort, status, source, cuisine, steps, source_ref)
+       VALUES (?, ?, ?, ?, 'active', 'oral', ?, ?, ?)`,
+    ).run(
+      id,
+      name,
+      input.kind,
+      input.effort ?? 'medium',
+      input.cuisine ?? null,
+      input.steps ?? '',
+      // 原始来源（迁移 015）：贴链接/贴文字导入后把链接带回来，手写录入不传（null）
+      input.sourceRef?.trim() === '' || input.sourceRef === undefined ? null : input.sourceRef.trim(),
+    );
     writeTastes(db, id, tastes);
     writeSeasonMonths(db, id, months);
     writeIngredients(db, id, ingredients);

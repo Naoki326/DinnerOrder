@@ -205,6 +205,15 @@ export interface Recipe {
   cuisine: RecipeCuisine | null;
   /** 做法步骤自由文本，掌勺者参考用，**不进推荐管线** */
   steps: string;
+  /**
+   * **原始来源**（迁移 015）：贴链接/贴文字导入时记下的那个链接或来源说明，`null` = 没有记录。
+   *
+   * 为什么与 `source` 并列而不是挤进那个封闭枚举：`source` 回答「**信任档**」（口述/HowToCook/
+   * 爬取/LLM 生成，002 的 CHECK），链接回答「**出处**」——两件不同的事。为一条小红书链接
+   * 加第五个枚举值就要重建 `recipes` 放宽 CHECK，而 SQLite 在 `foreign_keys=ON` 下做不到
+   * （见 015 的说明）。它只作展示与回溯，不参与任何查询与推荐。
+   */
+  sourceRef: string | null;
   ingredients: RecipeIngredient[];
   /**
    * **还没上过桌**（ADR-0009、CONTEXT）：家里新录入、但还没有任何一餐吃过它。
@@ -1243,6 +1252,75 @@ export interface PromotionListResponse {
   promotions: PromotionRecord[];
 }
 
+// ---------------------------------------------------------------- 菜谱导入：贴链接/贴文字（issue #32）
+
+/**
+ * `POST /api/recipes/import` 的入参：**把来源素材结构化成一个菜谱草稿**（不落库）。
+ *
+ * 两种输入走**同一条**结构化管线，分别只影响「素材从哪来」这一段：
+ *   * `url`：服务端取正文。**站点无关的阶梯**（见 `import/extract.ts` 的文件头）：
+ *     JSON-LD `Recipe` → 站点适配器（如小红书：视频做法在字幕里）→ 通用正文（**带证据闸门**）。
+ *     抓不到就报 `fetch_failed` 并提示改用贴文字。**不猜 URL**、不用平台私有 API。
+ *   * `text`：直接把粘贴的文本当素材（视频字幕、长辈发的文字、自己写的一段）。
+ *
+ * 这条路径**不落库**：产出是一份**预填编辑器**的初值，掌勺者校对后走 `POST /recipes` 才落库。
+ * 于是「LLM 产出的东西没人看过就进库」在形状上就不可能发生（ADR-0006 的门槛、ADR-0011 的信任根）。
+ */
+export interface RecipeImportRequest {
+  /** 来源素材：二选一，`kind` 判别 */
+  source: { kind: 'url'; url: string } | { kind: 'text'; text: string };
+  /** 谁在导（界面送当前身份）；不传 = 不记名。目前只进响应便于界面展示，不落库（预览不是一次写） */
+  memberId?: string;
+}
+
+/** 归一成功的一项食材：已对上字典，可以直接进编辑器的食材行 */
+export interface RecipeImportIngredient {
+  ingredientId: string;
+  name: string;
+  /** 成人份生重克数（LLM 按家常口径给），**必 > 0**——0 克是「待重标」的存储形态，不从这里产生 */
+  adultGrams: number;
+}
+
+/**
+ * 归一**失败**的一项：**不静默丢**（AC 明文）。
+ *
+ * 与导入工具那条路的处置不同：那里失败项进报告、整道菜照样落草稿（后台批量跑，没人当场处理）；
+ * 这里失败项直接摆到掌勺者眼前——他正在编辑器里、字典搜框就在手边，这是补字典/改名字最便宜的时刻。
+ */
+export interface RecipeImportUnmatched {
+  /** 模型给的食材名原文（他照这个去搜字典） */
+  name: string;
+  /** 模型给的克数（若有）——他知道「原来想放多少」，补上字典后不用重新估 */
+  grams: number | null;
+  /** 为什么没归上（给界面一句可读的说明，不暴露内部匹配算法） */
+  reason: string;
+}
+
+/**
+ * 结构化结果：一份**预填编辑器**的初值。
+ *
+ * 字段与 `POST /recipes` 的入参同形（界面把它直接塞进 `RecipeEditor` 的草稿），另带三样
+ * **只在预览期有意义**的东西：`unmatched`（要掌勺者处理的项）、`sourceRef`（落库时带回去）、
+ * `notes`/`llm`（这次是怎么来的——取正文失败过没有、模型是哪一个）。
+ */
+export interface RecipeImportPreview {
+  name: string;
+  kind: RecipeKind;
+  effort: RecipeEffort;
+  cuisine: RecipeCuisine | null;
+  tastes: TasteTag[];
+  seasonMonths: number[];
+  steps: string;
+  ingredients: RecipeImportIngredient[];
+  unmatched: RecipeImportUnmatched[];
+  /** 原始来源：链接本身，或「粘贴的文字」的简短说明。落库时原样写进 `recipes.source_ref` */
+  sourceRef: string;
+  /** 这次导入怎么走过来的（取正文有无降级、模型改掉了什么）——不静默 */
+  notes: string[];
+  /** LLM 调用元数据；`null` = 这次没调用（例如素材太短，规则直接判定不可用） */
+  llm: { model: string; latencyMs: number; calls: number } | null;
+}
+
 // ---------------------------------------------------------------- 菜谱库：掌勺者可写（issue #30）
 
 /**
@@ -1267,6 +1345,11 @@ export interface RecipeCreate {
   ingredients?: RecipeIngredientInput[];
   /** 谁录的（界面送当前身份，进台账）；不传 = 不记名 */
   memberId?: string;
+  /**
+   * 原始来源（迁移 015）：贴链接/贴文字导入后的落库把链接记在这里。
+   * 手写录入不传（没有可回填的单一链接——硬编一个就是编数据）。
+   */
+  sourceRef?: string;
 }
 
 /**

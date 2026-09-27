@@ -32,6 +32,7 @@ import {
 } from '../domain/promotion.js';
 import { MemberNotFoundError } from '../domain/members.js';
 import { CUISINES } from '../llm/import-schema.js';
+import { importRecipe, ImportSourceError, ImportStructureError } from '../domain/recipe-import.js';
 
 /**
  * 菜谱库（总纲 §2.8）。缺省只列**转正态**——那是推荐池的唯一来源；
@@ -78,6 +79,12 @@ const ingredientInputSchema = z.object({
 
 const maxNameLength = 60;
 
+/** 来源链接/说明的长度上限：够长地放下一个带 xsec_token 的分享链，但挡得住贴进去一整页 HTML */
+const maxSourceRefLength = 500;
+
+/** 粘贴文字的素材长度上限：与 `import/extract.ts` 的 `MAX_SOURCE_TEXT_LENGTH` 同源口径 */
+const maxImportTextLength = 20_000;
+
 /** `POST /recipes` 入参：name + kind 必填，其余缺省即可用（见 `RecipeCreate` 的注释） */
 const recipeCreateSchema = z.object({
   name: z.string().trim().min(1, '菜名不能为空').max(maxNameLength, `菜名最多 ${maxNameLength} 字`),
@@ -88,6 +95,36 @@ const recipeCreateSchema = z.object({
   seasonMonths: z.array(z.number().int().min(1).max(12)).optional(),
   steps: z.string().optional(),
   ingredients: z.array(ingredientInputSchema).optional(),
+  memberId: z.string().min(1).optional(),
+  /**
+   * 原始来源（迁移 015）：贴链接/贴文字导入后的落库把链接记在这里。
+   * 手写录入不传（没有可回填的单一链接——硬编一个就是编数据）。
+   */
+  sourceRef: z.string().trim().max(maxSourceRefLength, `来源最多 ${maxSourceRefLength} 字`).optional(),
+});
+
+/**
+ * `POST /recipes/import` 入参（issue #32）：来源素材二选一。
+ *
+ * 链接只收 **http(s)**：`zod` 的 `.url()` 连 `file://` 也放行（实测），而服务端会真的去 fetch
+ * 它——所以这里额外钉一道协议闸门。**不认平台域名**：小红书/下厨房都没有公开接口，
+ * 取正文那条路自己会失败并报 `fetch_failed`；这里只需挡住非网络协议。
+ */
+const recipeImportSchema = z.object({
+  source: z.discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('url'),
+      url: z
+        .string()
+        .trim()
+        .url('要一个完整的 http(s) 链接')
+        .refine((value) => /^https?:\/\//i.test(value), '只支持 http / https 链接'),
+    }),
+    z.object({
+      kind: z.literal('text'),
+      text: z.string().trim().min(1, '文字不能为空').max(maxImportTextLength, `文字最多 ${maxImportTextLength} 字`),
+    }),
+  ]),
   memberId: z.string().min(1).optional(),
 });
 
@@ -172,6 +209,28 @@ export function registerRecipeRoutes(api: Hono, deps: AppDeps): void {
       return c.json({ recipe: patchRecipe(deps.db, deps.clock, recipeId, c.req.valid('json')) });
     } catch (error) {
       return recipeWriteError(c, recipeId, error);
+    }
+  });
+
+  /**
+   * 把来源素材**结构化成一份预填编辑器**（issue #32）。
+   *
+   * 三条形状上的刻意选择：
+   *   * **不落库**：产出是预览，掌勺者校对后走 `POST /recipes`。于是「LLM 产出的东西没被看过
+   *     就进库」在形状上不可能发生（ADR-0006 的门槛、ADR-0011 的信任根）。
+   *   * **`POST` 而不是 `GET`**：它带正文、要调 LLM、有副作用（花钱、耗时），不是一次「读」。
+   *     做成 `GET` 会让浏览器/代理缓存一个会变的预览。
+   *   * **动词在路径上**（`/recipes/import`）：这是「把一段素材变成一道菜」的动作，
+   *     不是「提交一份菜谱资源」（那是 `POST /recipes`）。
+   *
+   * 失败映射看 `recipeImportError`：取不到正文 → 400（换一种输入）、结构化失败 → 502（重试）。
+   */
+  api.post('/recipes/import', zodValidator('json', recipeImportSchema), async (c) => {
+    try {
+      const preview = await importRecipe(deps.db, deps.llm, c.req.valid('json').source);
+      return c.json({ preview });
+    } catch (error) {
+      return recipeImportError(c, error);
     }
   });
 
@@ -279,5 +338,28 @@ function recipeWriteError(c: Context, recipeId: string, error: unknown): Respons
   }
   if (error instanceof RecipeNoChangesError) return c.json({ error: 'no_changes', id: error.recipeId }, 400);
   if (error instanceof RecipeNameEmptyError) return c.json({ error: 'invalid_request', issues: [{ path: 'name', message: '菜名不能为空' }] }, 400);
+  throw error;
+}
+
+/**
+ * 导入失败 → 明确的 4xx/5xx。两种失败对应**两种下一步**，所以分开报：
+ *
+ *   * 400 `fetch_failed`：取不到那个链接（平台改版/要登录/网络）。掌勺者的下一步是
+ *     **换一种输入**（贴文字），所以把成功的那条路写在错误里（`reason` 带上原错误类型）。
+ *   * 400 `source_too_short`：素材太短，看不出是一道菜。下一步是**把做法贴全**。
+ *   * 502 `structure_failed`：LLM 没成（不可用/形状不合）。库里什么都没变，可以重试；
+ *     `notes` 带上失败细节（不静默）。
+ *
+ * 与 `promotionError` / `recipeWriteError` 同一口径：**共用领域错误类型，不共用响应映射**
+ * （对外报的字段名与上下文跟着本路由的入参走）。
+ */
+function recipeImportError(c: Context, error: unknown): Response {
+  if (error instanceof ImportSourceError) {
+    const tooShort = error.reason === 'SourceTooShortError';
+    return c.json({ error: tooShort ? 'source_too_short' : 'fetch_failed', reason: error.reason, message: error.message }, 400);
+  }
+  if (error instanceof ImportStructureError) {
+    return c.json({ error: 'structure_failed', notes: error.notes }, 502);
+  }
   throw error;
 }

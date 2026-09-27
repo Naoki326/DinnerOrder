@@ -3,6 +3,8 @@ import type {
   Recipe,
   RecipeCreate,
   RecipeEditRecord,
+  RecipeImportPreview,
+  RecipeImportRequest,
   RecipePatch,
   RecipeStatusActionInput,
 } from '@dinnerorder/server/types';
@@ -12,6 +14,10 @@ import { apiUrl } from '../config';
 export type {
   RecipeCreate,
   RecipeEditRecord,
+  RecipeImportIngredient,
+  RecipeImportPreview,
+  RecipeImportRequest,
+  RecipeImportUnmatched,
   RecipePatch,
 } from '@dinnerorder/server/types';
 
@@ -132,4 +138,54 @@ async function fetchRecipeEdits(recipeId: string, signal: AbortSignal): Promise<
   const response = await fetch(apiUrl(`/recipes/${recipeId}/edits`), { signal, headers: { accept: 'application/json' } });
   if (!response.ok) throw new Error(`修订台账读取失败：HTTP ${response.status}`);
   return ((await response.json()) as { edits: RecipeEditRecord[] }).edits;
+}
+
+/**
+ * 把一段素材（链接 / 粘贴的文字）结构化成一份**预填编辑器**的初值（issue #32）。
+ *
+ * **不是 mutation 语义上的「写」**：服务端不落库，产出是给编辑器用的草稿。用 `useMutation`
+ * 而不是 `useQuery` 是因为它由按钮触发、会花钱、同一个输入不该被 react-query 缓存复用
+ * （素材改了就该重新导一次）。
+ *
+ * 失败**不抛一句笼统的「导入失败」**：`fetch_failed` 与 `structure_failed` 的下一步动作不同
+ * （换一种输入 vs 重试），所以错误信息要能把那个动作说出来。
+ */
+export function useImportRecipe() {
+  return useMutation({
+    mutationFn: async (input: RecipeImportRequest): Promise<RecipeImportPreview> => {
+      const response = await fetch(apiUrl('/recipes/import'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) throw new Error(await readImportError(response));
+      return ((await response.json()) as { preview: RecipeImportPreview }).preview;
+    },
+  });
+}
+
+/**
+ * 导入错误的翻译（错误码与 `server/src/api/recipes.ts` 的 `recipeImportError` 一一对应）。
+ *
+ * 与 `readWriteError` 分开而不是合并：那个说「保存没成功」，这个说「素材没读懂」——
+ * 两件事的下一步动作完全不同，硬塞进一个函数会让两边都说不上具体的下一步。
+ */
+async function readImportError(response: Response): Promise<string> {
+  let body: { error?: string; message?: string; notes?: string[] };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch {
+    return `导入没成功：HTTP ${response.status}`;
+  }
+  if (body.error === 'fetch_failed') {
+    const reason = body.message ?? '这个链接取不到内容';
+    // 服务端已经把具体原因写在 message 里（要登录 / 限流 / 看不出是菜谱…），这里只补下一步动作
+    return `${reason}。可以把做法文字复制出来贴进去`;
+  }
+  if (body.error === 'source_too_short') return body.message ?? '素材太短，看不出是一道菜的做法';
+  if (body.error === 'structure_failed') {
+    const detail = body.notes?.[0];
+    return `AI 没能把这段素材整理成菜谱${detail ? `（${detail}）` : ''}，可以再试一次或改用贴文字`;
+  }
+  return `导入没成功：HTTP ${response.status}`;
 }

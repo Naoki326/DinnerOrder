@@ -58,6 +58,7 @@ function recipe(id: string, overrides: Partial<Recipe> = {}): Recipe {
     ],
     // 线上形状新增的两个派生字段（issue #30）：本文件只关心 prompt 组装，给缺省值
     neverServed: false,
+    sourceRef: null,
     hasPendingRelabel: false,
     ...overrides,
   };

@@ -14,10 +14,11 @@ interface RecipeRow {
   source: Recipe['source'];
   cuisine: Recipe['cuisine'];
   steps: string;
+  source_ref: string | null;
 }
 
 /** 菜谱列的一处选择：`listRecipes` / `findRecipe` / 导入器都要 SELECT 同一组列（多了就漂移） */
-const RECIPE_COLUMNS = 'id, name, kind, effort, status, source, cuisine, steps';
+const RECIPE_COLUMNS = 'id, name, kind, effort, status, source, cuisine, steps, source_ref';
 
 interface IngredientRow {
   recipe_id: string;
@@ -167,6 +168,7 @@ function hydrate(db: Db, rows: RecipeRow[]): Recipe[] {
     source: row.source,
     cuisine: row.cuisine,
     steps: row.steps,
+    sourceRef: row.source_ref,
     ingredients: ingredientsByRecipe.get(row.id) ?? [],
     neverServed: !promoted.has(row.id) && !served.has(row.id),
     // 判定只有一处（`hasPendingRelabel` / `ingredientsNeedRelabel`）

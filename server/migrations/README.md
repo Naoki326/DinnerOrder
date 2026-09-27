@@ -109,6 +109,16 @@
     粒度是**字段级**（能回答「改了做法」），不做食材级 diff；`changed_fields` 存字符串不拆子表
     ——它是「这一次改了哪几块」的描述，不是会被单独查询的实体。
     与 `recipe_promotions` 一样不进 `meal_events`（ADR-0007）。不种任何生数据。
+  - `015_recipe_source_ref` —— **菜谱来源链接**（「贴链接/贴文字导入」/ issue #32）：给 `recipes`
+    加一列 `source_ref TEXT`（可空），记导入时的**原始链接或来源说明**，供界面回显与回溯。
+    **刻意不把 `source` 的 CHECK 放宽**：那个字段回答「**信任档**」（口述/HowToCook/爬取/LLM 生成），
+    而链接回答「**出处**」——两件不同的事；挤进同一个封闭枚举会让将来每加一个来源都要改门槛判定。
+    技术上也不可行：放宽 CHECK 要重建 `recipes`，而 SQLite 在 `foreign_keys=ON` 下
+    `DROP TABLE` 会被 `meal_event_dishes` / `recipe_ingredients` 等子表拦住，事务内关 FK 又
+    不起作用（PRAGMA 在事务内被忽略）——`ALTER TABLE ADD COLUMN` 是唯一可行且足够的形状。
+    手写录入、导入工具、种子行都是 `NULL`（没有可回填的单一链接，硬编一个就是编数据）。
+    **不种生数据**；不加索引（只作展示，不参与查询）。信任口径见
+    [ADR-0011](../../docs/adr/0011-imported-recipes-enter-family-library-via-editor-confirmation.md)。
   - 迁移里只种**规则资产与字典**，生数据（餐槽、菜单、推荐）一律不种：推荐永远现算不落库（总纲 §4）。
 - 种子数据写在迁移里（而不是启动时补种），这样测试 harness、E2E 的文件库、生产库三条路径拿到的是同一份初值。
 - 执行器自身的行为由 `src/db/migrate.test.ts`（临时目录 fixture）覆盖；本目录内容由 `src/db/schema.test.ts` 与

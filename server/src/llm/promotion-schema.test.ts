@@ -44,6 +44,7 @@ function recipe(overrides: Partial<Recipe> = {}): Recipe {
     ],
     // 线上形状新增的两个派生字段（issue #30）：本文件的 fixture 只关心 llm 改写路径，给缺省值
     neverServed: false,
+    sourceRef: null,
     hasPendingRelabel: false,
     ...overrides,
   };

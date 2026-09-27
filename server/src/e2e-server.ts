@@ -31,6 +31,7 @@ import { joinBase } from './config.js';
 import { createFakeLlmClient } from './llm/fake.js';
 import { pickLlmSelection } from './llm/prompt.js';
 import { pickPromotionRewrite } from './llm/promotion-schema.js';
+import { pickImportStructure } from './llm/import-structure.js';
 
 const llm = createFakeLlmClient();
 llm.setModel('e2e-fake-llm');
@@ -42,9 +43,17 @@ if (process.env.E2E_LLM_MODE === 'fail') {
   };
   llm.setCompletion(fail);
 } else {
-  // 同一个确定性 fake 同时支持三条路：转正改写（【待转正菜谱】）、整餐推荐（【候选池】）
-  // 与换菜候选（【同位候选池】）。转正放在最前：它的 prompt 标记是唯一不会与另两条重叠的。
-  llm.setCompletion((request) => pickPromotionRewrite(request.prompt) ?? pickLlmSelection(request.prompt) ?? '{"dishes":[]}');
+  // 同一个确定性 fake 同时支持四条路：转正改写（【待转正菜谱】）、整餐推荐（【候选池】）、
+  // 换菜候选（【同位候选池】）与菜谱导入的结构化（【来源素材】）。
+  // 判位顺序靠**互不重叠的 prompt 标记**：导入的【来源素材】与转正的【待转正菜谱】
+  // 都是「一次一道」的形状，但标记不同，各拿各的。
+  llm.setCompletion(
+    (request) =>
+      pickImportStructure(request.prompt) ??
+      pickPromotionRewrite(request.prompt) ??
+      pickLlmSelection(request.prompt) ??
+      '{"dishes":[]}',
+  );
 }
 
 /** 可拨动的时钟：`offsetMs` 加到系统时刻上。E2E 只调它来「让时间走过去」。 */

@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
 import type { Recipe, RecipeCuisine, RecipeEffort, RecipeIngredientInput, RecipeKind, TasteTag } from '@dinnerorder/server/types';
-import { useCreateRecipe, usePatchRecipe, useRecipeEdits, useRecipeStatusAction } from '../api/recipe-library';
+import {
+  useCreateRecipe,
+  useImportRecipe,
+  usePatchRecipe,
+  useRecipeEdits,
+  useRecipeStatusAction,
+  type RecipeImportPreview,
+} from '../api/recipe-library';
 import { useIngredients } from '../api/ingredients';
 import {
   CUISINE_OPTIONS,
@@ -55,6 +62,10 @@ export function RecipeEditor({
   const [draft, setDraft] = useState<Draft>(() => toDraft(recipe));
   const [error, setError] = useState<string | undefined>(undefined);
   const [saved, setSaved] = useState(false);
+  /** 导入预览里那些**没对上字典**的食材项（只做展示：掌勺者照这个去下面的搜框手动加） */
+  const [unmatched, setUnmatched] = useState<RecipeImportPreview['unmatched']>([]);
+  /** 这次导入是怎么来的（取正文有无降级、几项没克数）——不静默 */
+  const [importNotes, setImportNotes] = useState<string[]>([]);
 
   const create = useCreateRecipe();
   const patch = usePatchRecipe();
@@ -99,6 +110,20 @@ export function RecipeEditor({
             {recipe!.neverServed ? ' · 还没上过桌' : ''}
           </div>
         )}
+        {/* 原始来源（迁移 015）：导入来的菜能回溯到那条链接。只读——它记录的是「这道菜从哪来」，
+            不是可编辑的内容（改来源等于让「出身」可随编辑漂移）。 */}
+        {!creating && recipe?.sourceRef ? (
+          <div className={`sub ${styles.sourceRef}`} data-testid={`recipe-source-ref-${recipe.id}`}>
+            {recipe.sourceRef.startsWith('http') ? '来源：' : ''}
+            {recipe.sourceRef.startsWith('http') ? (
+              <a href={recipe.sourceRef} target="_blank" rel="noreferrer noopener">
+                {recipe.sourceRef}
+              </a>
+            ) : (
+              recipe.sourceRef
+            )}
+          </div>
+        ) : null}
       </div>
 
       {/* 只读的原因与下一步（草稿要转正、退役要还原）：不给一个按下必报错的表单 */}
@@ -161,6 +186,45 @@ export function RecipeEditor({
       ) : null}
 
       <div className="card" data-testid={`recipe-form-${fieldKey}`}>
+        {/* 导入（issue #32）：只在**录入**这一档给。改已有的菜不走这条——ADR-0001/0006 把 LLM
+            改写特定在转正那一步，且改菜时「重新导入一遍」会把掌勺者刚校对的改动冲掉 */}
+        {creating ? (
+          <ImportPanel
+            memberId={memberId}
+            onPreview={(preview, notes) => {
+              setError(undefined);
+              setSaved(false);
+              // 整套替换草稿：导入的语义是「从这段素材重新来一份」，不是「往现有草稿上合并」——
+              // 合并会让「哪些是 AI 给的、哪些是我自己写的」永远说不清。
+              setDraft({ ...toDraftFromPreview(preview), dirty: true });
+              setUnmatched(preview.unmatched);
+              setImportNotes(notes);
+            }}
+          />
+        ) : null}
+
+        {/* 归一失败的项：**不静默丢**（AC 明文）——摆出来让掌勺者用下面的搜框加进去 */}
+        {creating && unmatched.length > 0 ? (
+          <div className={styles.unmatched} data-testid="recipe-unmatched-new">
+            <b>这几项没对上食材字典</b>
+            <div className="sub">
+              它们不会进菜谱。可以在下面「加食材」里搜个近似的（如「番茄沙司」），或者跳过。
+            </div>
+            {unmatched.map((item) => (
+              <div key={item.name} className={styles.unmatchedRow} data-testid={`recipe-unmatched-item-${item.name}`}>
+                <span>{item.name}</span>
+                <span className="sub">{item.grams === null ? '素材没给克数' : `素材里约 ${item.grams} g`}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {/* 导入过程本身的信息（走的是哪一档、几项没克数）：成功但需要注意的事不静默 */}
+        {creating && importNotes.length > 0 ? (
+          <div className="sub" data-testid="recipe-import-notes-new">
+            {importNotes.join('；')}
+          </div>
+        ) : null}
         <div className={styles.field}>
           <span className={styles.label}>菜名</span>
           <input
@@ -387,6 +451,8 @@ export function RecipeEditor({
                   seasonMonths: draft.seasonMonths,
                   steps: draft.steps,
                   ingredients: draft.ingredients.map(toIngredientInput),
+                  // 原始来源（迁移 015）：导入来的菜把链接带回服务端；空串不传（手写录入就是这种）
+                  ...(draft.sourceRef.trim() === '' ? {} : { sourceRef: draft.sourceRef.trim() }),
                   ...(memberId === undefined ? {} : { memberId }),
                 };
                 const done = (created: Recipe): void => {
@@ -531,6 +597,11 @@ interface Draft {
   seasonMonths: number[];
   steps: string;
   ingredients: DraftIngredient[];
+  /**
+   * 原始来源（迁移 015）：导入时记下的链接/来源说明，手写录入是空串。
+   * 它随保存一起交给服务端，并在详情里显示一句「来源：…」让人能回溯。
+   */
+  sourceRef: string;
   /** 有没有本地未保存的改动（决定保存按钮的可用性与「同步服务端那份」的时机） */
   dirty: boolean;
 }
@@ -547,6 +618,7 @@ function toDraft(recipe: Recipe | undefined): Draft {
       seasonMonths: [],
       steps: '',
       ingredients: [],
+      sourceRef: '',
       dirty: false,
     };
   }
@@ -564,8 +636,148 @@ function toDraft(recipe: Recipe | undefined): Draft {
       // 0 克（导入期的「待重标」）显示为空，逼掌勺者填一个真数——这是本票让「待处理」真的减少的路径
       adultGramsText: item.adultGrams > 0 ? String(item.adultGrams) : '',
     })),
+    sourceRef: recipe.sourceRef ?? '',
     dirty: false,
   };
+}
+
+/**
+ * 导入预览 → 草稿（issue #32）。与 `toDraft` 分开的原因：预览不是 `Recipe`
+ * （它带 `unmatched`/`notes`/`llm`，而食材是 `ingredientId + name` 而不是完整的 `RecipeIngredient`）。
+ *
+ * **克数为 0 的项显示为空**（与 `toDraft` 对库里 0 克的处置一致）：预览里 0 = 「模型没给克数」，
+ * 编辑器会把它标红、不给保存——这正是我们要的，他必须为这一项填一个数，
+ * 而不是让一个「待定」悄悄存进库。
+ */
+function toDraftFromPreview(preview: RecipeImportPreview): Draft {
+  return {
+    name: preview.name,
+    kind: preview.kind,
+    effort: preview.effort,
+    cuisine: preview.cuisine ?? '',
+    tastes: [...preview.tastes],
+    seasonMonths: [...preview.seasonMonths].sort((a, b) => a - b),
+    steps: preview.steps,
+    ingredients: preview.ingredients.map((item) => ({
+      ingredientId: item.ingredientId,
+      name: item.name,
+      adultGramsText: item.adultGrams > 0 ? String(item.adultGrams) : '',
+    })),
+    sourceRef: preview.sourceRef,
+    dirty: false,
+  };
+}
+
+/**
+ * 导入面板（issue #32）：贴链接或贴文字 → AI 结构化 → 预填下面的编辑器。
+ *
+ * 两种输入共用一个面板、用 tab 切（**互斥的两档**）：
+ *   * 贴链接是主路（少打字），但平台改版/要登录时也失效；
+ *   * 贴文字是永远可用的兜底——**取正文失败时的提示直接指向它**，所以它必须在同一屏、不藏起来。
+ *
+ * 面板自身的错误只影响这个面板（不动编辑器）：导入失败时掌勺者手头那份草稿还在。
+ */
+function ImportPanel({
+  memberId,
+  onPreview,
+}: {
+  memberId: string | undefined;
+  onPreview: (preview: RecipeImportPreview, notes: string[]) => void;
+}) {
+  const [kind, setKind] = useState<'url' | 'text'>('url');
+  const [url, setUrl] = useState('');
+  const [text, setText] = useState('');
+  const importRecipe = useImportRecipe();
+
+  const value = kind === 'url' ? url : text;
+  const canImport = value.trim() !== '' && !importRecipe.isPending;
+
+  return (
+    <div className={styles.import} data-testid="recipe-import-panel">
+      <div className="spread">
+        <b>从链接或文字导入</b>
+        <span className="sub">AI 整理成一份草稿，你校对后再存</span>
+      </div>
+
+      <div className={styles.importTabs}>
+        <button
+          type="button"
+          className={kind === 'url' ? `${styles.importTab} ${styles.importTabOn}` : styles.importTab}
+          data-testid="recipe-import-tab-url"
+          aria-pressed={kind === 'url'}
+          onClick={() => setKind('url')}
+        >
+          贴链接
+        </button>
+        <button
+          type="button"
+          className={kind === 'text' ? `${styles.importTab} ${styles.importTabOn}` : styles.importTab}
+          data-testid="recipe-import-tab-text"
+          aria-pressed={kind === 'text'}
+          onClick={() => setKind('text')}
+        >
+          贴文字
+        </button>
+      </div>
+
+      {kind === 'url' ? (
+        <input
+          className={styles.input}
+          type="url"
+          inputMode="url"
+          value={url}
+          placeholder="粘贴菜谱链接（小红书分享链、菜谱站、博客…）"
+          aria-label="菜谱链接"
+          data-testid="recipe-import-url"
+          onChange={(event) => setUrl(event.target.value)}
+        />
+      ) : (
+        <textarea
+          className={styles.textarea}
+          rows={5}
+          value={text}
+          placeholder="把做法文字或视频字幕粘在这里"
+          aria-label="做法文字"
+          data-testid="recipe-import-text"
+          onChange={(event) => setText(event.target.value)}
+        />
+      )}
+
+      <div className="row">
+        <button
+          type="button"
+          className="btn"
+          data-testid="recipe-import-submit"
+          disabled={!canImport}
+          onClick={() => {
+            importRecipe.mutate(
+              {
+                source: kind === 'url' ? { kind: 'url', url: url.trim() } : { kind: 'text', text: text.trim() },
+                ...(memberId === undefined ? {} : { memberId }),
+              },
+              { onSuccess: (preview) => onPreview(preview, preview.notes) },
+            );
+          }}
+        >
+          {importRecipe.isPending ? '整理中…' : '整理成菜谱'}
+        </button>
+        {importRecipe.isPending ? <span className="sub">取内容 + 让 AI 整理，要几秒</span> : null}
+      </div>
+
+      {importRecipe.isError ? (
+        <div className={styles.error} data-testid="recipe-import-error">
+          {importRecipe.error.message}
+        </div>
+      ) : null}
+
+      <div className="sub" style={{ marginTop: 6 }}>
+        不会直接存进库——整理结果会填到下面的表单里，你核对后点「录进菜谱库」才算数。
+        <br />
+        有的站点要登录或有人机验证，抓不到；视频里的做法要连字幕一起抓（小红书这类支持），
+        实在不行就把做法文字复制出来贴进来。
+      </div>
+    </div>
+  );
 }
 
 function toIngredientInput(item: DraftIngredient): RecipeIngredientInput {

@@ -142,3 +142,53 @@
   font-size: 13px;
   color: var(--hun);
 }
+
+/* 导入面板（issue #32）：与下面的表单同一个卡片，用一条虚线分开「素材那一半」与「编辑那一半」 */
+.import {
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px dashed var(--line);
+}
+
+.importTabs {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+
+.importTab {
+  padding: 5px 12px;
+  border-radius: 99px;
+  background: var(--chip);
+  color: var(--sub);
+  font-size: 13px;
+}
+
+.importTabOn {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 没对上字典的项：摆出来让他手动加，不是静默丢（AC） */
+.unmatched {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--warn-soft, #fdf3e3);
+  font-size: 13px;
+}
+
+.unmatchedRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+/* 来源一行：只读展示（改来源不是编辑内容该干的事，它记录的是「这道菜从哪来」） */
+.sourceRef {
+  margin-top: 6px;
+  font-size: 12px;
+  word-break: break-all;
+}
