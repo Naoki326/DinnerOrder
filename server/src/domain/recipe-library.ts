@@ -29,13 +29,30 @@ export type { RecipeCreate, RecipePatch, RecipeEditRecord } from '../wire-types.
  * 外部数据仍须转正——这条路不接受把草稿转正（那是 `POST /recipes/:id/promotion` 的事）。
  */
 
-/** 只有家庭菜谱（active）能修订：草稿要走上桌+转正（ADR-0006），退役的先用还原 */
+/**
+ * 已退役的菜不能修订：先用「还原」回到家庭菜谱。
+ *
+ * **草稿可以修订**（与 `active` 一样）：外部素材的克数（“待重标”）正是掌勺者在菜谱库页面上
+ * 手工补的——那是「待处理」真的减少的路径（issue 的 user story 32）。修订**不改状态**，
+ * 草稿仍然是草稿，进家庭库仍然要经「上桌 → 转正」（ADR-0006 的门槛一点没动）。
+ */
+export class RecipeNotEditableError extends Error {
+  constructor(
+    readonly recipeId: string,
+    readonly status: string,
+  ) {
+    super(`已退役的菜不能直接改，先还原：${recipeId}`);
+    this.name = 'RecipeNotEditableError';
+  }
+}
+
+/** 只有家庭菜谱（active）能退役：草稿本来就不在推荐池里，退役它是一句空话 */
 export class RecipeNotActiveError extends Error {
   constructor(
     readonly recipeId: string,
     readonly status: string,
   ) {
-    super(`只有家庭菜谱（active）能改，这道菜当前状态是 ${status}：${recipeId}`);
+    super(`只有家庭菜谱能退役，这道菜当前状态是 ${status}：${recipeId}`);
     this.name = 'RecipeNotActiveError';
   }
 }
@@ -142,15 +159,17 @@ export function createRecipe(db: Db, input: RecipeCreate): Recipe {
 /**
  * 修订一道菜（CONTEXT「修订」）：字段级部分更新 + 留痕。
  *
- * **只让 active 的菜进来**：草稿要走「上桌 + 转正」（ADR-0006 的门槛），退役的要先还原——
- * 否则「改一道退役菜的做法」会顺手把它留在退役状态，而掌勺者以为自己在编辑一道能用的菜。
+ * **草稿与家庭菜谱都能改；退役的不能**（先用还原）。草稿能改是本票的刻意选择：
+ * 外部素材的克数（“待重标”）正是掌勺者在菜谱库页面上手工补的（user story 32）。
+ * **修订不改状态**：草稿仍然是草稿，进家庭库仍要经「上桌 + 转正」（ADR-0006 的门槛一点没动）。
  *
  * 留痕按**字段名**记（`changed_fields`）：能回答「改了做法」就够了，不做食材级 diff。
  */
 export function patchRecipe(db: Db, clock: Clock, recipeId: string, patch: RecipePatch): Recipe {
   const recipe = findRecipe(db, recipeId);
   if (!recipe) throw new RecipeNotFoundError(recipeId);
-  if (recipe.status !== 'active') throw new RecipeNotActiveError(recipeId, recipe.status);
+  // 草稿能改（补待重标的克数）；退役的要先还原。状态本身不在这条路上（`RecipePatch` 无 status）。
+  if (recipe.status === 'retired') throw new RecipeNotEditableError(recipeId, recipe.status);
   assertMember(db, patch.memberId);
 
   // 先算出「这一次真正变了什么」——空 patch 不写台账（`recipe_edits.changed_fields` 有非空 CHECK）

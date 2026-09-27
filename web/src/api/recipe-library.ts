@@ -111,9 +111,8 @@ async function readWriteError(response: Response): Promise<string> {
   if (body.error === 'duplicate_ingredient') return '食材清单里有重复项，同一个食材只能出现一次';
   if (body.error === 'ingredient_grams') return '克数必须大于 0——拿不准就先填个估计值，别留空';
   if (body.error === 'no_changes') return '这次没有改动任何内容';
-  if (body.error === 'not_active') {
-    return body.status === 'draft' ? '草稿要先上桌吃过、点过「转正」才能改' : '退役的菜改不了，先点「还原」';
-  }
+  if (body.error === 'not_editable') return '退役的菜改不了，先点「还原」';
+  if (body.error === 'not_active') return '只有家庭菜谱能退役（草稿本来就不在推荐里）';
   if (body.error === 'not_retired') return '这道菜没有退役，不用还原';
   if (body.error === 'already_retired') return '这道菜已经退役了，刷新一下页面';
   return `保存没成功：HTTP ${response.status}`;

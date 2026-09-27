@@ -281,12 +281,24 @@ describe('菜谱库：修订（CONTEXT「修订」）', () => {
     expect(edits[0]!.changedFields).toEqual(['steps']);
   });
 
-  it('草稿不能修订：先上桌 + 转正（ADR-0006 的门槛）', async () => {
+  it('草稿可以修订（补待重标的克数正是这条路的用途）；但修订不改状态——仍要转正才能进家庭库', async () => {
     harness = createTestHarness();
 
-    const { status, body } = await patchRecipe('xiangguhuaji', { steps: '想直接改草稿。' });
-    expect(status).toBe(409);
-    expect(body.error).toBe('not_active');
+    // 外部草稿（清炒豆芽）把克数改一改（user story 32：用菜谱库页面手工补上待定的克数）
+    const patched = await patchRecipe('qingchaodouya', {
+      ingredients: [
+        { ingredientId: 'bean_sprouts', adultGrams: 180 },
+        { ingredientId: 'garlic', adultGrams: 8 },
+      ],
+    });
+    expect(patched.status).toBe(200);
+    // **状态没变**：修订改的是内容，进家庭库仍然要经「上桌 → 转正」（ADR-0006 的门槛一点没动）
+    expect(patched.body.recipe!.status).toBe('draft');
+
+    // 台账照样留痕
+    const edits = await editsOf('qingchaodouya');
+    expect(edits).toHaveLength(1);
+    expect(edits[0]!.changedFields).toEqual(['ingredients']);
   });
 
   it('退役的菜不能修订：先用还原', async () => {
@@ -295,7 +307,7 @@ describe('菜谱库：修订（CONTEXT「修订」）', () => {
     // 种子里的退役菜
     const { status, body } = await patchRecipe('xiangjiandaiyu', { steps: '想改退役菜。' });
     expect(status).toBe(409);
-    expect(body.error).toBe('not_active');
+    expect(body.error).toBe('not_editable');
   });
 
   it('一次提交什么都没改 → 400，不写台账（不假装成功）', async () => {

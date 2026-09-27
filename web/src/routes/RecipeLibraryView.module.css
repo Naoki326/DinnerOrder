@@ -147,12 +147,3 @@
   justify-content: flex-end;
   max-width: 45%;
 }
-
-.rowAction {
-  flex: none;
-  font-size: 12px;
-  padding: 4px 9px;
-  border-radius: 99px;
-  background: var(--accent-soft);
-  color: var(--accent);
-}

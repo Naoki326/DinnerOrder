@@ -9,6 +9,7 @@ import {
   KIND_FILTER_OPTIONS,
   KIND_LABELS,
   kindMatches,
+  type KindFilter,
 } from '../components/recipeVocabulary';
 import styles from './RecipeLibraryView.module.css';
 
@@ -39,9 +40,6 @@ const TABS: { id: LibraryTab; label: string }[] = [
   { id: 'retired', label: '已退役' },
 ];
 
-/** 家庭菜档的荤/素/汤位筛选（与加菜器同一口径：三档，汤吃掉荤汤+素汤） */
-type KindFilter = 'all' | 'meat' | 'veg' | 'soup';
-
 export function RecipeLibraryView() {
   const { current } = useIdentity();
   const recipes = useRecipes('all');
@@ -51,6 +49,8 @@ export function RecipeLibraryView() {
   const [pendingOnly, setPendingOnly] = useState(true);
   /** 正在看哪一道（null = 在列表上） */
   const [openId, setOpenId] = useState<string | null>(null);
+  /** 正在录入一道新菜（null = 没在录） */
+  const [creating, setCreating] = useState(false);
 
   const all = recipes.data ?? [];
   const canWrite = current?.isCook ?? false;
@@ -73,12 +73,33 @@ export function RecipeLibraryView() {
 
   const open = openId ? all.find((recipe) => recipe.id === openId) : undefined;
 
+  // 录入一道新菜（ADR-0009 的主干动作）：掌勺者手写的菜直接进家庭库与推荐池。
+  // 录完回到列表并把它所在的那一档打开，让人当场看见它落进去了。
+  if (creating) {
+    return (
+      <div data-testid="recipe-library-view">
+        <BackRow onBack={() => setCreating(false)} backLabel="← 菜谱库" />
+        <RecipeEditor
+          creating
+          memberId={current?.id}
+          onCreated={(recipe) => {
+            setCreating(false);
+            setTab('family');
+            setOpenId(recipe.id);
+          }}
+        />
+      </div>
+    );
+  }
+
   if (open) {
     return (
       <div data-testid="recipe-library-view">
         <BackRow onBack={() => setOpenId(null)} backLabel="← 菜谱库" />
         {canWrite ? (
-          <RecipeEditor recipe={open} memberId={current?.id} />
+          // 草稿与家庭菜谱都能改；**退役的先还原**（领域层也是这么判的）。
+          // 只读态给的是只读的内容 + 一句说明，不给一个按下必报 409 的表单。
+          <RecipeEditor recipe={open} memberId={current?.id} readOnly={open.status === 'retired'} />
         ) : (
           <div className="card" data-testid="recipe-cook-only">
             <b>{open.name}</b>
@@ -103,6 +124,18 @@ export function RecipeLibraryView() {
         <div className="sub" style={{ marginTop: 6 }}>
           录入新菜、改做法、退役不做的菜。{canWrite ? '' : '改菜谱是掌勺者的事。'}
         </div>
+        {/* 录入入口：这是 ADR-0009 的主干动作（“想加一道家里从没做过的新菜”） */}
+        {canWrite ? (
+          <button
+            type="button"
+            className="btn block"
+            style={{ marginTop: 10 }}
+            data-testid="recipe-create-open"
+            onClick={() => setCreating(true)}
+          >
+            ＋ 录入一道新菜
+          </button>
+        ) : null}
       </div>
 
       <div className={styles.tabs} role="tablist" aria-label="菜谱档位">
@@ -205,9 +238,6 @@ export function RecipeLibraryView() {
               tab={tab}
               canWrite={canWrite}
               onOpen={() => setOpenId(recipe.id)}
-              onPendingToggle={
-                tab === 'external' ? () => setQuery(recipe.name) : undefined
-              }
             />
           ))
         )}
@@ -225,7 +255,8 @@ function BackRow({ onBack, backLabel }: { onBack: (() => void) | undefined; back
           {backLabel}
         </button>
       ) : (
-        <Link className={styles.back} data-testid="recipe-back-settings" to="/">
+        // 设置是弹层不是路由（见 `SettingsSheet` 的 hash 说明）：`/#settings` 回到首页并自动把面板摆开
+        <Link className={styles.back} data-testid="recipe-back-settings" to="/#settings">
           {backLabel}
         </Link>
       )}
@@ -246,13 +277,11 @@ function RecipeRow({
   tab,
   canWrite,
   onOpen,
-  onPendingToggle,
 }: {
   recipe: Recipe;
   tab: LibraryTab;
   canWrite: boolean;
   onOpen: () => void;
-  onPendingToggle?: () => void;
 }) {
   return (
     <button type="button" className={styles.row} data-testid={`recipe-row-${recipe.id}`} onClick={onOpen}>
@@ -276,28 +305,13 @@ function RecipeRow({
           </span>
         ) : null}
       </span>
-      {/* 行内的「待处理」快捷：把搜索词设成这道菜的名字（纯前端，不回服务端） */}
-      {onPendingToggle && recipe.hasPendingRelabel ? (
-        <span
-          role="button"
-          tabIndex={0}
-          className={styles.rowAction}
-          data-testid={`recipe-focus-${recipe.id}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onPendingToggle();
-          }}
-        >
-          补克数
-        </span>
-      ) : null}
       {!canWrite ? <span className="sub">只读</span> : null}
     </button>
   );
 }
 
 /**
- * 搜索命中一道菜的两种方式（与 `DishPicker.matchKeyword` 同一口径）：
+ * 搜索命中一道菜的两种方式（与 `DishPicker` 内部的 `matchKeyword` 同一口径）：
  * 名字/别名包含，或**主料**（食材清单里的规范名）包含。
  * 外部菜档要按主料搜就是为这个：250 道素材里「找某道我听说过的菜」常常只记得主料。
  */

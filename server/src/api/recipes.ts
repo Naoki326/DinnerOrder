@@ -15,6 +15,7 @@ import {
   RecipeNameEmptyError,
   RecipeNoChangesError,
   RecipeNotActiveError,
+  RecipeNotEditableError,
   RecipeNotRetiredError,
   restoreRecipe,
   retireRecipe,
@@ -246,7 +247,7 @@ function promotionError(c: Context, recipeId: string, error: unknown): Response 
  * 每种失败都要告诉掌勺者下一步做什么：
  *   * 404 `not_found`：这道菜不在库里（界面该刷新）
  *   * 400 `unknown_member`：身份对不上家人列表
- *   * 409 `not_active` / `not_retired` / `already_retired`：状态机不允许这个动作（界面该刷新）
+ *   * 409 `not_active` / `not_editable` / `not_retired` / `already_retired`：状态机不允许这个动作（界面该刷新）
  *   * 400 `ingredient_grams` / `unknown_ingredient` / `duplicate_ingredient`：清单这一项不合法
  *   * 400 `no_changes`：这一次提交什么都没改（不写台账，也不假装成功）
  *   * 400 `invalid_request`：zod 已拦在前面（名字空、克数非正、值域不对）
@@ -259,6 +260,9 @@ function recipeWriteError(c: Context, recipeId: string, error: unknown): Respons
   if (error instanceof MemberNotFoundError) return c.json({ error: 'unknown_member', memberId: error.id }, 400);
   if (error instanceof RecipeNotActiveError) {
     return c.json({ error: 'not_active', id: error.recipeId, status: error.status }, 409);
+  }
+  if (error instanceof RecipeNotEditableError) {
+    return c.json({ error: 'not_editable', id: error.recipeId, status: error.status }, 409);
   }
   if (error instanceof RecipeNotRetiredError) {
     return c.json({ error: 'not_retired', id: error.recipeId, status: error.status }, 409);

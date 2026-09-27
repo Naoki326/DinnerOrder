@@ -718,6 +718,19 @@
 
 ## 归属 #30（菜谱库：掌勺者可写）
 
+- **`CUISINE_OPTIONS` 三处照抄未收拢**（来源：#30 的 Standards 审查）。web 不能 import 服务端的
+  运行时常量（ADR-0002 只放开类型），所以菜系选项值域是照抄的——本票新增的
+  `web/src/components/recipeVocabulary.ts` 是**新的唯一去处**，但 `DishPicker.tsx` 与
+  `ReviewView.tsx` 各自还留着一份（两份都早于本票存在）。把两处收拢过来要动两份在工作中的组件，
+  本票不做；**改任一处时请一并改 `recipeVocabulary.ts`**（并把另两处收拢过去）。
+- **`RecipeLibraryView` 的 `matchKeyword` 与 `DishPicker` 的同名函数是两份**（来源：同上）。
+  当前两处返回形状不同（一个 boolean、一个带“命中主料”），没并；若日后第三个地方要搜菜，
+  先把这三处并到一处。
+- **“只有掌勺者可写”是界面层的约束，服务端不拦**（来源：#30 的 Spec 审查）。
+  写路由只校验 `memberId` 存在，不校验 `is_cook`——与既有 `POST /recipes/:id/promotion`
+  同口径，也与全仓「无登录、无鉴权（总纲 §2.4：家庭 Wi-Fi 即门禁）」一致（spec 的「前端」
+  一节明写这是（可见性）约束）。若日后要服务端强制，四道写路由与 `promotion` 应一起改。
+
 - **`--replace` 的误删根因仍未修**（本票刻意避开它：导入用 `skip` 模式）。
   `import-library.ts` 的 `--replace` 是 `DELETE FROM recipes WHERE name = ?`——**不看 source、不看 id**，
   台账记过它曾误删 5 道手工种子（`docs/agents/open-items.md` 与 008 迁移附近有记录）。

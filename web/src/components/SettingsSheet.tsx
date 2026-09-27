@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router';
+import { useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router';
 import { VIEW_MODE_OPTIONS, useViewMode } from '../viewMode';
 import styles from './SettingsSheet.module.css';
 
@@ -15,7 +15,22 @@ import styles from './SettingsSheet.module.css';
 export function SettingsSheet() {
   const { mode, setMode } = useViewMode();
   const navigate = useNavigate();
+  const location = useLocation();
   const [open, setOpen] = useState(false);
+
+  /**
+   * `/#settings` 开面板（issue #30）：菜谱库的「← 设置」返回指向它。
+   *
+   * 设置是一个弹层（不是路由），从属页面无法用 `navigate('/settings')` 回到它。
+   * 用 hash 当「打开设置」的信号：回到首页 + 自动把面板摆开，人看到的就是「我回设置里了」。
+   * 开过就把 hash 抹掉（用 `replace`，不往历史里再塞一条）——否则手动收起面板后一刷新又弹开。
+   */
+  useEffect(() => {
+    if (location.hash === '#settings') {
+      setOpen(true);
+      navigate(`${location.pathname}${location.search}`, { replace: true });
+    }
+  }, [location.hash, location.pathname, location.search, navigate]);
 
   return (
     <>

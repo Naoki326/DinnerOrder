@@ -31,10 +31,12 @@ async function clearDecidedSlots(page: Page, days = 14): Promise<void> {
 }
 
 /** 从 API 找本文件新建的那道菜（按名字，不写死 id——id 是服务端生成的） */
-async function findNewRecipe(page: Page): Promise<{ id: string; status: string; steps: string; kind: string } | undefined> {
+async function findNewRecipe(
+  page: Page,
+): Promise<{ id: string; status: string; steps: string; kind: string; source: string } | undefined> {
   const response = await page.request.get(`${ROOT_URL}/api/recipes?status=all`);
   const { recipes } = (await response.json()) as {
-    recipes: { id: string; name: string; status: string; steps: string; kind: string }[];
+    recipes: { id: string; name: string; status: string; steps: string; kind: string; source: string }[];
   };
   return recipes.find((recipe) => recipe.name === NEW_NAME);
 }
@@ -70,33 +72,24 @@ test('设置 → 菜谱库 → 录入一道新菜 → 改做法 → 保存（入
   await expect(page.getByTestId('recipe-tab-external')).toBeVisible();
   await expect(page.getByTestId('recipe-tab-retired')).toBeVisible();
 
-  // 录一道新菜：走 API 录入（界面用的是同一份实现，表单字段与 PATCH 入参一一对应，
-  // 这里把「录完直接可用」这条 ADR-0009 的主干先立住，再验编辑）
-  const created = await page.request.post(`${ROOT_URL}/api/recipes`, {
-    data: {
-      name: NEW_NAME,
-      kind: 'veg',
-      effort: 'quick',
-      steps: '初始做法：切好，下锅，炒熟。',
-      ingredients: [{ ingredientId: 'cucumber', adultGrams: 120 }],
-      memberId: 'mom',
-    },
-  });
-  expect(created.status()).toBe(201);
-  const recipe = ((await created.json()) as { recipe: { id: string; status: string; source: string } }).recipe;
-  // ADR-0009：手写的菜直接进家庭库（active + oral），不需要先做过
-  expect(recipe.status).toBe('active');
+  // 录一道新菜：**走界面**（点「＋ 录入一道新菜」→ 填表单 → 提交）——这是 ADR-0009 的主干动作
+  await page.getByTestId('recipe-create-open').click();
+  await expect(page.getByTestId('recipe-editor-new')).toBeVisible();
+  await page.getByTestId('recipe-name-new').fill(NEW_NAME);
+  await page.getByTestId('recipe-kind-new').selectOption('veg');
+  await page.getByTestId('recipe-steps-new').fill('初始做法：切好，下锅，炒熟。');
+  // 加一项食材（搜字典 → 点中）
+  await page.getByTestId('recipe-ingredient-search').fill('黄瓜');
+  await page.getByTestId('recipe-add-cucumber').click();
+  await page.getByTestId('recipe-grams-new-0').fill('120');
+  await page.getByTestId('recipe-save-new').click();
+
+  // 录完直接进详情（家庭菜档）——状态就是「已进库」
+  const created = await findNewRecipe(page);
+  expect(created?.status).toBe('active');
+  const recipe = created!;
   expect(recipe.source).toBe('oral');
-
-  // 列表上看得见它（搜索直达），带「还没上过桌」标记
-  await page.reload();
-  await page.getByTestId('recipe-search-input').fill(NEW_NAME);
-  await expect(page.getByTestId(`recipe-row-${recipe.id}`)).toBeVisible();
-  await expect(page.getByTestId(`recipe-never-served-${recipe.id}`)).toContainText('还没上过桌');
-
-  // 点开进详情：看到它现在的完整内容（做法 + 逐项克数）
-  await page.getByTestId(`recipe-row-${recipe.id}`).click();
-  await expect(page.getByTestId(`recipe-editor-${recipe.id}`)).toBeVisible();
+  await expect(page.getByTestId(`recipe-form-${recipe.id}`)).toBeVisible();
   await expect(page.getByTestId(`recipe-steps-${recipe.id}`)).toHaveValue('初始做法：切好，下锅，炒熟。');
   await expect(page.getByTestId(`recipe-grams-${recipe.id}-0`)).toHaveValue('120');
 

@@ -3,10 +3,14 @@ import type { RecipeCuisine, RecipeEffort, RecipeKind, TasteTag } from '@dinnero
 /**
  * 菜谱界面的**词汇表**（issue #30）：荤素汤位、难度、口味、菜系的展示标签与值域顺序。
  *
- * 为什么单独一处：这些映射在 `DishPicker`（筛选）、`ReviewView`（转正表单）与新的菜谱库页面
- * 三处都要用，各抄一份就会漂移（加一个口味标签要记着改三处）。**web 不能 import 服务端的
- * 运行时常量**（ADR-0002 只放开类型），所以这里是照抄，真正的把关在服务端
- * （zod 的 `z.enum` 与迁移 005/006 的 CHECK）。
+ * 为什么单独一处：这些映射在筛选/校对/管理三处都要用，各抄一份就会漂移。
+ * **web 不能 import 服务端的运行时常量**（ADR-0002 只放开类型），所以这里是照抄，
+ * 真正的把关在服务端（zod 的 `z.enum` 与迁移 005/006 的 CHECK）。
+ *
+ * **现存的两份旧照抄**：`components/DishPicker.tsx` 与 `routes/ReviewView.tsx` 各自还留着一份
+ * `CUISINE_OPTIONS`（本票之前就在，两者也互不相同步的风险早已记在它们的注释里）。
+ * 本模块是**新的唯一去处**，但把这两处收拢过来是一次独立的重构（要动两份在工作中的组件），
+ * 本票不做——已记在 `docs/agents/open-items.md`（归属 #30）。改任一处时请一并改这里。
  */
 
 /** 荤素汤位（库里四个 `kind`）的展示名。**顺序即界面顺序**（荤 → 素 → 汤） */
@@ -43,7 +47,6 @@ export const TASTE_OPTIONS: TasteTag[] = ['甜', '辣', '酸', '咸鲜', '清淡
 /**
  * 菜系下拉的选项（总纲 §2.8 的封闭集合）。与 `server/src/llm/import-schema.ts` 的 `CUISINES`
  * **值域同源**，这里只决定界面上的排列顺序（「家常」放最前：草稿池里它最多）。
- * 另有一份同样的照抄在 `DishPicker` 与 `ReviewView`（都是各自的筛选/校对下拉）。
  */
 export const CUISINE_OPTIONS: RecipeCuisine[] = ['家常', '川', '粤', '鲁', '苏浙', '湘', '东北', '闽', '徽', '西北', '京'];
 

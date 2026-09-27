@@ -71,7 +71,15 @@ export function findRecipe(db: Db, id: string): Recipe | undefined {
  * 不该被这条规则挡在推荐外）。
  */
 export function hasPendingRelabel(recipe: Recipe): boolean {
-  return recipe.ingredients.some((item) => item.adultGrams <= 0);
+  return ingredientsNeedRelabel(recipe.ingredients);
+}
+
+/**
+ * 上一条的食材级形态。`hydrate` 在拼装 `Recipe` 的过程中就要判它（成品对象还没建好），
+ * 所以把判定源与成品类型解耦：两条口共用这一处，不做两遍 `some(adultGrams <= 0)`。
+ */
+export function ingredientsNeedRelabel(ingredients: readonly RecipeIngredient[]): boolean {
+  return ingredients.some((item) => item.adultGrams <= 0);
 }
 
 export function recipeExists(db: Db, id: string): boolean {
@@ -161,8 +169,8 @@ function hydrate(db: Db, rows: RecipeRow[]): Recipe[] {
     steps: row.steps,
     ingredients: ingredientsByRecipe.get(row.id) ?? [],
     neverServed: !promoted.has(row.id) && !served.has(row.id),
-    // 判定只有一处（`hasPendingRelabel`）；这里不另写一遍 `some(adultGrams <= 0)`
-    hasPendingRelabel: (ingredientsByRecipe.get(row.id) ?? []).some((item) => item.adultGrams <= 0),
+    // 判定只有一处（`hasPendingRelabel` / `ingredientsNeedRelabel`）
+    hasPendingRelabel: ingredientsNeedRelabel(ingredientsByRecipe.get(row.id) ?? []),
   }));
 }
 

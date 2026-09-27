@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Recipe, RecipeCuisine, RecipeEffort, RecipeIngredientInput, RecipeKind, TasteTag } from '@dinnerorder/server/types';
-import { usePatchRecipe, useRecipeEdits, useRecipeStatusAction } from '../api/recipe-library';
+import { useCreateRecipe, usePatchRecipe, useRecipeEdits, useRecipeStatusAction } from '../api/recipe-library';
 import { useIngredients } from '../api/ingredients';
 import {
   CUISINE_OPTIONS,
@@ -18,6 +18,13 @@ import styles from './RecipeEditor.module.css';
  *   2. **改**：字段与 `PATCH /recipes/:id` 的入参一一对应；
  *   3. **退役 / 还原**，以及**修改历史**（谁、什么时候、改了什么）。
  *
+ * 三种形态共用一个组件（否则要把同一张表单抄三遍）：
+ *   * **录入**（`creating`）：空表单，提交走 `POST /recipes`（ADR-0009：直接 active + oral）；
+ *   * **修订**（默认）：已有菜谱的可编辑表单，提交走 `PATCH`；
+ *   * **只读**（`readOnly`）：草稿 / 已退役的菜——内容看得见，表单不可编、保存按钮不出现。
+ *     为什么不是“禁用表单 + 灰着的保存”：草稿的下一步是「上桌 → 转正」（在餐后回顾里），
+ *     退役的下一步是「还原」——界面上把**下一步**说出来，比给一个按下必报 409 的按钮好。
+ *
  * 四条口径（改之前先读）：
  *   * **克数不许存 0**：已存在的 0 克项（导入期的「待重标」）显示为**空 + 标红 + 不给保存**——
  *     等于把「待重标」从 LLM 的活变成掌勺者能手工补的活。这也是本票让「待处理」真的减少的路径。
@@ -28,24 +35,47 @@ import styles from './RecipeEditor.module.css';
  *     掌勺者明确的动作，不是保存时顺手改名。
  *   * **台账是只读的**：`recipe_edits` 由服务端在每次修订时写入，界面只呈现。
  */
-export function RecipeEditor({ recipe, memberId }: { recipe: Recipe; memberId: string | undefined }) {
+export function RecipeEditor({
+  recipe,
+  memberId,
+  creating = false,
+  readOnly = false,
+  onCreated,
+}: {
+  /** 要编辑的菜；录入时传 undefined（表单从空开始） */
+  recipe?: Recipe;
+  memberId: string | undefined;
+  /** 录入一道新菜（ADR-0009）：提交走 POST /recipes 而不是 PATCH */
+  creating?: boolean;
+  /** 只读（草稿 / 已退役）：内容看得见，但不能编——下一步是转正或还原，不是 PATCH */
+  readOnly?: boolean;
+  /** 录入成功后的回调（页面用它回到列表并打开刚录的那道） */
+  onCreated?: (recipe: Recipe) => void;
+}) {
   const [draft, setDraft] = useState<Draft>(() => toDraft(recipe));
   const [error, setError] = useState<string | undefined>(undefined);
   const [saved, setSaved] = useState(false);
 
+  const create = useCreateRecipe();
   const patch = usePatchRecipe();
   const action = useRecipeStatusAction();
-  const edits = useRecipeEdits(recipe.id);
+  const edits = useRecipeEdits(recipe?.id ?? null);
+  const pendingWrite = create.isPending || patch.isPending;
+  /** 表单 testid 的稳定键：录入时是 `new`（那时候还没有菜谱 id） */
+  const fieldKey = recipe?.id ?? 'new';
 
   // 菜谱被别处改过（保存成功后缓存刷新）：把草稿同步到服务端的那一份——
   // 但仍然保留下面的本地编辑，只在**没有未保存改动**时才重置（否则会把用户正在敲的字冲掉）
   useEffect(() => {
+    if (!recipe || creating) return;
     setDraft((current) => (current.dirty ? current : toDraft(recipe)));
-  }, [recipe]);
+  }, [recipe, creating]);
 
   const gramsInvalid = draft.ingredients.some((item) => item.adultGramsText.trim() === '' || Number(item.adultGramsText) <= 0);
   const nameInvalid = draft.name.trim() === '';
-  const canSave = !gramsInvalid && !nameInvalid && draft.dirty && !patch.isPending;
+  // 录入时空表单也算「有改动」（它本来就是一张要填的空表）；修订时要求真的变了什么
+  const hasChanges = creating ? true : draft.dirty;
+  const canSave = !readOnly && !gramsInvalid && !nameInvalid && hasChanges && !pendingWrite;
 
   function update(patchToApply: Partial<Draft>): void {
     setSaved(false);
@@ -53,66 +83,84 @@ export function RecipeEditor({ recipe, memberId }: { recipe: Recipe; memberId: s
   }
 
   return (
-    <div data-testid={`recipe-editor-${recipe.id}`}>
+    <div data-testid={`recipe-editor-${fieldKey}`}>
       <div className="card">
         <div className="spread">
-          <b>{recipe.name}</b>
-          <span className="badge">{statusLabel(recipe.status)}</span>
+          <b>{creating ? '录入一道新菜' : recipe?.name}</b>
+          {recipe ? <span className="badge">{statusLabel(recipe.status)}</span> : null}
         </div>
-        <div className="sub" style={{ marginTop: 4 }}>
-          {sourceLabel(recipe.source)}
-          {recipe.neverServed ? ' · 还没上过桌' : ''}
-        </div>
-      </div>
-
-      {/* 状态动作（退役 / 还原）：与编辑表单分开，因为它们是状态机的事，不是内容的事 */}
-      <div className="card" data-testid={`recipe-status-${recipe.id}`}>
-        <div className="spread">
-          <span className="sub">
-            {recipe.status === 'retired'
-              ? '这道菜退役了：不进推荐，历史记录（吃过的餐、它的评价）完整保留。'
-              : '退役 = 家里不再做了：退出推荐池，历史记录保留。'}
-          </span>
-          {recipe.status === 'retired' ? (
-            <button
-              type="button"
-              className="btn ghost"
-              data-testid={`recipe-restore-${recipe.id}`}
-              disabled={action.isPending || !memberId}
-              onClick={() =>
-                action.mutate(
-                  { recipeId: recipe.id, action: 'restore', input: memberId ? { memberId } : {} },
-                  { onError: (cause) => setError(cause.message) },
-                )
-              }
-            >
-              还原
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="btn ghost"
-              data-testid={`recipe-retire-${recipe.id}`}
-              disabled={action.isPending || !memberId}
-              onClick={() =>
-                action.mutate(
-                  { recipeId: recipe.id, action: 'retire', input: memberId ? { memberId } : {} },
-                  { onError: (cause) => setError(cause.message) },
-                )
-              }
-            >
-              退役
-            </button>
-          )}
-        </div>
-        {action.isError ? (
-          <div className={styles.error} data-testid={`recipe-status-error-${recipe.id}`}>
-            {action.error.message}
+        {creating ? (
+          <div className="sub" style={{ marginTop: 4 }}>
+            录完直接可用：你自己的手艺就是信任背书，不需要先做一顿。
           </div>
-        ) : null}
+        ) : (
+          <div className="sub" style={{ marginTop: 4 }}>
+            {sourceLabel(recipe!.source)}
+            {recipe!.neverServed ? ' · 还没上过桌' : ''}
+          </div>
+        )}
       </div>
 
-      <div className="card" data-testid={`recipe-form-${recipe.id}`}>
+      {/* 只读的原因与下一步（草稿要转正、退役要还原）：不给一个按下必报错的表单 */}
+      {readOnly && recipe ? (
+        <div className="card" data-testid={`recipe-readonly-${fieldKey}`}>
+          <div className="sub">
+            这道菜退役了——先点下面的「还原」，回到家庭菜谱之后才能改。
+          </div>
+        </div>
+      ) : null}
+
+      {/* 状态动作（退役 / 还原）：与编辑表单分开，因为它们是状态机的事，不是内容的事。
+          录入时没有状态动作；只读时给「还原」（退役菜的唯一出口）；非只读时给退役。 */}
+      {!creating && recipe ? (
+        <div className="card" data-testid={`recipe-status-${fieldKey}`}>
+          <div className="spread">
+            <span className="sub">
+              {recipe.status === 'retired'
+                ? '这道菜退役了：不进推荐，历史记录（吃过的餐、它的评价）完整保留。'
+                : '退役 = 家里不再做了：退出推荐池，历史记录保留。'}
+            </span>
+            {readOnly && recipe.status !== 'retired' ? null : recipe.status === 'retired' ? (
+              <button
+                type="button"
+                className="btn ghost"
+                data-testid={`recipe-restore-${fieldKey}`}
+                disabled={action.isPending || !memberId}
+                onClick={() =>
+                  action.mutate(
+                    { recipeId: recipe!.id, action: 'restore', input: memberId ? { memberId } : {} },
+                    { onError: (cause) => setError(cause.message) },
+                  )
+                }
+              >
+                还原
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn ghost"
+                data-testid={`recipe-retire-${fieldKey}`}
+                disabled={action.isPending || !memberId}
+                onClick={() =>
+                  action.mutate(
+                    { recipeId: recipe!.id, action: 'retire', input: memberId ? { memberId } : {} },
+                    { onError: (cause) => setError(cause.message) },
+                  )
+                }
+              >
+                退役
+              </button>
+            )}
+          </div>
+          {action.isError ? (
+            <div className={styles.error} data-testid={`recipe-status-error-${fieldKey}`}>
+              {action.error.message}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="card" data-testid={`recipe-form-${fieldKey}`}>
         <div className={styles.field}>
           <span className={styles.label}>菜名</span>
           <input
@@ -120,7 +168,8 @@ export function RecipeEditor({ recipe, memberId }: { recipe: Recipe; memberId: s
             type="text"
             value={draft.name}
             aria-label="菜名"
-            data-testid={`recipe-name-${recipe.id}`}
+            data-testid={`recipe-name-${fieldKey}`}
+                disabled={readOnly}
             onChange={(event) => update({ name: event.target.value })}
           />
         </div>
@@ -130,7 +179,8 @@ export function RecipeEditor({ recipe, memberId }: { recipe: Recipe; memberId: s
           <select
             className={styles.select}
             aria-label="荤素汤位"
-            data-testid={`recipe-kind-${recipe.id}`}
+            data-testid={`recipe-kind-${fieldKey}`}
+                disabled={readOnly}
             value={draft.kind}
             onChange={(event) => update({ kind: event.target.value as RecipeKind })}
           >
@@ -147,7 +197,8 @@ export function RecipeEditor({ recipe, memberId }: { recipe: Recipe; memberId: s
           <select
             className={styles.select}
             aria-label="难度"
-            data-testid={`recipe-effort-${recipe.id}`}
+            data-testid={`recipe-effort-${fieldKey}`}
+                disabled={readOnly}
             value={draft.effort}
             onChange={(event) => update({ effort: event.target.value as RecipeEffort })}
           >
@@ -164,7 +215,8 @@ export function RecipeEditor({ recipe, memberId }: { recipe: Recipe; memberId: s
           <select
             className={styles.select}
             aria-label="菜系"
-            data-testid={`recipe-cuisine-${recipe.id}`}
+            data-testid={`recipe-cuisine-${fieldKey}`}
+                disabled={readOnly}
             value={draft.cuisine}
             onChange={(event) => update({ cuisine: event.target.value })}
           >
@@ -187,7 +239,8 @@ export function RecipeEditor({ recipe, memberId }: { recipe: Recipe; memberId: s
                   key={taste}
                   type="button"
                   className={on ? `${styles.chip} ${styles.chipOn}` : styles.chip}
-                  data-testid={`recipe-taste-${recipe.id}-${taste}`}
+                  data-testid={`recipe-taste-${fieldKey}-${taste}`}
+                  disabled={readOnly}
                   aria-pressed={on}
                   onClick={() =>
                     update({ tastes: on ? draft.tastes.filter((item) => item !== taste) : [...draft.tastes, taste] })
@@ -210,7 +263,8 @@ export function RecipeEditor({ recipe, memberId }: { recipe: Recipe; memberId: s
                   key={month}
                   type="button"
                   className={on ? `${styles.chip} ${styles.chipOn}` : styles.chip}
-                  data-testid={`recipe-month-${recipe.id}-${month}`}
+                  data-testid={`recipe-month-${fieldKey}-${month}`}
+                  disabled={readOnly}
                   aria-pressed={on}
                   onClick={() =>
                     update({
@@ -235,14 +289,15 @@ export function RecipeEditor({ recipe, memberId }: { recipe: Recipe; memberId: s
             rows={4}
             placeholder="一步一步写，或者就写个大概"
             aria-label="做法步骤"
-            data-testid={`recipe-steps-${recipe.id}`}
+            data-testid={`recipe-steps-${fieldKey}`}
+                disabled={readOnly}
             onChange={(event) => update({ steps: event.target.value })}
           />
         </div>
       </div>
 
       {/* 食材与克数：0 克项显示为空 + 标红 + 不给保存（「待重标」变成掌勺者能手工补的活） */}
-      <div className="card" data-testid={`recipe-ingredients-${recipe.id}`}>
+      <div className="card" data-testid={`recipe-ingredients-${fieldKey}`}>
         <div className="spread">
           <b>食材与成人份克数</b>
           <span className="sub">{draft.ingredients.length} 项</span>
@@ -264,7 +319,8 @@ export function RecipeEditor({ recipe, memberId }: { recipe: Recipe; memberId: s
                 placeholder={bad ? '必填' : ''}
                 aria-label={`${item.name}的克数`}
                 aria-invalid={bad}
-                data-testid={`recipe-grams-${recipe.id}-${index}`}
+                disabled={readOnly}
+                data-testid={`recipe-grams-${fieldKey}-${index}`}
                 onChange={(event) =>
                   update({
                     ingredients: draft.ingredients.map((current, at) =>
@@ -274,94 +330,106 @@ export function RecipeEditor({ recipe, memberId }: { recipe: Recipe; memberId: s
                 }
               />
               <span className={styles.unit}>g</span>
-              <button
-                type="button"
-                className={styles.remove}
-                aria-label={`去掉${item.name}`}
-                data-testid={`recipe-remove-ingredient-${recipe.id}-${index}`}
-                onClick={() => update({ ingredients: draft.ingredients.filter((_current, at) => at !== index) })}
-              >
-                去掉
-              </button>
+              {/* 只读态不给「去掉」：草稿/退役菜的清单变更各自走转正与还原，不是编辑页的事 */}
+              {readOnly ? null : (
+                <button
+                  type="button"
+                  className={styles.remove}
+                  aria-label={`去掉${item.name}`}
+                  data-testid={`recipe-remove-ingredient-${fieldKey}-${index}`}
+                  onClick={() => update({ ingredients: draft.ingredients.filter((_current, at) => at !== index) })}
+                >
+                  去掉
+                </button>
+              )}
             </div>
           );
         })}
 
-        {gramsInvalid ? (
-          <div className={styles.error} data-testid={`recipe-grams-error-${recipe.id}`}>
+        {!readOnly && gramsInvalid ? (
+          <div className={styles.error} data-testid={`recipe-grams-error-${fieldKey}`}>
             有项克数还没定——填上才能保存（红色那几项）。
           </div>
         ) : null}
 
-        <AddIngredient
-          onAdd={(ingredient) =>
-            update({
-              ingredients: [
-                ...draft.ingredients,
-                { ingredientId: ingredient.id, name: ingredient.name, adultGramsText: '' },
-              ],
-            })
-          }
-        />
+        {readOnly ? null : (
+          <AddIngredient
+            onAdd={(ingredient) =>
+              update({
+                ingredients: [
+                  ...draft.ingredients,
+                  { ingredientId: ingredient.id, name: ingredient.name, adultGramsText: '' },
+                ],
+              })
+            }
+          />
+        )}
       </div>
 
-      <div className="card">
-        <div className="row">
-          <button
-            type="button"
-            className="btn"
-            data-testid={`recipe-save-${recipe.id}`}
-            disabled={!canSave}
-            onClick={() => {
-              setError(undefined);
-              setSaved(false);
-              patch.mutate(
-                {
-                  recipeId: recipe.id,
-                  input: {
-                    name: draft.name.trim(),
-                    kind: draft.kind,
-                    effort: draft.effort,
-                    cuisine: draft.cuisine === '' ? null : (draft.cuisine as RecipeCuisine),
-                    tastes: draft.tastes,
-                    seasonMonths: draft.seasonMonths,
-                    steps: draft.steps,
-                    ingredients: draft.ingredients.map(toIngredientInput),
-                    ...(memberId === undefined ? {} : { memberId }),
-                  },
-                },
-                {
-                  onSuccess: () => {
-                    setSaved(true);
-                    setDraft((current) => ({ ...current, dirty: false }));
-                  },
-                  onError: (cause) => setError(cause.message),
-                },
-              );
-            }}
-          >
-            {patch.isPending ? '保存中…' : '保存'}
-          </button>
+      {/* 只读态不出现保存按钮：下一步是转正或还原，不是 PATCH */}
+      {readOnly ? null : (
+        <div className="card">
+          <div className="row">
+            <button
+              type="button"
+              className="btn"
+              data-testid={`recipe-save-${fieldKey}`}
+              disabled={!canSave}
+              onClick={() => {
+                setError(undefined);
+                setSaved(false);
+                const input = {
+                  name: draft.name.trim(),
+                  kind: draft.kind,
+                  effort: draft.effort,
+                  cuisine: draft.cuisine === '' ? null : (draft.cuisine as RecipeCuisine),
+                  tastes: draft.tastes,
+                  seasonMonths: draft.seasonMonths,
+                  steps: draft.steps,
+                  ingredients: draft.ingredients.map(toIngredientInput),
+                  ...(memberId === undefined ? {} : { memberId }),
+                };
+                const done = (created: Recipe): void => {
+                  setSaved(true);
+                  setDraft((current) => ({ ...current, dirty: false }));
+                  onCreated?.(created);
+                };
+                if (creating) {
+                  create.mutate(input, { onSuccess: done, onError: (cause) => setError(cause.message) });
+                } else {
+                  patch.mutate(
+                    { recipeId: recipe!.id, input },
+                    { onSuccess: done, onError: (cause) => setError(cause.message) },
+                  );
+                }
+              }}
+            >
+              {pendingWrite ? '保存中…' : creating ? '录进菜谱库' : '保存'}
+            </button>
+          </div>
+          {saved && !draft.dirty ? (
+            <div className={styles.ok} data-testid={`recipe-saved-${fieldKey}`}>
+              已保存
+            </div>
+          ) : null}
+          {error ? (
+            <div className={styles.error} data-testid={`recipe-error-${fieldKey}`}>
+              {error}
+            </div>
+          ) : null}
+          {/* 名字或克数不合法时把按钮为什么灰着说出来 */}
+          {!canSave && !pendingWrite && (gramsInvalid || nameInvalid) ? (
+            <div className="sub" data-testid={`recipe-save-blocked-${fieldKey}`}>
+              {nameInvalid ? '菜名不能为空。' : '有项克数还没定，填上才能保存。'}
+            </div>
+          ) : null}
         </div>
-        {saved && !draft.dirty ? (
-          <div className={styles.ok} data-testid={`recipe-saved-${recipe.id}`}>
-            已保存
-          </div>
-        ) : null}
-        {error ? (
-          <div className={styles.error} data-testid={`recipe-error-${recipe.id}`}>
-            {error}
-          </div>
-        ) : null}
-        {/* 名字或克数不合法时把按钮为什么灰着说出来 */}
-        {!canSave && !patch.isPending && (gramsInvalid || nameInvalid) ? (
-          <div className="sub" data-testid={`recipe-save-blocked-${recipe.id}`}>
-            {nameInvalid ? '菜名不能为空。' : '有项克数还没定，填上才能保存。'}
-          </div>
-        ) : null}
-      </div>
+      )}
 
-      <EditHistory recipeId={recipe.id} edits={edits.data ?? []} pending={edits.isPending} />
+      {/* 修改历史：录入时与只读态都不显示（前者还没有历史，后者在台账卡片里也不该有写入入口） */}
+      {creating || readOnly ? null : (
+        <EditHistory recipeId={recipe!.id} edits={edits.data ?? []} pending={edits.isPending} />
+      )}
     </div>
   );
 }
@@ -467,7 +535,21 @@ interface Draft {
   dirty: boolean;
 }
 
-function toDraft(recipe: Recipe): Draft {
+function toDraft(recipe: Recipe | undefined): Draft {
+  // 录入（没有菜谱）：给一张能直接用的空表（荤菜、中等难度是缺省，录完能改）
+  if (!recipe) {
+    return {
+      name: '',
+      kind: 'meat',
+      effort: 'medium',
+      cuisine: '',
+      tastes: [],
+      seasonMonths: [],
+      steps: '',
+      ingredients: [],
+      dirty: false,
+    };
+  }
   return {
     name: recipe.name,
     kind: recipe.kind,
