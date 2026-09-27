@@ -6,6 +6,8 @@
 | --- | --- | --- |
 | `howtocook-disanxian.md` | HowToCook（Anduin2017/HowToCook）`dishes/vegetable_dish/地三鲜/地三鲜.md` | 原文照抄（Unlicense 公有领域，无许可顾虑） |
 | `howtocook-baizhuoxia.md` | HowToCook `dishes/aquatic/白灼虾/白灼虾.md` | 原文照抄 |
+| `howtocook-zicaidanhuatang.md` | HowToCook `dishes/soup/紫菜蛋花汤.md` | 原文照抄（issue #29：只有 3 行、其中两条是**倒装**的极简样本） |
+| `howtocook-mapodoufu.md` | HowToCook `dishes/meat_dish/麻婆豆腐/麻婆豆腐.md` | 原文照抄（issue #29：10 行全是倒装，是全仓库丢得最狠的一道） |
 | `xiachufang-detail.html` | 下厨房某菜谱详情页 | **手工缩减**：只留解析依赖的 DOM 形状，正文删到「够验解析」为止 |
 | `xiachufang-explore.html` | 下厨房「本周最受欢迎菜谱」热榜页 | **手工缩减**：只留六条卡片（真页 25 条），形状一致 |
 

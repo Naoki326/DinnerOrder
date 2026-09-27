@@ -53,6 +53,82 @@ describe('份量解析（不猜：没有明确克数就留 null 等 LLM 重标�
   });
 });
 
+/**
+ * 「份量在前」的倒装行（issue #29）。
+ *
+ * HowToCook 里有相当一批条目是倒装的（`10g 的干紫菜`、`两个鸡蛋`），而 `splitNameQuantity`
+ * 原先**假定份量永远写在名字后面**：切点落在份量的起点，倒装行的切点就是 0，于是切出的名字是空串、
+ * 整条被 `if (name === '' || quantity === '') continue` 丢掉。
+ *
+ * **损失是静默的**：菜照样入库，只是少几样食材——买菜清单跟着少买、份量合计少算。
+ * 实测（对 HowToCook 全仓库 377 篇重放）：倒装丢弃 **54 行 / 21 道菜**，丢得最狠的是麻婆豆腐 10 行。
+ *
+ * 这一组用**真实原文夹具**（`howtocook-zicaidanhuatang.md` / `howtocook-mapodoufu.md`，
+ * HowToCook 是 Unlicense 公有领域，与既有夹具同源）——形状是真数据，不是想象的。
+ */
+describe('倒装份量（issue #29）：`10g 的干紫菜` / `两个鸡蛋` 这类不再丢', () => {
+  it('「份量 + 的 + 名字」：切出名字与份量，前导「的」不进名字', () => {
+    const draft = parseHowToCook('dishes/soup/紫菜蛋花汤.md', fixture('howtocook-zicaidanhuatang.md'));
+    expect(draft).toBeDefined();
+    const byName = new Map(draft!.ingredients.map((item) => [item.name, item]));
+    // 原文：`10g 的干紫菜（喜欢紫菜的可以多放些）` → 名字 `干紫菜`、份量 `10g`
+    expect(byName.has('干紫菜')).toBe(true);
+    expect(byName.get('干紫菜')?.adultGrams).toBe(10);
+  });
+
+  it('「数字 + 量词 + 名字」（无空格）：两个鸡蛋 → 鸡蛋', () => {
+    const draft = parseHowToCook('dishes/soup/紫菜蛋花汤.md', fixture('howtocook-zicaidanhuatang.md'));
+    const byName = new Map(draft!.ingredients.map((item) => [item.name, item]));
+    expect(byName.has('鸡蛋')).toBe(true);
+    // 「两个」不是克数（**不猜**）：留 null 等 LLM 重标，但原文份量要留作证据
+    expect(byName.get('鸡蛋')?.adultGrams).toBeNull();
+    expect(byName.get('鸡蛋')?.quantity).toContain('两个');
+  });
+
+  it('括号里的补充说明不进名字（AC 3）', () => {
+    const draft = parseHowToCook('dishes/soup/紫菜蛋花汤.md', fixture('howtocook-zicaidanhuatang.md'));
+    for (const item of draft!.ingredients) {
+      expect(item.name).not.toContain('（');
+      expect(item.name).not.toContain('可以多放些');
+    }
+  });
+
+  it('整篇：紫菜蛋花汤的三条都进了（原先只剩「盐 2 克」）', () => {
+    const draft = parseHowToCook('dishes/soup/紫菜蛋花汤.md', fixture('howtocook-zicaidanhuatang.md'));
+    expect(draft!.ingredients.map((item) => item.name).sort()).toEqual(['干紫菜', '盐', '鸡蛋'].sort());
+  });
+
+  it('整篇：麻婆豆腐的十条都进了（原先丢 10 行，实测量化里最狠的一道）', () => {
+    const draft = parseHowToCook('dishes/meat_dish/麻婆豆腐/麻婆豆腐.md', fixture('howtocook-mapodoufu.md'));
+    const names = draft!.ingredients.map((item) => item.name);
+    for (const expected of ['内脂豆腐', '咸鸭蛋', '五花肉', '大蒜', '生姜', '小米辣', '蒜蓉辣酱', '花椒', '食盐', '酱油']) {
+      expect(names).toContain(expected);
+    }
+    // 克数原文里有明确重量的项要落值（`20-30g 五花肉` → 取上界）
+    const byName = new Map(draft!.ingredients.map((item) => [item.name, item]));
+    expect(byName.get('五花肉')?.adultGrams).toBe(30);
+    expect(byName.get('酱油')?.adultGrams).toBe(10);
+  });
+
+  it('倒装不误伤正常行：`盐 2 克` / `虾 250g` / `主料：五花肉 300g` 照旧', () => {
+    const draft = parseHowToCook('dishes/vegetable_dish/地三鲜/地三鲜.md', fixture('howtocook-disanxian.md'));
+    const byName = new Map(draft!.ingredients.map((item) => [item.name, item]));
+    expect(byName.get('茄子')?.adultGrams).toBe(200);
+    expect(byName.get('土豆')?.adultGrams).toBe(150);
+  });
+
+  it('**描述句不当作倒装救回来**（宁可留着现状，也不把一句话当食材名）', () => {
+    // `一般一个人可以食用 60ml-110ml 的米。` 这类是描述句，不是食材行。
+    // 它原先的切法是「名字=前半句、份量=后半句」——本票**不改这条**（另一类洞，issue 划在范围外），
+    // 但要钉住「倒装的修复没有把描述句也拉进来」。
+    const draft = parseHowToCook('dishes/soup/米粥.md', fixture('howtocook-zicaidanhuatang.md').replace('10g 的干紫菜（喜欢紫菜的可以多放些）', '一般一个人可以食用 60ml-110ml 的米。'));
+    // 没被倒装规则「救」成一个以句子开头的新名字
+    for (const item of draft?.ingredients ?? []) {
+      expect(item.name.startsWith('一般一个人可以食用')).toBe(false);
+    }
+  });
+});
+
 describe('HowToCook 采集（筛选口径：家常热度 + 忌口排除，不按菜系）', () => {
   it('从真实 markdown 里读出菜名、份量、食材与做法', () => {
     const draft = parseHowToCook('dishes/vegetable_dish/地三鲜/地三鲜.md', fixture('howtocook-disanxian.md'));

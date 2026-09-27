@@ -231,11 +231,28 @@ export function parseHowToCook(relativePath: string, text: string): DraftRecipe 
  *
  * 单位词是**封闭小集合**（家常菜谱的份量单位就这些）：不加这一条，`姜 一块` 会被整串当成食材名，
  * 于是「姜」这条项在归一阶段直接消失（真实数据跑出来的第一批失败清单里就有它）。
+ *
+ * **倒装行**（issue #29）：HowToCook 里有 54 行是**份量在前**的（`10g 的干紫菜`、`两个鸡蛋`、
+ * `1 盒内脂豆腐`）。它们被上面的切点切出**空名字**——而调用方对空名字是 `continue`（整条丢），
+ * 于是紫菜蛋花汤只剩「盐 2 克」、麻婆豆腐丢掉 10 行里的 10 行。修复是：名字为空时
+ * 再试一次「剥掉前导份量」（见 `splitInvertedQuantity`）。
  */
 const QUANTITY_UNITS = '克gG斤两mlML升个根片瓣块勺把段张杯份头颗只条朵粒撮碗盒袋瓶罐支枚半';
 
+/**
+ * 单位词的**多字符版**（`ml` / `ML` 这种两个字母的单位）。
+ *
+ * 为什么单独列：正则字符类 `[ml]` 是「m 或 l」的**逐字符**匹配，不是「ml 这个单位」——
+ * 拿它去剥前导份量会把 `125ml 淡奶油` 切成 `125m` + `l 淡奶油`（本轮实现时真踩过）。
+ * 所以剥前导份量时多字符单位排在前面、单字符单位后排，两者用 `|` 分隔而不是混进字符类。
+ */
+const MULTI_CHAR_QUANTITY_UNITS = ['ml', 'ML', 'kg', 'KG'];
+
+/** 单位词的正则分支：多字符优先，然后是单字符字符类（`[克gG…]`） */
+const QUANTITY_UNIT_PATTERN = `(?:${MULTI_CHAR_QUANTITY_UNITS.join('|')}|[${QUANTITY_UNITS.replace(/ml|ML/g, '')}])`;
+
 function splitNameQuantity(body: string): { name: string; quantity: string } | undefined {
-  const marker = new RegExp(`[：:]|[\\d０-９]|[一二两三四五六七八九十半]\\s*[${QUANTITY_UNITS}]`);
+  const marker = new RegExp(`[：:]|[\\d０-９]|[一二两三四五六七八九十半]\\s*${QUANTITY_UNIT_PATTERN}`);
   const hit = marker.exec(body);
   if (!hit) return undefined;
   const cut = hit.index;
@@ -244,7 +261,38 @@ function splitNameQuantity(body: string): { name: string; quantity: string } | u
   // 冒号切点：冒号本身不属于名字，也不属于份量
   if (name.endsWith('：') || name.endsWith(':')) name = name.slice(0, -1).trim();
   if (rest.startsWith('：') || rest.startsWith(':')) rest = rest.slice(1).trim();
+  // 名字为空 = 切点落在**开头的份量**上（倒装行）：换成「剥前导份量」那条路
+  if (name === '') return splitInvertedQuantity(rest);
   return { name, quantity: rest };
+}
+
+/**
+ * 剥掉**前导份量**，剩下的当名字（issue #29）。
+ *
+ * 只认「数字/中文数词（可带区间）+ 单位词」这一个形状，且要求**剥完剩下的名字非空、不以数字开头**。
+ * 两道闸门都是故意保守的：
+ *   * 剥不出前导份量就返回 `undefined`（调用方继续整条丢）——例如 `100°C 沸水 1500ml` 的
+ *     `°C` 不在单位表里，那就**保持现状**，不为了「救回来」把 `100°C 沸水` 当食材名；
+ *   * 名字开头的 `的`（`10g 的干紫菜` 是「10g 的 X」的汉语语法）在切分后剥掉，
+ *     否则「的干紫菜」永远对不上字典。
+ *
+ * 括号里的补充说明不在这里剥：调用方（`parseHowToCookIngredients`）在**长度闸门之前**
+ * 统一剥一次（那里是这道门所在的地方，见那儿的注释）。
+ */
+function splitInvertedQuantity(body: string): { name: string; quantity: string } | undefined {
+  const leading = new RegExp(
+    `^(?:约|大约|大概|近)?\\s*([\\d０-９一二两三四五六七八九十半]+(?:\\s*[-~到至]\\s*[\\d０-９一二两三四五六七八九十半]+)?\\s*${QUANTITY_UNIT_PATTERN})\\s*`,
+  );
+  const hit = leading.exec(body);
+  if (!hit) return undefined;
+  let name = body.slice(hit[0].length).trim();
+  // 「10g 的干紫菜」→「干紫菜」（汉语的「X 的 Y」；不剥的话这个名字永远归不上字典）
+  name = name.replace(/^的\s*/, '').trim();
+  if (name === '') return undefined;
+  // 剩下的名字自己又以数字开头（`100°C 沸水 1500ml` 剥不出，这层是防御性写法）：
+  // 这种多半是「带条件的名字」，不熟，不猜
+  if (/^[\d０-９]/.test(name)) return undefined;
+  return { name, quantity: hit[1]!.trim() };
 }
 
 /**
@@ -267,6 +315,18 @@ function parseHowToCookIngredients(section: string): RawIngredient[] {
     if (name === '' || quantity === '') continue;
     // 去掉数量词尾巴（「盐量 = 份数」这类）与星号
     name = name.replace(/[*`]/g, '').replace(/量(=|＝).*$/, '').trim();
+    // 剥括号里的补充说明（issue #29 的 AC 3）：`干紫菜（喜欢紫菜的可以多放些）` → `干紫菜`。
+    //
+    // 为什么*采集侧*也要剥（归一层的 `cleanName` 已经剥一次）：因为**下一行的长度闸门**。
+    // 不剥的话 `干紫菜（喜欢紫菜的可以多放些）` 是 18 字→被`name.length > 12` 整条丢，
+    // 根本走不到 `cleanName`——闸门在采集侧、剥括号在归一側，顺序上就是两道门。
+    // 两处开口的括号都剥（`猪肉 (`、`水（`）：数据源截断的痕迹，留着永远对不上字典。
+    name = name
+      .replace(/[（(].*?[）)]/g, '')
+      .replace(/[（(【[「『].*$/, '')
+      .replace(/[）)】]」』]+$/, '')
+      .trim();
+    if (name === '') continue;
     if (name.length > 12 || /^\d/.test(name)) continue;
     if (/^[（(]|可选|注意/.test(name)) continue;
 
