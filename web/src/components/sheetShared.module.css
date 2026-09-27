@@ -1,0 +1,53 @@
+/* 共享的底部弹层（Sheet / SettingsSheet / IdentitySwitcher 三个面板共用，#31）。
+
+   宽窄两版由**壳上的 `data-layout`**（不是媒体查询）决定：设置里的「手机版 / 平板版」手动覆盖
+   必须能同时作用于弹层——纯媒体查询会让手动覆盖只管布局、不管弹层，出现「平板版页面 + 手机版
+   抽屉」的错配。
+
+   这份 CSS 与 `data-layout` 之间没有 CSS 选择器能直接连起来（模块化后类名不同、且遮罩挂在
+   组件树里），所以两种形态的类名各留一类、由组件按 `useLayout()` 的派生值挑。 */
+
+/* 遮罩：盖全屏（含侧边导航）。z-index 60 高于导航（TabBar 40 / SideNav 30）——
+   弹层打开时导航点不动，避免「以为点到了导航其实点到了遮罩」（story 45）。 */
+.mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(60, 50, 30, 0.28);
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+}
+
+/* 手机版：从屏幕底边滑上来的抽屉（今天的形态，一行不改） */
+.maskNarrow {
+  align-items: flex-end;
+}
+
+/* 平板版：居中弹出（story 43） */
+.maskWide {
+  align-items: center;
+  padding: 24px;
+}
+
+.sheet {
+  background: var(--card);
+  padding: 16px 14px 22px;
+  /* 长自由文本（食谱步骤、营养拆解）在面板内滚动，不把面板撑宽、不溢出屏幕（story 46） */
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.sheetNarrow {
+  border-radius: 20px 20px 0 0;
+  width: min(100%, 480px);
+  max-height: 80vh;
+}
+
+.sheetWide {
+  /* 四边圆角 + 不贴底：看着是一个居中的对话框，而不是一块贴上来的抽屉 */
+  border-radius: 20px;
+  width: min(100%, 560px);
+  max-height: 82vh;
+  box-shadow: 0 8px 32px rgba(60, 50, 30, 0.22);
+}

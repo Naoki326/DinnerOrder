@@ -11,6 +11,7 @@ import {
   type ProfilePatch,
 } from '../api/members';
 import { useIdentity } from '../identity';
+import { useLayout } from '../layout';
 import { ageInYears, memberSubtitle } from '../components/memberLabel';
 import styles from './FamilyView.module.css';
 
@@ -26,6 +27,7 @@ import styles from './FamilyView.module.css';
  */
 export function FamilyView() {
   const { members, current, isPending, isError } = useIdentity();
+  const { layout } = useLayout();
   const [adding, setAdding] = useState(false);
 
   return (
@@ -58,7 +60,9 @@ export function FamilyView() {
         <div className="card sub">还没有家人——点上面的「+ 新增家人」把家里人加进来。</div>
       ) : null}
 
-      <div className={styles.list}>
+      {/* 平板版（#31）：卡片网格（一屏看到全家画像），而不是一条竖着的长列表。
+          手机版一行不改（仍是单列 `.list`）。 */}
+      <div className={layout === 'wide' ? `${styles.list} ${styles.grid}` : styles.list}>
         {members.map((member) => (
           <MemberCard key={member.id} member={member} isCurrent={member.id === current?.id} />
         ))}

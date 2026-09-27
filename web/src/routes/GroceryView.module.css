@@ -96,3 +96,18 @@
   background: var(--bg);
   color: var(--ink);
 }
+
+/* 平板版（#31）：**要买的东西**与**行动区**双列。
+   左列是清单本体（过期警告 + 聚合行 + 生熟换算参考）；右列是手工行与动作回执
+   ——两手分别在「照单买」与「临时补一笔」这两件事上，宽屏下不该挤在同一条长列里。 */
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.primary,
+.side {
+  min-width: 0;
+}

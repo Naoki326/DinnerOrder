@@ -1,0 +1,16 @@
+/* 「同一串卡片两种摆法」的双列容器（#31，见 SectionedLayout.tsx）。
+   两列各自是一串竖排卡片：`align-self: start` 让每张卡各自靠上，不被对面那一列拉高。 */
+
+.columns {
+  display: grid;
+  /* 左列（挑菜/餐次列表）与右列（份量/反馈）都允许收缩：长菜名与长理由不许把栅格撑宽 */
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}

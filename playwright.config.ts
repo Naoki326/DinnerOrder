@@ -27,7 +27,23 @@ export default defineConfig({
     trace: 'retain-on-failure',
     viewport: E2E.viewport,
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], viewport: E2E.viewport } }],
+  projects: [
+    // #31：版式是设备本地偏好，判据是视口宽度——所以「同一份构建产物在两种尺寸下」
+    // 用两个 project 跑。`phone` 跑全部（既有 95 条断言的归属地）；`tablet` 只跑与版式
+    // 直接相关的那些文件（issue 明写这可以白名单，别假定宽版能跑通全部）。
+    //
+    // 白名单**刻意不含 `recipe-library.spec.ts`**：它的「录入一道新菜」用例会往**两个 project
+    // 共用的库**里建一道固定名字的菜，第二个 project 再跑时 `findNewRecipe` 按名字会先找到
+    // 上一个 project 留下的那道（`recipe-form-<新 id>` 于是永远不出现）——是**跨 project 的
+    // 测试干扰**，不是版式问题。菜谱库的宽版摆法由 `tablet.spec.ts` 的两条直接覆盖
+    // （「菜谱库在平板版下不显示主导航」+「逐页冒烟」里的双列与搜索入口），更对口。
+    { name: 'phone', use: { ...devices['Desktop Chrome'], viewport: E2E.viewport } },
+    {
+      name: 'tablet',
+      use: { ...devices['Desktop Chrome'], viewport: E2E.tabletViewport },
+      testMatch: /(tablet|views|smoke|review)\.spec\.ts/,
+    },
+  ],
   webServer: [
     {
       // 先删掉上一轮留下的库：E2E 会改画像（增删忌口/改出生年月），

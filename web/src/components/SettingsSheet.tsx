@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
+import { LAYOUT_OPTIONS, TABLET_MIN_WIDTH, useLayout } from '../layout';
 import { VIEW_MODE_OPTIONS, useViewMode } from '../viewMode';
+import { useSheetClasses } from './useSheetClasses';
 import styles from './SettingsSheet.module.css';
 
 /**
- * 设置（⚙️）：M1 只有一项——**视图模式**（总纲 §2.10、spec §8 家人反馈①）。
+ * 设置（⚙️）：**视图模式**与**版式**两组（总纲 §2.10、spec §8 家人反馈①、#31）。
+ * 两者是**正交的两个设备本地维度**：视图模式决定用哪一套界面（A/B/C），版式决定这一套摆成
+ * 几列（手机单列 / 平板双列）。可以各自选，也可以都留在默认。
  *
  * 与身份切换器同形的底部面板（同一个 `mask`/`sheet` 交互）：点遮罩收起、点内容区不收起，
  * 手机上少一层「弹层没关干净」的状态。
@@ -14,6 +18,8 @@ import styles from './SettingsSheet.module.css';
  */
 export function SettingsSheet() {
   const { mode, setMode } = useViewMode();
+  const { preference, layout, setPreference } = useLayout();
+  const sheetClasses = useSheetClasses();
   const navigate = useNavigate();
   const location = useLocation();
   const [open, setOpen] = useState(false);
@@ -48,16 +54,16 @@ export function SettingsSheet() {
 
       {open ? (
         <div
-          className={styles.mask}
+          className={sheetClasses.mask}
           data-testid="settings-sheet"
           role="dialog"
           aria-label="设置"
           onClick={() => setOpen(false)}
         >
-          <div className={styles.sheet} onClick={(event) => event.stopPropagation()}>
+          <div className={sheetClasses.sheet} onClick={(event) => event.stopPropagation()}>
             <div className={styles.sheetHead}>
               <b>设置</b>
-              <span className="sub">在这台手机上生效</span>
+              <span className="sub">在这台设备上生效</span>
             </div>
 
             <div className="sub">视图模式（默认「下一餐大卡」，随时换，家人各用各的）</div>
@@ -86,7 +92,45 @@ export function SettingsSheet() {
             })}
 
             <div className={`sub ${styles.note}`}>
-              三套视图的数据与操作完全一样（定餐/换菜/留量），只是摆法不同。切换只在这台手机生效。
+              三套视图的数据与操作完全一样（定餐/换菜/留量），只是摆法不同。切换只在这台设备生效。
+            </div>
+
+            {/* 版式（#31）：与「视图模式」正交的第二个设备本地维度——
+                「自动」按视口宽度走，手动选则锁定（手动选比屏幕宽度优先，story 4、5）。 */}
+            <div className={`sub ${styles.section}`}>版式（与视图模式互不干涉）</div>
+
+            {LAYOUT_OPTIONS.map((option) => {
+              const isCurrent = option.id === preference;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={isCurrent ? `${styles.option} ${styles.on}` : styles.option}
+                  data-testid={`layout-option-${option.id}`}
+                  aria-pressed={isCurrent}
+                  onClick={() => setPreference(option.id)}
+                >
+                  <span className={styles.who}>
+                    <span className={styles.name}>{option.name}</span>
+                    <div className="sub">{option.desc}</div>
+                  </span>
+                  <span className={isCurrent ? 'badge acc' : 'badge'}>{isCurrent ? '当前' : '选择'}</span>
+                </button>
+              );
+            })}
+
+            {/* 此刻实际落在哪一档（story 9）：选「自动」时也要看得出实际生效的是哪一种，
+                而不是只能猜。阈值文案引用唯一常量（`TABLET_MIN_WIDTH`）。 */}
+            <div className="sub" data-testid="layout-effective" style={{ marginTop: 10 }}>
+              此刻生效：{layout === 'wide' ? '平板版' : '手机版'}
+              {preference === 'auto'
+                ? `（自动：屏幕宽度 ≥ ${TABLET_MIN_WIDTH}px 用平板版）`
+                : '（你选的，不再跟屏幕宽度走）'}
+            </div>
+
+            <div className={`sub ${styles.note}`}>
+              版式与视图模式两不相干：平板上 A/B/C 都能用、各自摆成双列；手机上都是今天这套单列。
+              版式与视图模式都只存在这台设备上。
             </div>
 
             {/*

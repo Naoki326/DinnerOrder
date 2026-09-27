@@ -1,4 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
+import {
+  bookingSnapshot,
+  clearDecidedSlots,
+  listSlots,
+  type BookingSnapshot,
+  type HistoryJson,
+  type SlotJson,
+} from './probes';
 import { E2E, ROOT_URL } from './test-env';
 
 /**
@@ -14,39 +22,6 @@ import { E2E, ROOT_URL } from './test-env';
  * 时间基准是真实时钟（webServer 不注入假时钟），餐槽 id 一律现取不写死；
  * 留痕 append-only，断言只相对本次操作。
  */
-interface SlotJson {
-  id: string;
-  date: string;
-  meal: 'lunch' | 'dinner';
-  status: 'undecided' | 'decided';
-  menu: {
-    dishes: { recipeId: string; name: string; keepLeftover: boolean }[];
-    diners: { memberId: string; name: string }[];
-    leftoverSlotId: string | null;
-  } | null;
-  /** 晚餐「吃剩的」的来源（服务端推导：同日午餐已定且标了留量） */
-  leftoverSource: { slotId: string; dishes: { recipeId: string; name: string }[] } | null;
-  /** 本餐份量（服务端现算；留量那一餐的逐菜上浮读数在里面） */
-  portion: { uplift: number; dishes: { recipeId: string; uplift: number }[] } | null;
-}
-
-interface HistoryJson {
-  type: string;
-  source: string;
-  leftoverSlotId: string | null;
-  llm: { model: string; promptVersion: string; degraded: boolean } | null;
-  diners: { memberId: string }[];
-}
-
-/** 清场：窗口内已定的餐槽全取消（每套视图都要一张干净的未定大卡） */
-async function clearDecidedSlots(page: Page): Promise<void> {
-  const response = await page.request.get(`${ROOT_URL}/api/slots?days=14`);
-  const { slots } = (await response.json()) as { slots: SlotJson[] };
-  for (const slot of slots.filter((item) => item.status === 'decided')) {
-    await page.request.delete(`${ROOT_URL}/api/slots/${slot.id}`);
-  }
-}
-
 /** 窗口内最近的未定餐槽（A 的大卡 / B 的第一行 / C 的下一件事是同一个） */
 async function nextUndecidedSlot(page: Page): Promise<string> {
   const response = await page.request.get(`${ROOT_URL}/api/slots?days=7`);
@@ -98,9 +73,11 @@ test('视图模式是设备本地设置：默认 A、设置里三选一、刷新
   await page.reload();
   await expect(page.getByTestId('compact-view')).toBeVisible();
 
-  // 不跨设备：**此刻**另一台手机打开还是默认 A——这台刚切成 B，
-  // 所以「存成服务端全局」的实现会在这里得到 B 而失败
-  const otherPhone = await browser.newContext({ viewport: E2E.viewport });
+  // 不跨设备：**此刻**另一台同尺寸设备打开还是默认 A——这台刚切成 B，
+  // 所以「存成服务端全局」的实现会在这里得到 B 而失败。
+  // 视口取当前 project 的尺寸（#31）：这样对照组唯一的不同就是「另一台设备」，
+  // 不会把**版式**（宽度决定）掺进这条「视图模式不跨设备」的对照里。
+  const otherPhone = await browser.newContext({ viewport: page.viewportSize()! });
   const otherPage = await otherPhone.newPage();
   await otherPage.goto(`${ROOT_URL}/`);
   await expect(otherPage.getByTestId('home-view')).toBeVisible();
@@ -117,52 +94,8 @@ test('视图模式是设备本地设置：默认 A、设置里三选一、刷新
   await expect(page.getByTestId('home-view')).toBeVisible();
 });
 
-interface BookingSnapshot {
-  status: string;
-  dishes: { recipeId: string; keepLeftover: boolean }[];
-  diners: string[];
-  /** 菜单上的「吃剩的」引用（#22）：普通菜单 / 推荐那一套都是 null */
-  leftoverOf: string | null;
-  /** 本餐逐菜的上浮系数（服务端现算；这一餐读的是被引用那一餐多做的那一份） */
-  uplift: number[];
-  lastEvent: string;
-  lastSource: string;
-  /** 末条留痕的「吃剩的」引用（事件流要能回答「为什么这顿没新采购」） */
-  lastLeftoverOf: string | null;
-  /** 留痕里的 LLM 元数据：只取**语义**字段。`latencyMs` 刻意不进对照——它是真实耗时，
-   *  同一条路重跑也会 0ms/1ms 地跳，拿它比会把「语义一致」变成随机红。 */
-  lastLlm: { model: string; promptVersion: string; degraded: boolean } | null;
-}
-
-/** 服务端此刻的真实状态：状态 + 菜单（含每道菜的留量）+ 末条留痕（类型/source/LLM 元数据） */
-async function bookingSnapshot(page: Page, slotId: string): Promise<BookingSnapshot> {
-  const response = await page.request.get(`${ROOT_URL}/api/slots/${slotId}`);
-  const { slot, history } = (await response.json()) as { slot: SlotJson; history: HistoryJson[] };
-  const last = history.at(-1);
-  return {
-    status: slot.status,
-    dishes: (slot.menu?.dishes ?? []).map((dish) => ({ recipeId: dish.recipeId, keepLeftover: dish.keepLeftover })),
-    diners: (slot.menu?.diners ?? []).map((diner) => diner.memberId),
-    leftoverOf: slot.menu?.leftoverSlotId ?? null,
-    uplift: (slot.portion?.dishes ?? []).map((dish) => dish.uplift),
-    lastEvent: last?.type ?? '',
-    lastSource: last?.source ?? '',
-    lastLeftoverOf: last?.leftoverSlotId ?? null,
-    lastLlm: last?.llm
-      ? { model: last.llm.model, promptVersion: last.llm.promptVersion, degraded: last.llm.degraded }
-      : null,
-  };
-}
-
 /** 全家人（种子的 sort_order）：「不传名单 = 全员」的那一份（总纲 §3、§4） */
 const ALL_MEMBERS = ['mom', 'dad', 'dabao', 'xiaobao'] as const;
-
-/** 窗口内的餐槽（日期×餐次顺序） */
-async function listSlots(page: Page, days: number): Promise<SlotJson[]> {
-  const response = await page.request.get(`${ROOT_URL}/api/slots?days=${days}`);
-  expect(response.ok(), `餐槽列表没要回来：HTTP ${response.status()}`).toBe(true);
-  return ((await response.json()) as { slots: SlotJson[] }).slots;
-}
 
 /**
  * 留量（S4）的前置布置：把「同日午餐 + 晚餐」摆成三套视图都能走到的场景。
@@ -473,9 +406,9 @@ test('C 长辈小孩极简：吃剩的那一餐看得见、不吃能取消（S4�
   expect(saved.leftoverOf).toBe(lunch);
   expect(saved.dishes.map((dish) => dish.recipeId)).toEqual(['hongshaopaigu']);
 
-  // 手机宽度：大按钮不吃宽度（C 给长辈小孩用，390 是 E2E 的固定视口）
+  // 大按钮不吃宽度：对**当前视口**断言（#31 起这个 spec 也在平板尺寸下跑）
   const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-  expect(scrollWidth).toBeLessThanOrEqual(390);
+  expect(scrollWidth).toBeLessThanOrEqual(page.viewportSize()!.width);
 
   // 取消（同一条 DELETE /slots/:id）：晚餐回到未定，大按钮回来——取消不是封禁
   await page.getByTestId('simple-cancel-leftover').click();
@@ -630,9 +563,9 @@ test('B 掌勺者紧凑流：按天时间轴、行内展开看到份量与留量
   // 用餐者名单也看得见（改餐前的核对）
   await expect(body).toContainText('妈妈');
 
-  // 手机宽度（总纲「手机优先」）
+  // 不吃宽度（总纲「手机优先」；#31 起这个 spec 也在平板尺寸下跑）
   const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-  expect(scrollWidth).toBeLessThanOrEqual(390);
+  expect(scrollWidth).toBeLessThanOrEqual(page.viewportSize()!.width);
 
   // 直接取消这一餐：与编辑器里的「取消这一餐」同一语义（回到未定）
   await page.getByTestId(`compact-cancel-${slotId}`).click();
@@ -723,5 +656,5 @@ test('C 长辈小孩极简：两步向导——谁吃 → 吃这些（可换单�
   await expect(page.getByTestId(`simple-dish-${candidateId}`)).toBeHidden();
 
   const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-  expect(scrollWidth).toBeLessThanOrEqual(390);
+  expect(scrollWidth).toBeLessThanOrEqual(page.viewportSize()!.width);
 });

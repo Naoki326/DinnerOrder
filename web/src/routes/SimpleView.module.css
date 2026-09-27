@@ -5,6 +5,25 @@
   text-align: center;
 }
 
+/* 平板版（#31）：C 的纪律是「一屏一件事、大按钮」，宽屏下也不变成信息密集的界面——
+   只是不再让一行大字横跨整屏（超宽的 30px 行读起来很累）。居中的窄栏保留大按钮的观感。 */
+.wrap[data-layout-view='wide'] {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+/* 第二步的菜卡：宽屏下摊成网格（一屏看完这一餐的几道菜），窄屏仍是单列大卡 */
+.wrap[data-layout-view='wide'] .cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.wrap[data-layout-view='wide'] .card {
+  margin: 0;
+}
+
 .emoji {
   font-size: 56px;
   margin: 18px 0 6px;

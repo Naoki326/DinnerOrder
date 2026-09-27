@@ -4,11 +4,11 @@ import { HomeView } from './HomeView';
 import { SimpleView } from './SimpleView';
 
 /**
- * 主界面（`/`）的三视图分发：视图模式是**设备本地的呈现偏好**，只决定用哪个组件渲染
+ * 主界面（`/`）的**窄版**视图模式分发：视图模式是**设备本地的呈现偏好**，只决定用哪个组件渲染
  * （总纲 §2.10：三套视图共享同一数据模型与操作语义）。
  *
- * 为什么单独一层而不把分发改进 `HomeView`：A 视图（下一餐大卡）是既有的、别票正在动的文件；
- * 分发器插在路由与三套视图之间，A 视图本体一行不改。
+ * 版式（手机/平板）的分发在**上一层** `LayoutRoute`——两个维度各一处，互不干涉：
+ * 宽版下 A 是 `HomeWideView`，B/C 是它们自己（各自带宽屏 CSS）。
  */
 export function HomeRoute() {
   const { mode } = useViewMode();

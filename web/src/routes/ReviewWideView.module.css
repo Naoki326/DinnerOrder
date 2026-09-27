@@ -1,0 +1,55 @@
+/* 平板版餐后回顾：左列餐次列表 + 右列反馈详情（#31）。只在 wide 下渲染。 */
+
+.columns {
+  display: grid;
+  /* 右列 minmax(0, 1fr)：反馈里的长标签/长菜名不许把栅格撑宽 */
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  margin-top: 10px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.mealRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  background: var(--card);
+  border-radius: 12px;
+  box-shadow: 0 1px 4px rgba(60, 50, 30, 0.07);
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.mealOn {
+  outline: 1.5px solid var(--accent);
+  background: var(--accent-soft);
+}
+
+.mealTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 菜名预告可长（四五道菜）：允许换行，不把徽标挤扁 */
+.mealRow > .sub {
+  overflow-wrap: anywhere;
+}
+
+.detail {
+  min-width: 0;
+}
+
+/* 「看更早的」在左列列表下方 */
+.foot {
+  margin: 10px 12px 0;
+}

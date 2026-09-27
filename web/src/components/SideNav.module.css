@@ -1,0 +1,32 @@
+/* 平板版的左侧竖排主导航。宽度固定，内容容器在它右边（见 AppShell.module.css）。
+   z-index 30 < 弹层遮罩的 60：弹层打开时导航在遮罩之下，点不动（故事 45）。 */
+.nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 168px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 10px;
+  background: var(--card);
+  border-right: 1px solid var(--line);
+  z-index: 30;
+}
+
+.item {
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 15px;
+  color: var(--sub);
+  text-decoration: none;
+  /* 长标签（家人那一串 emoji）不撑破竖排栏 */
+  overflow-wrap: anywhere;
+}
+
+.on {
+  background: var(--ink);
+  color: #fff;
+  font-weight: 600;
+}

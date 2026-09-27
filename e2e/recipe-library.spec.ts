@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { E2E, ROOT_URL } from './test-env';
+import { ROOT_URL } from './test-env';
 
 /**
  * 菜谱库：掌勺者可写（issue #30；ADR-0009）。
@@ -63,7 +63,7 @@ test('设置 → 菜谱库 → 录入一道新菜 → 改做法 → 保存（入
   await openLibrary(page);
 
   // 从属页面的壳：底部导航消失、顶部有「← 设置」
-  await expect(page.getByTestId('tab-bar')).toBeHidden();
+  await expect(page.getByTestId('main-nav')).toHaveCount(0);
   await expect(page.getByTestId('recipe-back-settings')).toBeVisible();
   await expect(page.getByTestId('recipe-back-settings')).toContainText('设置');
 
@@ -243,14 +243,14 @@ test('退役的菜不能进菜单（RecipeRetiredError 的活路径，跨菜谱�
 /**
  * 第五条：手指宽的验收（总纲「手机优先」）——菜谱库不吃手机宽度。
  */
-test('菜谱库与编辑页不吃手机宽度（390 px 不横向溢出）', async ({ page }) => {
+test('菜谱库与编辑页不横向溢出（对当前视口宽度断言）', async ({ page }) => {
   await openLibrary(page);
   const listWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-  expect(listWidth).toBeLessThanOrEqual(E2E.viewport.width);
+  expect(listWidth).toBeLessThanOrEqual(page.viewportSize()!.width);
 
   await page.getByTestId('recipe-search-input').fill('番茄炒蛋');
   await page.getByTestId('recipe-row-fanqiechaodan').click();
   await expect(page.getByTestId('recipe-form-fanqiechaodan')).toBeVisible();
   const editorWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-  expect(editorWidth).toBeLessThanOrEqual(E2E.viewport.width);
+  expect(editorWidth).toBeLessThanOrEqual(page.viewportSize()!.width);
 });

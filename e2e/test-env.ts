@@ -16,8 +16,19 @@ export const E2E = {
     port: 8792,
     basePath: '/',
   },
-  /** 手机尺寸：iPhone 12 一档，本项目手机优先 */
+  /** 手机尺寸（`phone` project 用）：iPhone 12 一档，本项目手机优先 */
   viewport: { width: 390, height: 844 },
+  /** 平板尺寸（#31，`tablet` project 用）：**iPad 竖屏**（1024×1366）——它的宽 1024 ≥
+   *  `TABLET_MIN_WIDTH`（900），所以自动落到平板版。竖屏而不是横屏：竖屏是更窄的那一侧，
+   *  它落在平板版就说明横屏（1366）也在（story 2）。 */
+  tabletViewport: { width: 1024, height: 1366 },
+  /**
+   * 版式阈值：**唯一来源是 `web/src/layout.tsx` 的 `TABLET_MIN_WIDTH`**（判据只有那一处）。
+   * 这里是 E2E 侧的镜像，`tablet.spec.ts` 用它来判「此刻该是哪种版式」；
+   * **改 web 侧的阈值时，这一行要一起改**（`pnpm test:e2e` 会在不一致时立刻红：
+   *  tablet project 的视口宽 1024 与阈值的关系是断言的前提）。
+   */
+  tabletMinWidth: 900,
   /** E2E 服务端注入的确定性 fake 模型名（E2E 断言留痕里的模型名时用） */
   fakeModel: 'e2e-fake-llm',
 } as const;

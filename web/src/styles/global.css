@@ -33,11 +33,13 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  max-width: 480px;
-  margin: 0 auto;
   min-height: 100vh;
   padding-bottom: 24px;
 }
+
+/* 注：原来的 `body { max-width: 480px; margin: 0 auto }` 是一条写死在全局、
+   不区分设备的约束（#31 拆掉）：侧边导航与宽容器都塞不进去。窄版的同一份宽度纪律
+   由壳的 `.container`（AppShell.module.css）补回来，两种版式各管各的宽度。 */
 
 button {
   font: inherit;

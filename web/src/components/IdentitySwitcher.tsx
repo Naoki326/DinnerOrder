@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import { useIdentity } from '../identity';
 import { memberSubtitle } from './memberLabel';
+import { useSheetClasses } from './useSheetClasses';
 import styles from './IdentitySwitcher.module.css';
 
 /**
@@ -11,6 +12,7 @@ import styles from './IdentitySwitcher.module.css';
  */
 export function IdentitySwitcher() {
   const { members, current, switchIdentity } = useIdentity();
+  const sheetClasses = useSheetClasses();
   const [open, setOpen] = useState(false);
 
   return (
@@ -34,17 +36,17 @@ export function IdentitySwitcher() {
 
       {open ? (
         <div
-          className={styles.mask}
+          className={sheetClasses.mask}
           data-testid="identity-sheet"
           role="dialog"
           aria-label="切换当前身份"
           onClick={() => setOpen(false)}
         >
           {/* 点内容区不关面板：家人挑人时手指抖一下不该把面板关掉 */}
-          <div className={styles.sheet} onClick={(event) => event.stopPropagation()}>
+          <div className={sheetClasses.sheet} onClick={(event) => event.stopPropagation()}>
             <div className={styles.sheetHead}>
               <b>当前身份</b>
-              <span className="sub">无登录 · 在这台手机上用谁的身份</span>
+              <span className="sub">无登录 · 在这台设备上用谁的身份</span>
             </div>
 
             {members.map((member) => {
@@ -79,7 +81,7 @@ export function IdentitySwitcher() {
             })}
 
             <div className={`sub ${styles.note}`}>
-              换人只在这台手机生效，别人的手机不受影响。{' '}
+              换人只在这台设备生效，别人的手机不受影响。{' '}
               <Link to="/family" onClick={() => setOpen(false)}>
                 改画像
               </Link>

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { E2E, ROOT_URL } from './test-env';
+import { ROOT_URL } from './test-env';
 
 /**
  * 验收场景（本票部分）：无登录下切换当前身份并编辑画像（总纲 §2.4、§2.9）。
@@ -34,7 +34,7 @@ test('切换当前身份即时生效、本设备持久、不跨设备共享（�
   // 不跨设备：**此刻**另一台手机打开还是缺省身份——这台设备刚切成小宝，
   // 所以「存成服务端全局」的实现会在这里得到小宝而失败。这一步必须紧跟在切换之后：
   // 若先在本设备切回妈妈再断言，「全局存储」也会给出妈妈，断言就失去判别力了。
-  const otherPhone = await browser.newContext({ viewport: E2E.viewport });
+  const otherPhone = await browser.newContext({ viewport: page.viewportSize()! });
   const otherPage = await otherPhone.newPage();
   await otherPage.goto(`${ROOT_URL}/`);
   await expect(otherPage.getByTestId('identity-name')).toHaveText('妈妈');

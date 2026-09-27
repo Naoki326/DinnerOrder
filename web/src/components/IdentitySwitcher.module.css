@@ -19,24 +19,8 @@
   font-size: 10px;
 }
 
-.mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(60, 50, 30, 0.28);
-  z-index: 60;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-}
-
-.sheet {
-  background: var(--card);
-  border-radius: 20px 20px 0 0;
-  padding: 16px 14px 22px;
-  width: min(100%, 480px);
-  max-height: 80vh;
-  overflow-y: auto;
-}
+/* 遮罩与面板本体与 Sheet / SettingsSheet 同源——见 `sheetShared.module.css`（`useSheetClasses()`
+   按版式选形态：手机版底部抽屉 / 平板版居中对话框）。这里只留本组件自己的样式。 */
 
 .sheetHead {
   display: flex;

@@ -1,16 +1,46 @@
+/* app 壳的两种版式（#31）：手机版单列窄条、平板版侧边导航 + 宽容器。
+   `body` 上那条 `max-width: 480px` 已拆掉（它是写死在全局、不区分设备的约束，侧边栏与宽容器
+   都塞不进去）——窄版的同一份宽度纪律由这里的 `.container` 补回来，逐页视觉与改动前一致。 */
+
 .shell {
   min-height: 100vh;
+}
+
+/* 内容列：窄版 480px 居中（原 body 约束搬到这里），宽版让开侧边栏、放宽到 1100px */
+.body {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+}
+
+.container {
+  flex: 1;
+  min-width: 0;
+  max-width: 480px;
   display: flex;
   flex-direction: column;
 }
 
+/* 平板版：侧边导航固定 168px（`SideNav.module.css`），内容列让开它并吃满剩下的宽度 */
+.withNav .container {
+  margin-left: 168px;
+}
+
+.wide .container {
+  max-width: 1100px;
+}
+
 .content {
   flex: 1;
-  /* 给底部固定导航条留出空间 */
+  /* 给底部固定导航条留出空间（宽版没有它，下面覆盖回 24px） */
   padding-bottom: 96px;
 }
 
-/* 从属页面（如设置里的「菜谱库」）藏了底部导航，就不必给它留那 96px */
+/* 从属页面（如设置里的「菜谱库」）藏了主导航，就不必给它留那 96px */
 .noTabs {
+  padding-bottom: 24px;
+}
+
+.wide .content {
   padding-bottom: 24px;
 }

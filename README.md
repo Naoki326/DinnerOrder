@@ -26,7 +26,7 @@
 | `pnpm lint` | ESLint 9 flat config（typescript-eslint） |
 | `pnpm test` | server 单测 + API 集成测试（Vitest，内存 SQLite） |
 | `pnpm test:watch` | 同上，watch 模式 |
-| `pnpm test:e2e` | 先 `build` 再跑 Playwright 冒烟（根路径 + 子路径两个实例） |
+| `pnpm test:e2e` | 先 `build` 再跑 Playwright：`phone`（390×844，全部 spec）+ `tablet`（1024×1366，与版式相关的 spec）。两个 project 验的是同一份构建产物在**两种视口宽度**下的版式（#31） |
 | `pnpm deploy:install` | **部署到常驻主机**：launchd 自启与崩溃拉起 + nginx 子路径反代 + `.env` 权限 + 备份排除。先 `--dry-run` 看一眼。见 [`docs/deploy/README.md`](docs/deploy/README.md) |
 | `pnpm deploy:status` | 部署巡检（服务装载状态、热备清单、密钥权限、排除项） |
 | `pnpm deploy:uninstall` | 卸载（**不删数据**：库、热备、`.env` 都留着） |

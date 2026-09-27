@@ -33,7 +33,6 @@ import styles from './HomeView.module.css';
  * 逐食材的拆解在定餐编辑器里（大卡只给每道菜的合计——手机首屏容不下逐食材列表）。
  */
 export function HomeView() {
-  const health = useHealth();
   const slots = useSlots(3);
   // 从编辑器取消被「吃剩的」引用的那一餐时，服务端把引用方一起退回了未定（#22）。
   // 那句话要在这边说得出来：取消之后这一页就是家的全部视野，不提示等于让晚餐默认“消失”。
@@ -47,34 +46,15 @@ export function HomeView() {
 
   return (
     <div data-testid="home-view">
-      {released.length > 0 ? (
-        <div className="card" data-testid="release-notice">
-          <span className="sub">
-            {/* 服务端下发的 `released` 是**原始槽 id**（'2025-06-02:dinner'）：数据库主键不该念给用户听，
-                这里渲染成「今天晚餐」这种人话（与餐槽卡的 dayLabel 同一口径） */}
-            取消成功：{released.map((id) => slotLabel(id, today)).join('、')} 吃的是这一餐剩的，已经一起退回未定了。
-          </span>
-        </div>
-      ) : null}
+      <ReleaseNotice released={released} today={today} />
       {slots.isPending ? (
-        <div className={`card ${styles.hero}`} data-testid="slots-loading">
-          <div className={styles.kicker}>最近未定餐槽</div>
-          <div className={styles.headline}>读取中…</div>
-        </div>
+        <SlotsLoading />
       ) : slots.isError ? (
-        <div className={`card ${styles.hero}`} data-testid="slots-error">
-          <div className={styles.kicker}>最近未定餐槽</div>
-          <div className={styles.headline}>餐槽没读回来</div>
-          <div className="sub">检查一下网络或服务是不是停了。</div>
-        </div>
+        <SlotsError />
       ) : next ? (
         <HeroCard slot={next} today={today} feedback={feedback.data?.feedback} cooling={feedback.data?.cooling ?? []} />
       ) : (
-        <div className={`card ${styles.hero}`} data-testid="empty-slot">
-          <div className={styles.kicker}>最近未定餐槽</div>
-          <div className={styles.headline}>这几天都排满了</div>
-          <div className="sub">没定的餐 app 不打扰——可能在外吃、吃剩的。</div>
-        </div>
+        <NoSlots />
       )}
 
       {rest.map((slot) => (
@@ -83,31 +63,91 @@ export function HomeView() {
 
       <div className={styles.footnote}>没定的餐 app 不打扰 —— 可能在外吃、吃剩的。</div>
 
-      <footer className={`card sub`} data-testid="health-footer">
-        <div className="spread">
-          <span>API：{apiBaseUrl}</span>
-          {health.isPending ? (
-            <span className="badge">检查中…</span>
-          ) : health.isError ? (
-            <span className="badge warn">连接异常</span>
-          ) : (
-            <span className="badge ok" data-testid="health-ok">
-              服务正常
-            </span>
-          )}
-        </div>
-      </footer>
+      <HealthFooter />
     </div>
+  );
+}
+
+/**
+ * 首页的三块**状态卡**（读取中 / 读失败 / 没有未定餐槽）：窄版与宽版共用（#31）。
+ *
+ * 抽出来不是因为「代码短」，而是因为宽版首页也必须说**同一句话**——同一状态两个渲染点各写
+ * 一遍必在措辞上漂移（本页的 `empty-slot` 文案是 E2E 与家人都认得的那个），
+ * 而「摆法不同」从来不该改变「空态怎么说」。
+ */
+export function SlotsLoading() {
+  return (
+    <div className={`card ${styles.hero}`} data-testid="slots-loading">
+      <div className={styles.kicker}>最近未定餐槽</div>
+      <div className={styles.headline}>读取中…</div>
+    </div>
+  );
+}
+
+export function SlotsError() {
+  return (
+    <div className={`card ${styles.hero}`} data-testid="slots-error">
+      <div className={styles.kicker}>最近未定餐槽</div>
+      <div className={styles.headline}>餐槽没读回来</div>
+      <div className="sub">检查一下网络或服务是不是停了。</div>
+    </div>
+  );
+}
+
+/** 「这几天都排满了」——窗口里没有未定的餐槽（`empty-slot` 是两种版式共用的锚点） */
+export function NoSlots() {
+  return (
+    <div className={`card ${styles.hero}`} data-testid="empty-slot">
+      <div className={styles.kicker}>最近未定餐槽</div>
+      <div className={styles.headline}>这几天都排满了</div>
+      <div className="sub">没定的餐 app 不打扰——可能在外吃、吃剩的。</div>
+    </div>
+  );
+}
+
+/**
+ * 页脚：API 地址 + 服务健康（`health-ok`）。两种版式的首页共用——摆法换了，这条信息照旧。
+ */
+export function HealthFooter() {
+  const health = useHealth();
+  return (
+    <footer className={`card sub`} data-testid="health-footer">
+      <div className="spread">
+        <span>API：{apiBaseUrl}</span>
+        {health.isPending ? (
+          <span className="badge">检查中…</span>
+        ) : health.isError ? (
+          <span className="badge warn">连接异常</span>
+        ) : (
+          <span className="badge ok" data-testid="health-ok">
+            服务正常
+          </span>
+        )}
+      </div>
+    </footer>
   );
 }
 
 /**
  * 取消联动带回来的提示（#22）：`SlotView` 把 `DELETE` 响应里的 `released` 经路由 state 递过来。
  *
- * 落页时把内容**拷贝进组件状态**再清掉历史里的 state：直接读 `location.state` 会在清理后
- * 变成空（提示一闪而过），而留在历史里又会在刷新时冤枉复活。
+ * 抽成组件（#31）：宽版首页（`HomeWideView`）也要说这句话——摆法换了，回声不能丢（story 26）。
  */
-function useReleaseNotice(): string[] {
+export function ReleaseNotice({ released, today }: { released: string[]; today: string | undefined }) {
+  if (released.length === 0) return null;
+  return (
+    <div className="card" data-testid="release-notice">
+      <span className="sub">
+        {/* 服务端下发的 `released` 是**原始槽 id**（'2025-06-02:dinner'）：数据库主键不该念给用户听，
+            这里渲染成「今天晚餐」这种人话（与餐槽卡的 dayLabel 同一口径） */}
+        取消成功：{released.map((id) => slotLabel(id, today)).join('、')} 吃的是这一餐剩的，已经一起退回未定了。
+      </span>
+    </div>
+  );
+}
+
+/** 取回落页时带过来的取消联动提示（见 `ReleaseNotice`） */
+export function useReleaseNotice(): string[] {
   const location = useLocation();
   const navigate = useNavigate();
   const [released] = useState<string[]>(
@@ -119,8 +159,9 @@ function useReleaseNotice(): string[] {
   return released;
 }
 
-/** 最近的一餐：定餐的入口（未定）或查看/改餐的入口（已定） */
-function HeroCard({
+/** 最近的一餐：定餐的入口（未定）或查看/改餐的入口（已定）——
+ *  宽版首页（`HomeWideView`）的右列也是它：同一张卡、同一套操作，只是摆到宽屏的详情列里。 */
+export function HeroCard({
   slot,
   today,
   feedback,

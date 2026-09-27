@@ -3,7 +3,9 @@ import { Link } from 'react-router';
 import type { Recipe } from '@dinnerorder/server/types';
 import { useRecipes } from '../api/recipes';
 import { useIdentity } from '../identity';
+import { useLayout } from '../layout';
 import { RecipeEditor } from '../components/RecipeEditor';
+import { SectionedLayout } from '../components/SectionedLayout';
 import {
   EFFORT_LABELS,
   KIND_FILTER_OPTIONS,
@@ -16,7 +18,7 @@ import styles from './RecipeLibraryView.module.css';
 /**
  * 菜谱库（issue #30；ADR-0009）：设置里的一个**独有页面**（`/recipes`）。
  *
- * 三档 tab（家庭菜谱 / 外部菜谱 / 已退役）＋档内搜索。这一页不占用底部导航（壳用 `hideTabBar`）、
+ * 三档 tab（家庭菜谱 / 外部菜谱 / 已退役）＋档内搜索。这一页不占用主导航（壳用 `hideNav`，#31 起两种版式下都藏）、
  * 顶部一个「← 设置」返回——它是从设置钻进来的从属页面，不是第五个日常页。
  *
  * 四条口径（改之前先读）：
@@ -44,6 +46,7 @@ const TABS: { id: LibraryTab; label: string }[] = [
 
 export function RecipeLibraryView() {
   const { current } = useIdentity();
+  const { layout } = useLayout();
   const recipes = useRecipes('all');
   const [tab, setTab] = useState<LibraryTab>('family');
   const [query, setQuery] = useState('');
@@ -93,7 +96,27 @@ export function RecipeLibraryView() {
     );
   }
 
-  if (open) {
+  /**
+   * 平板版（#31）：**左边菜谱列表 / 右边选中菜谱的详情或编辑**双列。
+   *
+   * 左列就是下面这整块列表（三档 tab + 搜索 + 那一档的行），右列是选中的那一道。
+   * 用 `SectionedLayout` 按 `data-section` 分组——列表那一侧的卡片一行不改，只是旁边多一列。
+   */
+  const detail = open ? (
+    <div className="card" data-section="detail">
+      <BackRow onBack={() => setOpenId(null)} backLabel="← 菜谱库" />
+      {/* 谁都能改（spec 改动：撤掉“只有掌勺者可写”）。
+          草稿与家庭菜谱都能改；**退役的先还原**（领域层也是这么判的）。
+          只读态给的是只读的内容 + 一句说明，不给一个按下必报 409 的表单。 */}
+      <RecipeEditor recipe={open} memberId={current?.id} readOnly={open.status === 'retired'} />
+    </div>
+  ) : (
+    <div className="card sub" data-testid="recipe-detail-empty" data-section="detail">
+      点左边任意一道菜，这里就是它的做法或编辑表单。
+    </div>
+  );
+
+  if (open && layout !== 'wide') {
     return (
       <div data-testid="recipe-library-view">
         <BackRow onBack={() => setOpenId(null)} backLabel="← 菜谱库" />
@@ -106,7 +129,9 @@ export function RecipeLibraryView() {
   }
 
   return (
-    <div data-testid="recipe-library-view">
+    /* 平板版（#31）：列表在左、选中的那一道在右（窄版仍是原来那条单列） */
+    <SectionedLayout sideSection="detail" testId="recipe-library-view">
+      {layout === 'wide' ? detail : null}
       <BackRow onBack={undefined} backLabel="← 设置" />
 
       <div className="card">
@@ -232,7 +257,7 @@ export function RecipeLibraryView() {
           ))
         )}
       </div>
-    </div>
+    </SectionedLayout>
   );
 }
 

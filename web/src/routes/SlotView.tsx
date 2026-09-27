@@ -8,6 +8,7 @@ import { useBookLeftover, useBookSlot, useCancelSlot, useSlot, type DinerRef, ty
 import { useAcceptRecommendation, useRecommendation } from '../api/recommendations';
 import { useUndoSet } from '../api/replacements';
 import { CandidateList } from '../components/CandidateList';
+import { SectionedLayout } from '../components/SectionedLayout';
 import { DishPicker } from '../components/DishPicker';
 import { NutritionSheet } from '../components/NutritionSheet';
 import { RecipeSheet } from '../components/RecipeSheet';
@@ -339,7 +340,9 @@ function SlotEditor({
   const decided = slot.status === 'decided';
 
   return (
-    <div data-testid="slot-view" data-slot-id={slot.id}>
+    /* 平板版（#31）：**左边挑菜 / 右边份量与用餐者**双列。同一份 JSX 两种摆法——
+       `SectionedLayout` 按 `data-section` 分组，卡片组件本身一行不改。 */
+    <SectionedLayout sideSection="diners" testId="slot-view" extra={{ 'data-slot-id': slot.id }}>
       <div className={`card ${styles.head}`}>
         <div className="spread">
           <div>
@@ -414,7 +417,7 @@ function SlotEditor({
 
       {/* 掌勺者（本票，按餐指定）：厨房里这一餐谁做。它是菜单信息的一部分（餐后回顾的读者、
           买菜清单的读者），所以放在“谁吃”旁边；改任意一餐都走这里（包括已定餐槽）。 */}
-      <div className="card" data-testid="cook-picker">
+      <div className="card" data-testid="cook-picker" data-section="diners">
         <div className={styles.blockLabel}>这一餐谁掌勺（餐后回顾与买菜清单的读者）</div>
         <div className={styles.diners}>
           {members.map((member) => {
@@ -458,7 +461,7 @@ function SlotEditor({
       </div>
 
       {/* 用餐者名单：默认全员，可临时改（忌口、份量都按它算） */}
-      <div className="card">
+      <div className="card" data-section="diners">
         <div className={styles.blockLabel}>这餐谁吃（忌口与份量按它算）</div>
         <div className={styles.diners} data-testid="diner-picker">
           {members.map((member) => {
@@ -640,7 +643,7 @@ function SlotEditor({
               只等 `portionQuery.isError` 就会是一片静默空白——所以这一支自己说一句人话；
             * `portionQuery.isError`：份量接口报错 → 把服务端/请求层那句原样报出来。 */}
       {membersQuery.isError || portionQuery.isError ? (
-        <div className="card" data-testid="portion-error">
+        <div className="card" data-testid="portion-error" data-section="diners">
           <div className={styles.error}>
             {membersQuery.isError
               ? rosterErrorMessage
@@ -660,7 +663,7 @@ function SlotEditor({
         </div>
       ) : null}
       {portion && !membersQuery.isError && dishes.length > 0 ? (
-        <div className="card" data-testid="portion-summary">
+        <div className="card" data-testid="portion-summary" data-section="diners">
           <div className={styles.blockLabel}>这餐的份量（生重）</div>
           <div className={styles.summaryLine}>
             {portion.diners.length} 人合计 ×{roundSum(portion.factorSum)}
@@ -696,7 +699,7 @@ function SlotEditor({
       ) : null}
 
       {error ? (
-        <div className="card" data-testid="slot-error-message">
+        <div className="card" data-testid="slot-error-message" data-section="diners">
           <span className={styles.error}>{error}</span>
         </div>
       ) : null}
@@ -707,7 +710,7 @@ function SlotEditor({
           domain/slots.ts 的 undoSet 刻意不查 hasMealPassed），所以它只由 decided && canUndoSet 决定。
           这个不对称是有意的：两者一个改菜单内容（要截止），一个只是退回上一套/取消（不要）。 */}
       {slot.editable || (decided && slot.canUndoSet) ? (
-        <div className={styles.actions} data-testid="set-actions">
+        <div className={styles.actions} data-testid="set-actions" data-section="diners">
           {slot.editable ? (
             <button
               type="button"
@@ -733,7 +736,7 @@ function SlotEditor({
         </div>
       ) : null}
 
-      <div className={styles.actions}>
+      <div className={styles.actions} data-section="diners">
         <button
           type="button"
           className="btn block"
@@ -792,7 +795,7 @@ function SlotEditor({
           onClose={() => setRecipeOf(null)}
         />
       ) : null}
-    </div>
+    </SectionedLayout>
   );
 }
 

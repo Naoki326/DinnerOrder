@@ -1,0 +1,67 @@
+/* 平板版首页：左列餐槽时间轴 + 右列选中餐详情（#31）。
+   只在宽屏（`data-layout="wide"`）下渲染，所以直接写桌面摆法，不做媒体查询——
+   版式切换靠壳按偏好决定挂不挂这个组件（手动覆盖「手机版」要能连它一起关掉）。 */
+
+.columns {
+  display: grid;
+  /* 右列 `minmax(0, 1fr)`：详情里的长菜名/长理由不许把栅格撑宽（「绝不横向溢出」纪律） */
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  margin-top: 10px;
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 6px;
+}
+
+.dayGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dayHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+/* 一格餐槽：整格是按钮（点它右列换内容），选中态用强调色描边 */
+.slotCard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  background: var(--card);
+  border-radius: 12px;
+  box-shadow: 0 1px 4px rgba(60, 50, 30, 0.07);
+  padding: 10px 12px;
+  margin: 0 12px;
+}
+
+.slotOn {
+  outline: 1.5px solid var(--accent);
+  background: var(--accent-soft);
+}
+
+.slotTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.slotTop > .sub {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 右列：详情。大卡自己有 margin（全局 .card 的 10px 12px），这里只补一点上边距让两列齐平 */
+.detail {
+  min-width: 0;
+}

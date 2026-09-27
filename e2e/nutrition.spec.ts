@@ -8,7 +8,7 @@ import { ROOT_URL } from './test-env';
  *   ① 餐槽卡上「📊 营养」→ 弹层显示本餐合计（能量 / 蛋白 / 脂肪 / 碳水）；
  *   ② 每道菜行上「食谱」→ 弹层显示 `recipes.steps` 原文 + 食材清单。
  * 两处都照 `SettingsSheet` 的 `mask`/`sheet` 交互：点遮罩收起、`role="dialog"`、
- * `aria-haspopup`/`aria-expanded` 齐全，390 宽不吃穿。
+ * `aria-haspopup`/`aria-expanded` 齐全，手机宽度下不吃穿。
  *
  * 时间基准是真实时钟（webServer 不注入假时钟），餐槽 id 一律现取；
  * 库是多个 spec 共用的 append-only 历史，所以断言只用「相对本次操作」的写法，开工前先清场。
@@ -147,7 +147,7 @@ test('点菜行的「食谱」弹出做法步骤与食材清单；点内容区�
   await expect(sheet).toBeHidden();
 });
 
-test('大卡上的已定餐：营养按钮与每道菜的食谱入口都在，且不吃手机宽度（390）', async ({ page }) => {
+test('大卡上的已定餐：营养按钮与每道菜的食谱入口都在，且不横向溢出', async ({ page }) => {
   await clearDecidedSlots(page);
   // 把窗口内的每一餐都定下来：大卡必然落在已定的那一张上（HomeView 的 next 规则）
   const response = await page.request.get(`${ROOT_URL}/api/slots?days=3`);
@@ -186,18 +186,21 @@ test('大卡上的已定餐：营养按钮与每道菜的食谱入口都在，�
   });
   expect(overflow).toEqual([]);
   const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-  expect(scrollWidth).toBeLessThanOrEqual(390);
+  expect(scrollWidth).toBeLessThanOrEqual(page.viewportSize()!.width);
 
   // 编辑器一侧（加了「食谱」按钮的菜行）同样不吃手机宽度
   await page.getByTestId('recipe-sheet').click({ position: { x: 5, y: 2 } });
   await page.goto(`${ROOT_URL}/slot/${slots[0]!.id}`);
   await expect(page.getByTestId('slot-view')).toBeVisible();
+  // 不横向溢出（#31）：右值取**当前视口宽度**（这条 spec 现在也在 tablet project 下跑），
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+    page.viewportSize()!.width,
+  );
   const editorOverflow = await page.evaluate(() => {
     const wide = [...document.querySelectorAll('*')].filter((el) => el.scrollWidth > el.clientWidth + 1);
     return wide.map((el) => `${el.tagName}.${el.className}`).slice(0, 5);
   });
   expect(editorOverflow).toEqual([]);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
 /**
@@ -394,11 +397,13 @@ test('下方已定小卡的「已定」徽标不被长菜名预告挤成竖排',
   // 横排的徽标必然矮（竖排时高度会接近宽度）
   expect(measured.height).toBeLessThan(measured.width);
 
-  // 手机宽度：长预告 + 徽标 + 营养入口不撑破 390
+  // 不横向溢出（#31）：右值取**当前视口宽度**（这条 spec 现在也在 tablet project 下跑）
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+    page.viewportSize()!.width,
+  );
   const overflow = await page.evaluate(() => {
     const wide = [...document.querySelectorAll('*')].filter((el) => el.scrollWidth > el.clientWidth + 1);
     return wide.map((el) => `${el.tagName}.${el.className}`).slice(0, 5);
   });
   expect(overflow).toEqual([]);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });

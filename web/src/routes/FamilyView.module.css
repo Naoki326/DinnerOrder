@@ -3,6 +3,22 @@
   flex-direction: column;
 }
 
+/* 平板版（#31）：卡片网格。`auto-fill` + `minmax(320px, 1fr)` 让 1024/1366 这种宽度
+   自然排成 2–3 列；窄容器里仍然退回一列（与手机版的观感一致）。
+   卡片自带的 `margin: 10px 12px` 与网格 gap 叠在一起会让间距看着跳，所以网格自己给 gap、
+   卡片在这一形态下不靠 margin 占位。 */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+  padding: 0 12px;
+  align-items: start;
+}
+
+.grid .memberCard {
+  margin: 0;
+}
+
 .memberCard {
   background: var(--card);
   border-radius: var(--r);

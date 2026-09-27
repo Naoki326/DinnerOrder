@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { useCancelSlot, useSlots, type SlotWithPortion } from '../api/meals';
+import { useLayout } from '../layout';
+import { weekdayOf } from '../components/weekday';
 import { dayLabel } from './HomeView';
 import styles from './CompactView.module.css';
 
@@ -21,6 +23,7 @@ import styles from './CompactView.module.css';
  * 三套视图共用同一个换菜界面，才不会出现「B 里换菜不累计排除」这种语义漂移。
  */
 export function CompactView() {
+  const { layout } = useLayout();
   const slotsQuery = useSlots(3);
   const cancel = useCancelSlot();
   // 展开的行（默认全收起：紧凑流的价值就是「先扫一遍」，展开是第二步）
@@ -56,7 +59,9 @@ export function CompactView() {
   }
 
   return (
-    <div data-testid="compact-view">
+    /* 平板版（#31）：`data-layout-view` 只用于加一组宽屏摆法（按天分列），
+       内容与语义一行不改（story 49、50）。 */
+    <div data-testid="compact-view" data-layout-view={layout === 'wide' ? 'wide' : undefined}>
       {days.size === 0 ? (
         <div className="card sub" data-testid="compact-empty">
           这几天没有要安排的餐了。
@@ -224,12 +229,3 @@ function SlotRow({
 }
 
 const KIND_LABEL: Record<string, string> = { meat: '荤', veg: '素', soup_meat: '汤', soup_veg: '汤' };
-
-/**
- * 日头下的「周X M/D」。用 UTC 取星期，避免本地时区把 'YYYY-MM-DD' 解析成前一天
- * （服务端下发的日期是**家庭时区**的日历日期，本地时区往回退时 getDay 会给出错误的星期）。
- */
-function weekdayOf(date: string): string {
-  const weekday = '日一二三四五六'[new Date(`${date}T00:00:00Z`).getUTCDay()];
-  return `周${weekday} ${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
-}

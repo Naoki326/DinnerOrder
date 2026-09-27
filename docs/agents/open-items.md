@@ -27,7 +27,9 @@
 | 12 | **#24 M1-12 三视图与视图模式** | 见下 | 322 unit + 31 E2E | ✅ 实现完成，待审查 |
 | 13 | #25 M1-13 部署与备份 | 见下 | 582 unit（含 71 新增）+ 73 E2E | ✅ 实现完成 + **已真装到本机** + 审查修复轮，待提交 |
 | 14 | #26 M1-14 验收收尾 | — | — | 待做 |
-| 15 | **#30 菜谱库：掌勺者可写** | 本次提交 | 700 unit + 95 E2E | ✅ 实现完成，待审查 |
+| 15 | #30 菜谱库：掌勺者可写 | `05da7c5` | 700 unit + 95 E2E | ✅ CLOSED |
+| — | （台账文档）买菜调料折叠 | `7311ea4` | 704 unit + 95 E2E | — |
+| 16 | **#31 平板版式：版式与视图模式正交** | 本次提交 | 704 unit + 113+36 E2E（phone/tablet 两个 project） | ✅ 实现完成，待审查 |
 | — | **#12 父 spec 收尾** | — | — | 全部子票关闭后处理 |
 
 **部署现状（#25 已真装到 `chenMac-mini.local`）**：两个 launchd 服务实例（`8787` `BASE_PATH=/` 供直连、
@@ -755,6 +757,40 @@
   **若未来新环境要从零导入，命令仍是 issue 明写的那条**：
   `pnpm --filter @dinnerorder/server run import:library --from server/library-data/howtocook.jsonl`
   （参数直接跟在脚本名后、**不要插 `--`**；默认 skip、**绝不加 `--replace`**；先不开 `--llm`）。
+
+## 归属 #31（平板版式：版式与视图模式正交）
+
+- **阈值 900px 是可以再谈的一个数字**。本票按 issue 的建议取 900（理由：iPad mini 竖屏 744 走
+  手机版、800px 桌面窗口不拿「一半的双列」）。**若要改**：`web/src/layout.tsx` 的
+  `TABLET_MIN_WIDTH` 是唯一常量（设置面板文案与 E2E 都引用它），但一起要动的还有
+  `e2e/test-env.ts` 的 `tabletViewport` / `tabletMinWidth` 与 `playwright.config.ts` 的
+  project 尺寸——属于要显式决定的事，**不要在某个票里顺手改**。
+- **`ReviewWideView` 的「更早的餐」是逐页取数、不是窄版那种「翻过的页留在屏幕上」**。
+  窄版（`ReviewView`）把翻过去的页当作卡片流堆在下面；宽版左侧是一份餐次列表，翻页即换左列
+  那一份列表（右列跟随选中项）。**行为等价、实现不同**：窄版靠「多挂几个 `useFeedback`」，
+  宽版靠「左列列表 + 右列详情」。若日后要统一，先确认「翻过的页要留在屏幕上」这条对宽版是否
+  仍然成立（宽版是一列列表，本来就不需要堆卡片）。
+- **`SlotView` 的宽版双列是「按 `data-section` 分组」而不是把 JSX 拆两遍**
+  （`web/src/components/SectionedLayout.tsx`）。卡片相对顺序在两种版式下完全一致，分组只决定
+  哪几张进右列。**新增卡片时要记得给它一个 `data-section`**（否则它会落进左列）——这一点
+  在 `SlotView.tsx` 的注释里写明了。
+- **`review-meal-list` 这个 testid 改成了 `review-meals`**：`review-meal-<slotId>` 是「一餐的
+  回顾卡」的既有 testid，而 `e2e/review.spec.ts` 里有一条按前缀定位全部回顾卡的断言
+  （`[data-testid^="review-meal-"]`）。宽版新增的左列列表若叫 `review-meal-list` 会被那条
+  前缀匹配到。**以后再给「回顾」相关的容器起名，避开 `review-meal-` 前缀**。
+- **`e2e/review.spec.ts` 那两条历史用例改用了「按语义找卡」的写法**（`openReviewMeal`）：
+  宽版同一餐会同时出现在左列列表与右列详情里（元素数会数成 3），所以那两条不再按元素个数、
+  也不假设 DOM 里同时挂着一餐的卡。窄/宽两种版式下语义相同、数目不同。
+- **逐元素横向溢出断言只在 `phone` project 与手机宽度下跑**：本票实测桌面 Chromium 的字体与
+  表单控件度量会让 `scrollWidth > clientWidth` 在**与版式无关**的元素上变红（例如月份输入的
+  格式化文本）。文档宽度断言（`documentElement.scrollWidth`）两个 project 都保留。
+- **`tablet` project 的 `testMatch` 白名单刻意不含 `recipe-library.spec.ts`**：它的「录入一道
+  新菜」用例会往两个 project **共用的库**里建一道固定名字的菜（`#30 手写测试菜（可退役）`），
+  第二个 project 再跑时 `findNewRecipe` 按名字会先命中上一个 project 留下的那道（于是
+  `recipe-form-<新 id>` 永远不出现，看着像宽版把表单弄没了）。**这是跨 project 的测试干扰，
+  不是版式问题**——本票实测确认。菜谱库的宽版摆法由 `tablet.spec.ts` 的
+  「菜谱库在平板版下不显示主导航」+「逐页冒烟」两条直接覆盖。
+  **要把它加进白名单，先让那条用例按 id / 带随机后缀建菜**（不要在别处顺手改）。
 
 ## 判断性但**刻意不改**（记录理由，避免后续票重复纠结）
 

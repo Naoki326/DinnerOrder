@@ -9,6 +9,7 @@ import {
 } from '../api/recommendations';
 import { usePortionPreview } from '../api/portion';
 import { CandidateList } from '../components/CandidateList';
+import { useLayout } from '../layout';
 import { dayLabel } from './HomeView';
 import styles from './SimpleView.module.css';
 
@@ -37,6 +38,7 @@ import styles from './SimpleView.module.css';
  * 「回顾」不用在这里补：三视图共用底部 `TabBar` 的 `/review`。
  */
 export function SimpleView() {
+  const { layout } = useLayout();
   const slotsQuery = useSlots(3);
   const { members } = useIdentity();
   const bookLeftover = useBookLeftover();
@@ -123,7 +125,9 @@ export function SimpleView() {
   };
 
   return (
-    <div className={styles.wrap} data-testid="simple-view">
+    /* 平板版（#31）：C 在宽屏下仍守「一屏一件事、大按钮」——只是别再让一行大字横跨整屏
+       （`.wrap` 宽屏下有个最大宽度），以及第二步的菜卡摆成网格（story 54）。 */
+    <div className={styles.wrap} data-testid="simple-view" data-layout-view={layout === 'wide' ? 'wide' : undefined}>
       {leftoverSlot ? (
         <>
           <div className={styles.emoji} aria-hidden="true">
@@ -274,6 +278,7 @@ function SimpleWizard({
   today: string | undefined;
   onDone: () => void;
 }) {
+  const { layout } = useLayout();
   const { members } = useIdentity();
   const [step, setStep] = useState<1 | 2>(1);
   const [dinersDraft, setDinersDraft] = useState<string[] | null>(null);
@@ -357,7 +362,7 @@ function SimpleWizard({
   };
 
   return (
-    <div className={styles.wrap}>
+    <div className={styles.wrap} data-layout-view={layout === 'wide' ? 'wide' : undefined}>
       <div className={styles.dots} aria-hidden="true">
         {[1, 2].map((index) => (
           <i key={index} className={step >= index ? `${styles.dot} ${styles.dotOn}` : styles.dot} />

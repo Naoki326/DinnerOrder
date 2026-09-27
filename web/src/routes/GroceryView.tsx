@@ -14,6 +14,7 @@ import {
   type GroceryList,
   type GroceryStaleReason,
 } from '../api/grocery';
+import { useLayout } from '../layout';
 import styles from './GroceryView.module.css';
 
 /**
@@ -33,6 +34,7 @@ import styles from './GroceryView.module.css';
  * 没有聚合行也是正常状态：没定过餐、或刚归档完，清单就应该是空的（不凭空造一张空的）。
  */
 export function GroceryView() {
+  const { layout } = useLayout();
   const grocery = useGrocery();
   const recalculate = useRecalculateGrocery();
   const archive = useArchiveGrocery();
@@ -103,157 +105,191 @@ export function GroceryView() {
     act(addManual, name, `已加进清单：${name}`, () => setDraft(''));
   }
 
-  return (
-    <div data-testid="grocery-view">
-      {list === null ? (
-        <div className="card" data-testid="grocery-empty">
+  /**
+   * 聚合区（过期警告 + 清单卡 + 汇总说明）：窄版在上、宽版在左列。
+   *
+   * 抽成局部变量而不是子组件：它用到了本组件的七个 mutation 与 `act` 这一处串行门控，
+   * 提成子组件就会把一整排 props 传下去（而它们本来就是同一屏的东西）。
+   */
+  const aggregates = list === null ? null : (
+    <>
+      {list.stale ? (
+        <div className={`card ${styles.stale}`} data-testid="grocery-stale">
           <div className="spread">
-            <b>买菜清单</b>
-            {archivedCount > 0 ? (
-              <span className="badge" data-testid="grocery-archived-count">
-                已归档 {archivedCount} 份
-              </span>
-            ) : null}
+            <span className={styles.staleText} data-testid="grocery-stale-reason">
+              ⚠️ {staleReasonText(list, today)}，清单过期了
+            </span>
+            <button
+              type="button"
+              className="btn small"
+              data-testid="grocery-recalculate"
+              disabled={pending}
+              onClick={() => act(recalculate, undefined, '清单已重算（勾选按食材继承、手工行保留）')}
+            >
+              重算
+            </button>
           </div>
           <div className="sub" style={{ marginTop: 6 }}>
-            现在没有要买的东西：定下几餐之后，这一页会把要买的食材按生重合计出来。
-            {archivedCount > 0 ? '上一份已经归档（菜单没变，就不再重复开一张）。' : ''}
+            重算前是上一次的合计与勾选，先别照着买。
           </div>
-        </div>
-      ) : (
-        <>
-          {list.stale ? (
-            <div className={`card ${styles.stale}`} data-testid="grocery-stale">
-              <div className="spread">
-                <span className={styles.staleText} data-testid="grocery-stale-reason">
-                  ⚠️ {staleReasonText(list, today)}，清单过期了
-                </span>
-                <button
-                  type="button"
-                  className="btn small"
-                  data-testid="grocery-recalculate"
-                  disabled={pending}
-                  onClick={() => act(recalculate, undefined, '清单已重算（勾选按食材继承、手工行保留）')}
-                >
-                  重算
-                </button>
-              </div>
-              <div className="sub" style={{ marginTop: 6 }}>
-                重算前是上一次的合计与勾选，先别照着买。
-              </div>
-            </div>
-          ) : null}
-
-          <div className="card" data-testid="grocery-list">
-            <div className="spread">
-              <b>
-                买菜清单{' '}
-                <span className="sub" data-testid="grocery-status">
-                  进行中 · {list.mealCount} 餐
-                </span>
-              </b>
-              <button
-                type="button"
-                className="btn ghost small"
-                data-testid="grocery-archive"
-                disabled={pending}
-                onClick={() => act(archive, undefined, '清单已归档（这一趟买完了）')}
-              >
-                归档
-              </button>
-            </div>
-            {/* 归档计数放标题下：归档后这张卡就没了，下一轮开始时仍要能看见“上一份买完了” */}
-            {archivedCount > 0 ? (
-              <div className="sub" data-testid="grocery-archived-count">
-                已归档 {archivedCount} 份
-              </div>
-            ) : null}
-
-            {list.items.every((item) => item.kind !== 'aggregate') ? (
-              <div className="sub" data-testid="grocery-no-aggregate" style={{ marginTop: 8 }}>
-                还没有已定的餐要买——下面的手工行是掌勺者自己加的。
-              </div>
-            ) : (
-              groupByCategory(list.items).map((group) => (
-                <div key={group.category} className={styles.group} data-testid={`grocery-group-${group.category}`}>
-                  <div className="sub">{group.category}</div>
-                  {group.items.map((item) => (
-                    <ItemRow
-                      key={item.id}
-                      item={item}
-                      today={today}
-                      pending={pending}
-                      onToggle={(checked) => act(check, { itemId: item.id, checked }, checked ? `买到了：${item.name}` : `取消勾选：${item.name}`)}
-                    />
-                  ))}
-                </div>
-              ))
-            )}
-
-            {/*
-              家里常备的（盐/糖/油/生抽/葱姜蒜/干香料…）折叠成一行：
-              「柴米油盐只要提示要有就行，不需要说要买多少」（用户口径）。
-              默认收起——它们是清单上的噪音，但不是可以忘的东西（忘了盐就做不了菜）。
-            */}
-            {stapleItems(list.items).length > 0 ? <StapleRow items={stapleItems(list.items)} /> : null}
-
-            {/* 生熟换算参考（原型 v1 的一句话位置）：数字从互换表现算，图表改了这里跟着变 */}
-            <div className="sub" data-testid="grocery-exchange-note" style={{ marginTop: 10 }}>
-              {list.exchangeNote}（生熟换算参考）
-            </div>
-          </div>
-
-          <div className="card sub" data-testid="grocery-summary">
-            勾一行是买到了，⌛ 待重算是「这个食材在菜里、克数还没定」。
-          </div>
-        </>
-      )}
-
-      {/* 手工行恒在（照原型 v1）：一餐都没定时，这里是唯一能写东西的地方 */}
-      <div className="card" data-testid="grocery-manual">
-        <b>
-          手工行 <span className="sub">不属于任何菜谱，重算时保留</span>
-        </b>
-        {manualItems(list?.items ?? []).map((item) => (
-          <ItemRow
-            key={item.id}
-            item={item}
-            today={today}
-            pending={pending}
-            onToggle={(checked) => act(check, { itemId: item.id, checked }, checked ? `买到了：${item.name}` : `取消勾选：${item.name}`)}
-            onDelete={() => act(removeManual, item.id, `已删掉手工行：${item.name}`)}
-          />
-        ))}
-        <form className={styles.addRow} onSubmit={add}>
-          <input
-            type="text"
-            className={styles.input}
-            data-testid="grocery-manual-input"
-            placeholder="临时要买的…"
-            value={draft}
-            maxLength={50}
-            onChange={(event) => setDraft(event.target.value)}
-          />
-          <button type="submit" className="btn ghost small" data-testid="grocery-manual-add" disabled={pending}>
-            加
-          </button>
-        </form>
-      </div>
-
-      {feedback !== null ? (
-        <div className="card" data-testid={feedback.ok ? 'grocery-notice' : 'grocery-action-error'}>
-          {feedback.ok ? (
-            <span className="sub">{feedback.text}</span>
-          ) : (
-            <>
-              <b>这一步没成功</b>
-              <div className="sub" style={{ marginTop: 6 }}>
-                {feedback.text}
-              </div>
-            </>
-          )}
         </div>
       ) : null}
+
+      <div className="card" data-testid="grocery-list">
+        <div className="spread">
+          <b>
+            买菜清单{' '}
+            <span className="sub" data-testid="grocery-status">
+              进行中 · {list.mealCount} 餐
+            </span>
+          </b>
+          <button
+            type="button"
+            className="btn ghost small"
+            data-testid="grocery-archive"
+            disabled={pending}
+            onClick={() => act(archive, undefined, '清单已归档（这一趟买完了）')}
+          >
+            归档
+          </button>
+        </div>
+        {/* 归档计数放标题下：归档后这张卡就没了，下一轮开始时仍要能看见“上一份买完了” */}
+        {archivedCount > 0 ? (
+          <div className="sub" data-testid="grocery-archived-count">
+            已归档 {archivedCount} 份
+          </div>
+        ) : null}
+
+        {list.items.every((item) => item.kind !== 'aggregate') ? (
+          <div className="sub" data-testid="grocery-no-aggregate" style={{ marginTop: 8 }}>
+            还没有已定的餐要买——下面的手工行是掌勺者自己加的。
+          </div>
+        ) : (
+          groupByCategory(list.items).map((group) => (
+            <div key={group.category} className={styles.group} data-testid={`grocery-group-${group.category}`}>
+              <div className="sub">{group.category}</div>
+              {group.items.map((item) => (
+                <ItemRow
+                  key={item.id}
+                  item={item}
+                  today={today}
+                  pending={pending}
+                  onToggle={(checked) => act(check, { itemId: item.id, checked }, checked ? `买到了：${item.name}` : `取消勾选：${item.name}`)}
+                />
+              ))}
+            </div>
+          ))
+        )}
+
+        {/*
+          家里常备的（盐/糖/油/生抽/葱姜蒜/干香料…）折叠成一行：
+          「柴米油盐只要提示要有就行，不需要说要买多少」（用户口径）。
+          默认收起——它们是清单上的噪音，但不是可以忘的东西（忘了盐就做不了菜）。
+        */}
+        {stapleItems(list.items).length > 0 ? <StapleRow items={stapleItems(list.items)} /> : null}
+
+        {/* 生熟换算参考（原型 v1 的一句话位置）：数字从互换表现算，图表改了这里跟着变 */}
+        <div className="sub" data-testid="grocery-exchange-note" style={{ marginTop: 10 }}>
+          {list.exchangeNote}（生熟换算参考）
+        </div>
+      </div>
+
+      <div className="card sub" data-testid="grocery-summary">
+        勾一行是买到了，⌛ 待重算是「这个食材在菜里、克数还没定」。
+      </div>
+    </>
+  );
+
+  /** 未定过餐 / 刚归档完：清单就不存在（服务端不凭空造一张空的） */
+  const emptyCard = (
+    <div className="card" data-testid="grocery-empty">
+      <div className="spread">
+        <b>买菜清单</b>
+        {archivedCount > 0 ? (
+          <span className="badge" data-testid="grocery-archived-count">
+            已归档 {archivedCount} 份
+          </span>
+        ) : null}
+      </div>
+      <div className="sub" style={{ marginTop: 6 }}>
+        现在没有要买的东西：定下几餐之后，这一页会把要买的食材按生重合计出来。
+        {archivedCount > 0 ? '上一份已经归档（菜单没变，就不再重复开一张）。' : ''}
+      </div>
+    </div>
+  );
+
+  /** 手工行恒在（照原型 v1）：一餐都没定时，这里是唯一能写东西的地方 */
+  const manualCard = (
+    <div className="card" data-testid="grocery-manual">
+      <b>
+        手工行 <span className="sub">不属于任何菜谱，重算时保留</span>
+      </b>
+      {manualItems(list?.items ?? []).map((item) => (
+        <ItemRow
+          key={item.id}
+          item={item}
+          today={today}
+          pending={pending}
+          onToggle={(checked) => act(check, { itemId: item.id, checked }, checked ? `买到了：${item.name}` : `取消勾选：${item.name}`)}
+          onDelete={() => act(removeManual, item.id, `已删掉手工行：${item.name}`)}
+        />
+      ))}
+      <form className={styles.addRow} onSubmit={add}>
+        <input
+          type="text"
+          className={styles.input}
+          data-testid="grocery-manual-input"
+          placeholder="临时要买的…"
+          value={draft}
+          maxLength={50}
+          onChange={(event) => setDraft(event.target.value)}
+        />
+        <button type="submit" className="btn ghost small" data-testid="grocery-manual-add" disabled={pending}>
+          加
+        </button>
+      </form>
+    </div>
+  );
+
+  const notice =
+    feedback !== null ? (
+      <div className="card" data-testid={feedback.ok ? 'grocery-notice' : 'grocery-action-error'}>
+        {feedback.ok ? (
+          <span className="sub">{feedback.text}</span>
+        ) : (
+          <>
+            <b>这一步没成功</b>
+            <div className="sub" style={{ marginTop: 6 }}>
+              {feedback.text}
+            </div>
+          </>
+        )}
+      </div>
+    ) : null;
+
+  const primary = list === null ? emptyCard : aggregates;
+
+  // 平板版（#31）：**勾选区 / 汇总区**双列——左列是要买的东西，右列是手工行与动作回执。
+  // 手机版一行不改（单列，顺序与改动前完全一致）。
+  if (layout === 'wide') {
+    return (
+      <div data-testid="grocery-view" data-layout-view="wide">
+        <div className={styles.columns}>
+          <div className={styles.primary}>{primary}</div>
+          <div className={styles.side}>
+            {manualCard}
+            {notice}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="grocery-view">
+      {primary}
+      {manualCard}
+      {notice}
     </div>
   );
 }

@@ -12,6 +12,16 @@ import { RecipeSheet } from '../components/RecipeSheet';
 import styles from './ReviewView.module.css';
 
 /**
+ * 回顾页的**共用积木**（#31 抽出，手机单列与平板双列共用同一份）：
+ *   * `ReviewHint` / `CoolingCard`——页头那两块提示；
+ *   * `ReviewCard`——一餐的吃后感卡（点踩/点赞、快捷标签、营养、食谱、转正入口）；
+ *   * `LoadEarlier`——「看更早的」（双列版的右列也沿用它，story 34）。
+ *
+ * 抽的是**积木**，不是页面骨架：`ReviewView`（窄）保持原来的单列组件树，
+ * `ReviewWideView`（宽）自己搭「左列餐次列表 / 右列反馈详情」。
+ */
+
+/**
  * 餐后回顾（总纲 §2.5、CONTEXT「餐后回顾」）：饭后餐卡的常驻「吃后感」入口，
  * 也是 #21 转正（spec S6）的落点——总纲 §2.8 明写「外部菜谱被预定上桌 → 餐后回顾里
  * 掌勺者点「转正」」。
@@ -34,7 +44,6 @@ import styles from './ReviewView.module.css';
 export function ReviewView() {
   const { current, members, isPending: identityPending } = useIdentity();
   const feedback = useFeedback();
-  const rules = useFamilyRules();
   // 菜谱是**一份共享缓存**（`['recipes','all']`）：转正表单要知道每道菜的 status / cuisine /
   // 有没有待重标项，而这些都在菜谱上。走同一份 useRecipes 而不是另开一个「可转正菜」接口：
   // 同一道菜在两处显示同一份数据，才不会有第二个真相。
@@ -53,44 +62,12 @@ export function ReviewView() {
    */
   const [history, setHistory] = useState<string[]>([]);
   const meals = feedback.data?.meals ?? [];
-  const cooling = feedback.data?.cooling ?? [];
-  // 家规还没读回来时不编一个数字（文案退到不写天数），读回来就是库里的真实值
-  const coolOffDays = rules.data?.coolOffDays;
 
   return (
     <div data-testid="review-view">
-      <div className={`card ${styles.hint}`}>
-        <div className="spread">
-          <b>餐后回顾</b>
-          <span className="sub">
-            当前身份：{current ? `${current.emoji} ${current.name}` : identityPending ? '…' : '未选'}
-          </span>
-        </div>
-        <div className="sub" data-testid="review-hint" style={{ marginTop: 6 }}>
-          吃过的一餐在这里说说感受（不弹窗、不推送）：点赞给推荐当软信号；
-          点踩会让这道菜进冷藏期{coolOffDays ? `（家规 ${coolOffDays} 天）` : ''}，暂时不再推。
-        </div>
-      </div>
+      <ReviewHint current={current} identityPending={identityPending} />
 
-      {cooling.length > 0 ? (
-        <div className="card" data-testid="cooling-list">
-          <div className="spread">
-            <b>冷藏期的菜</b>
-            <span className="badge warn">暂时不推</span>
-          </div>
-          <div className="sub" style={{ marginTop: 6 }} data-testid="cooling-hint">
-            有人点过踩——这些菜在冷藏期{coolOffDays ? `（家规 ${coolOffDays} 天）` : ''}内不进推荐与换菜候选，到期自动解除。
-          </div>
-          <ul className={styles.cooling}>
-            {cooling.map((dish) => (
-              <li key={dish.recipeId} data-testid={`cooling-${dish.recipeId}`}>
-                <span>{dish.name}</span>
-                <span className="sub">{dish.until} 起可以再推</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      <CoolingCard />
 
       {feedback.isPending ? (
         <div className="card sub" data-testid="review-loading">
@@ -104,17 +81,7 @@ export function ReviewView() {
           </div>
         </div>
       ) : meals.length === 0 && history.length === 0 && !(feedback.data?.hasEarlier ?? false) ? (
-        <div className="card" data-testid="review-empty">
-          <b>这几天还没有吃过的一餐</b>
-          <div className="sub" style={{ marginTop: 6 }}>
-            吃过的餐会出现在这里（今天起往回看三天）。没定的餐 app 不追踪、不提醒。
-          </div>
-          <div style={{ marginTop: 10 }}>
-            <Link className="btn ghost" to="/">
-              回今天
-            </Link>
-          </div>
-        </div>
+        <ReviewEmpty />
       ) : (
         <>
           <MealCards
@@ -164,6 +131,86 @@ export function ReviewView() {
           ) : null}
         </>
       )}
+    </div>
+  );
+}
+
+export function ReviewHint({
+  current,
+  identityPending,
+}: {
+  current: Member | undefined;
+  identityPending: boolean;
+}) {
+  const rules = useFamilyRules();
+  // 家规还没读回来时不编一个数字（文案退到不写天数），读回来就是库里的真实值
+  const coolOffDays = rules.data?.coolOffDays;
+  return (
+    <div className={`card ${styles.hint}`}>
+      <div className="spread">
+        <b>餐后回顾</b>
+        <span className="sub">
+          当前身份：{current ? `${current.emoji} ${current.name}` : identityPending ? '…' : '未选'}
+        </span>
+      </div>
+      <div className="sub" data-testid="review-hint" style={{ marginTop: 6 }}>
+        吃过的一餐在这里说说感受（不弹窗、不推送）：点赞给推荐当软信号；
+        点踩会让这道菜进冷藏期{coolOffDays ? `（家规 ${coolOffDays} 天）` : ''}，暂时不再推。
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 冷藏期的菜（「这道为什么现在不推」的解释）。宽窄两版共用。
+ * 家规从 `useFamilyRules` 读（与 `ReviewHint` 同一份缓存查询，不会多打接口）。
+ */
+export function CoolingCard() {
+  const feedback = useFeedback();
+  const rules = useFamilyRules();
+  const cooling = feedback.data?.cooling ?? [];
+  const coolOffDays = rules.data?.coolOffDays;
+  if (cooling.length === 0) return null;
+  return (
+    <div className="card" data-testid="cooling-list">
+      <div className="spread">
+        <b>冷藏期的菜</b>
+        <span className="badge warn">暂时不推</span>
+      </div>
+      <div className="sub" style={{ marginTop: 6 }} data-testid="cooling-hint">
+        有人点过踩——这些菜在冷藏期{coolOffDays ? `（家规 ${coolOffDays} 天）` : ''}内不进推荐与换菜候选，到期自动解除。
+      </div>
+      <ul className={styles.cooling}>
+        {cooling.map((dish) => (
+          <li key={dish.recipeId} data-testid={`cooling-${dish.recipeId}`}>
+            <span>{dish.name}</span>
+            <span className="sub">{dish.until} 起可以再推</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * 「这几天还没吃过」空态（窄版与宽版共用，#31）——**含「回今天」那个链接**。
+ *
+ * 宽版最初自己写了一份，漏了这个链接：同一状态两个渲染点已经开始不一致。收成一处。
+ * 没有更早的历史时才是这一块；还有历史时由调用方说「更早的餐往下能翻到」（那个形状两版不同，
+ * 本该不同：窄版是「往下翻」的卡片流，宽版是一列列表）。
+ */
+export function ReviewEmpty() {
+  return (
+    <div className="card" data-testid="review-empty">
+      <b>这几天还没有吃过的一餐</b>
+      <div className="sub" style={{ marginTop: 6 }}>
+        吃过的餐会出现在这里（今天起往回看三天）。没定的餐 app 不追踪、不提醒。
+      </div>
+      <div style={{ marginTop: 10 }}>
+        <Link className="btn ghost" to="/">
+          回今天
+        </Link>
+      </div>
     </div>
   );
 }
@@ -283,7 +330,7 @@ function ReviewPage({
  * 没有更早的（`hasEarlier` 为假）时按钮**换成一句实情**而不只是消失：
  * 「就这些了」与「没加载出来」在界面上是两件事。
  */
-function LoadEarlier({
+export function LoadEarlier({
   hasEarlier,
   olderThan,
   onLoad,
@@ -351,7 +398,13 @@ function DishNameButton({
 }
 
 /** 一餐的「吃后感」卡：吃过什么 + 每道菜的反馈（当前身份的那一条高亮回显）+ 草稿菜的转正入口 */
-function ReviewCard({
+/**
+ * 一餐的「吃后感」卡：吃过什么 + 每道菜的反馈（当前身份的那一条高亮回显）+ 草稿菜的转正入口。
+ *
+ * 导出给双列版（`ReviewWideView`）复用：右列就是这一张卡。**行为一字不改**——
+ * 收起/展开、转正判据、反馈归属全照旧（story 33）。
+ */
+export function ReviewCard({
   meal,
   memberId,
   memberName,

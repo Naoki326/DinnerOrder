@@ -244,5 +244,5 @@ test('「最近吃过」走事件流可查（去重窗口），首页不吃手�
   expect(list.every((recipe) => recipe.status === 'active')).toBe(true);
 
   const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-  expect(scrollWidth).toBeLessThanOrEqual(390);
+  expect(scrollWidth).toBeLessThanOrEqual(page.viewportSize()!.width);
 });

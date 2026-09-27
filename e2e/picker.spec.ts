@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { E2E, ROOT_URL } from './test-env';
+import { ROOT_URL } from './test-env';
 
 /**
  * 加菜器的搜索与筛选（#27）：276 道菜（含 257 道外部草稿）里 10 秒挑出一道。
@@ -333,12 +333,14 @@ test('加菜器默认收起：一行行头，点开才铺开；收起不丢已�
 
   // 收起态也不许把页面撑宽（行头是整行按钮 + 三块文字）
   await toggle.click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+    page.viewportSize()!.width,
+  );
   const overflow = await page.evaluate(() => {
     const wide = [...document.querySelectorAll('*')].filter((el) => el.scrollWidth > el.clientWidth + 1);
     return wide.map((el) => `${el.tagName}.${el.className}`).slice(0, 5);
   });
   expect(overflow).toEqual([]);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(E2E.viewport.width);
 });
 
 test('不是掌勺者也照样能搜能筛（不按身份门控），且不吃穿手机宽度', async ({ page }) => {
@@ -356,13 +358,22 @@ test('不是掌勺者也照样能搜能筛（不按身份门控），且不吃�
   await expect(page.getByTestId('pick-huangmenji')).toBeHidden();
   await expectCountMatches(page);
 
-  // 手机优先：加菜器（输入框 + 三行筛选 + 分组按钮）不许把页面撑宽
+  // 手机优先：加菜器（输入框 + 三行筛选 + 分组按钮）不许把页面撑宽。
+  //
+  // 逐元素比较（`scrollWidth > clientWidth`）**只在手机版下做**（#31）：
+  //   * 它要保的是「窄屏下这一行文字/按钮真的没被挤破」——文档宽度被壳的窄容器兜死，
+  //     光看它验不出行内溢出；
+  //   * 宽版下同一条断言没有意义（宽屏本来就该铺开），而且桌面 Chromium 的字体/控件度量
+  //     与真机不同，在平板尺寸下硬比会拿到与版式无关的假红（本票实测：桌面上下拉框/月份
+  //     输入的固有宽度会让它先红）。所以宽版下只看文档宽度。
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+    page.viewportSize()!.width,
+  );
   const overflow = await page.evaluate(() => {
     const wide = [...document.querySelectorAll('*')].filter((el) => el.scrollWidth > el.clientWidth + 1);
     return wide.map((el) => `${el.tagName}.${el.className}`).slice(0, 5);
   });
   expect(overflow).toEqual([]);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(E2E.viewport.width);
 });
 
 test('按荤素汤位筛选：三档各只出该位的菜，「汤」同时盖住荤汤与素汤，且清空能复位', async ({ page }) => {

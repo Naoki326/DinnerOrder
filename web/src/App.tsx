@@ -3,13 +3,14 @@ import { RouterProvider, createBrowserRouter } from 'react-router';
 import { AppShell } from './AppShell';
 import { routerBasename } from './config';
 import { IdentityProvider } from './identity';
+import { LayoutProvider } from './layout';
 import { ViewModeProvider } from './viewMode';
 import { FamilyView } from './routes/FamilyView';
 import { GroceryView } from './routes/GroceryView';
-import { HomeRoute } from './routes/HomeRoute';
+import { LayoutRoute } from './routes/LayoutRoute';
 import { NotFoundView } from './routes/Placeholders';
 import { RecipeLibraryView } from './routes/RecipeLibraryView';
-import { ReviewView } from './routes/ReviewView';
+import { ReviewRoute } from './routes/ReviewRoute';
 import { SlotView } from './routes/SlotView';
 
 /**
@@ -22,8 +23,8 @@ const router = createBrowserRouter(
       path: '/',
       element: (
         <AppShell>
-          {/* 三视图分发：视图模式是设备本地的呈现偏好（总纲 §2.10），默认 A */}
-          <HomeRoute />
+          {/* 两层分发：外层按版式（手机/平板）、内层按视图模式（A/B/C）。两者正交（总纲 §2.10） */}
+          <LayoutRoute />
         </AppShell>
       ),
     },
@@ -58,16 +59,16 @@ const router = createBrowserRouter(
       path: '/review',
       element: (
         <AppShell>
-          <ReviewView />
+          <ReviewRoute />
         </AppShell>
       ),
     },
     {
-      // 菜谱库（issue #30）：设置里钻进来的**从属页面**，不占底部导航（`hideTabBar`）、
+      // 菜谱库（issue #30）：设置里钻进来的**从属页面**，不占主导航（`hideNav`）、
       // 不影响今天/买菜/回顾/家人这四页。顶部一个「← 设置」返回。
       path: '/recipes',
       element: (
-        <AppShell hideTabBar>
+        <AppShell hideNav>
           <RecipeLibraryView />
         </AppShell>
       ),
@@ -98,9 +99,11 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <IdentityProvider>
-        {/* 「当前身份」与「视图模式」同级（总纲 §2.10）：都是这台设备的偏好，都存 localStorage */}
+        {/* 「当前身份」「视图模式」「版式」同级（总纲 §2.10）：都是这台设备的偏好，都存 localStorage */}
         <ViewModeProvider>
-          <RouterProvider router={router} />
+          <LayoutProvider>
+            <RouterProvider router={router} />
+          </LayoutProvider>
         </ViewModeProvider>
       </IdentityProvider>
     </QueryClientProvider>

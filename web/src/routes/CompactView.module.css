@@ -8,6 +8,27 @@
   align-items: baseline;
 }
 
+/* 平板版（#31）：按天分列（`column-width` 让浏览器按可用宽度铺几栏）——
+   掌勺者宽屏下想一次扫完这几天，而不是滚一条长列。行内结构一行不改。 */
+[data-layout-view='wide'][data-testid='compact-view'] {
+  column-width: 380px;
+  column-gap: 12px;
+}
+
+/* 分列时别把一天劈成两半：每个日头 + 它下面那几张卡是一个整体 */
+[data-layout-view='wide'][data-testid='compact-view'] > div {
+  break-inside: avoid;
+}
+
+[data-layout-view='wide'][data-testid='compact-view'] .slot {
+  /* 列里的卡片由列宽决定，不再靠 margin 占位 */
+  margin: 6px 0;
+}
+
+[data-layout-view='wide'][data-testid='compact-view'] .dayHead {
+  padding: 14px 0 4px;
+}
+
 .slot {
   background: var(--card);
   border-radius: 12px;

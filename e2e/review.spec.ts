@@ -187,7 +187,7 @@ test('菜单阶段点踩 + 快捷标签：该菜从推荐与候选消失，冷�
   await expect(page.getByTestId('hero-cooling')).toContainText('冬瓜排骨汤');
 
   // 餐后回顾是常驻的一页：冷藏清单在那里看得见（入口不加弹层、不需要推送）
-  await page.getByTestId('tab-bar').getByText('回顾').click();
+  await page.getByTestId('main-nav').filter({ hasText: '回顾' }).click();
   await expect(page).toHaveURL(new RegExp(`^${ROOT_URL}/review$`));
   await expect(page.getByTestId('review-view')).toBeVisible();
   await expect(page.getByTestId('cooling-list')).toContainText('冬瓜排骨汤');
@@ -197,7 +197,7 @@ test('菜单阶段点踩 + 快捷标签：该菜从推荐与候选消失，冷�
 
   // 撤回（判定只有赞/踩两种，「什么都不说」用撤回表达）：冷藏解除 ——
   // 同一个请求里冬瓜排骨汤又回来了（这正是对照组与冷藏期间的差别所在）
-  await page.getByTestId('tab-bar').getByText('今天').click();
+  await page.getByTestId('main-nav').filter({ hasText: '今天' }).click();
   await page.getByTestId('hero-clear-dongguapaigutang').click();
   await expect.poll(async () => (await feedbackList(page)).cooling.length).toBe(0);
   const afterUndo = await candidatesOf(page, target.id, draft);
@@ -213,7 +213,7 @@ test('餐后回顾的「吃后感」入口常驻在底部导航，没吃过的�
   await page.goto(`${ROOT_URL}/`);
   // 打开 app 不会自己弹回顾（总纲 §2.5：不弹窗不推送）
   await expect(page.getByTestId('review-view')).toBeHidden();
-  const tab = page.getByTestId('tab-bar').getByText('回顾');
+  const tab = page.getByTestId('main-nav').filter({ hasText: '回顾' });
   await expect(tab).toBeVisible();
 
   await tab.click();
@@ -225,6 +225,21 @@ test('餐后回顾的「吃后感」入口常驻在底部导航，没吃过的�
   // 没吃过的一餐不进回顾卡（它们只是菜单，还没上桌）
   await expect(page.locator('[data-testid^="review-meal-"]')).toHaveCount(0);
 });
+
+/**
+ * 取到某一餐的回顾卡（两种版式下都成立，#31）：
+ *   * 窄版：一列卡片流，卡就在 DOM 里；
+ *   * 宽版：左列是餐次列表、右列只摆**选中的那一餐**——所以先在左列点一下这一餐。
+ * 返回的是卡本身（`review-meal-<slotId>`），调用方接着用的 testid 两种版式完全一样。
+ */
+async function openReviewMeal(page: Page, slotId: string) {
+  const card = page.getByTestId(`review-meal-${slotId}`);
+  const row = page.getByTestId(`review-list-${slotId}`);
+  // 宽版：先选中（`count()` 是同步的，不会白等）；窄版没有这一行，跳过
+  if ((await row.count()) > 0) await row.click();
+  await expect(card).toBeVisible({ timeout: 15_000 });
+  return card;
+}
 
 /**
  * 历史的每一餐（本票）：回顾页不只看最近三天——往回翻能看到更早吃过的餐，
@@ -289,16 +304,31 @@ test('回顾页能往回翻出更早的餐，且翻出来的卡片照样能打�
     await expect(page.locator('[data-testid^="review-meal-"]')).toHaveCount(0);
     await expect(page.getByTestId('review-older-only')).toContainText('更早的餐往下能翻到');
 
-    // 「看更早的」翻出历史：两餐都在，且**由近到远**（晚餐比午餐晚，排前面）
+    // 「看更早的」翻出历史：两餐都在，且**由近到远**（晚餐比午餐晚，排前面）。
+    // 定位用「一餐的回顾卡」这个语义（`data-slot-id`）而不是按 `review-meal-` 前缀猜：
+    // 平板版（#31）把餐次列表与选中的那一张卡分到两列，两张卡不一定同时挂在 DOM 上
+    // （窄版是卡片流、宽版是「左列表 + 右详情」），但「这两天吃过的餐」这件事两边都一样。
     await page.getByTestId('review-load-earlier').click();
-    const cards = page.locator('[data-testid^="review-meal-"]');
-    await expect(cards).toHaveCount(2, { timeout: 15_000 });
-    const ids = await cards.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-slot-id')));
-    expect(ids).toEqual([dinner, lunch]);
+    const cards = page.locator('[data-slot-id]');
+    // 去重后比顺序（宽版同一餐会同时出现在左列与右列详情里，所以按元素数比会数成 3）
+    await expect
+      .poll(
+        async () =>
+          [
+            ...new Set(
+              (await cards.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-slot-id')))).filter(
+                (id): id is string => id === lunch || id === dinner,
+              ),
+            ),
+          ],
+        { timeout: 15_000 },
+      )
+      .toEqual([dinner, lunch]);
 
     // 关键：历史里的卡片**照样能打分**（打分功能本来就基于这份历史列表）——
-    // 卡片默认收起，先展开才看得到评论条
-    const historyCard = page.getByTestId(`review-meal-${lunch}`);
+    // 卡片默认收起，先展开才看得到评论条。
+    // 平板版（#31）右列一次只摆选中的那一餐，所以先按语义把这一餐选出来（见 `openReviewMeal`）。
+    const historyCard = await openReviewMeal(page, lunch);
     await historyCard.getByTestId(`review-toggle-${lunch}`).click();
     await historyCard.locator('[data-testid$="-like-suanrongcaixin"]').click();
 
@@ -334,8 +364,8 @@ test('回顾卡默认收起：缩略态是「日期 + 菜名数」，菜/食谱/
 
   await page.goto(`${ROOT_URL}/review`);
   await page.getByTestId('review-load-earlier').click();
-  const card = page.getByTestId(`review-meal-${lunch}`);
-  await expect(card).toBeVisible({ timeout: 15_000 });
+  // 两种版式下都取到这一餐的卡（宽版要先在左列把它选出来，见 `openReviewMeal`）
+  const card = await openReviewMeal(page, lunch);
 
   // 默认收起：评论条不在
   await expect(card.getByTestId(`review-toggle-${lunch}`)).toHaveAttribute('aria-expanded', 'false');

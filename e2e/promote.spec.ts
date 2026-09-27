@@ -454,5 +454,5 @@ test('回顾页的转正表单不吃手机宽度（总纲「手机优先」）',
   await expect(card.getByTestId(`promote-differences-${PENDING_SAMPLE}`)).toBeVisible();
 
   const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-  expect(scrollWidth).toBeLessThanOrEqual(E2E.viewport.width);
+  expect(scrollWidth).toBeLessThanOrEqual(page.viewportSize()!.width);
 });

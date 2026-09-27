@@ -44,7 +44,7 @@ export function AppHeader() {
           {today ? todayLabel(today) : null}
         </div>
       </div>
-      {/* 设置（⚙️，M1 只有「视图模式」一项）与身份条并列常驻：两者都是「这台手机的偏好」 */}
+      {/* 设置（⚙️：视图模式 + 版式，#31）与身份条并列常驻：都是「这台设备的偏好」 */}
       <div className={styles.actions}>
         <SettingsSheet />
         <IdentitySwitcher />
