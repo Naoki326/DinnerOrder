@@ -110,19 +110,32 @@ export function useDeleteManualItem() {
  * 按分类分组（原型 v1 的分类分组）：聚合行按 `category` 聚，手工行独立一张卡
  * （总纲 §2.7 的两种行在界面上也是两处）。
  *
- * 分组顺序按**首次出现**的顺序（服务端已经排好：荤 → 水产 → 蔬菜 → 主食 → 豆制品 → 其他），
- * 前端不再自己排一遍——排列纪律只有服务端一处。
+ * **家里常备的（`pantryStaple`）不进这些分组**——它们由 `stapleItems` 收成下面那张折叠卡。
+ * 不进分组而不是「进了再藏」：分组是给「要买的东西」用的动线，调料在那条动线上只是噪音。
+ *
+ * 分组顺序按**首次出现**的顺序（服务端已经排好：荤 → 水产 → 蔬菜 → 主食 → 豆制品 → 其他
+ * → 常备垫底），前端不再自己排一遍——排列纪律只有服务端一处。
  */
 export function groupByCategory(items: GroceryItem[]): { category: string; items: GroceryItem[] }[] {
   const groups: { category: string; items: GroceryItem[] }[] = [];
   for (const item of items) {
-    if (item.kind !== 'aggregate') continue;
+    if (item.kind !== 'aggregate' || item.pantryStaple) continue;
     const category = item.category ?? '其他';
     const existing = groups.find((group) => group.category === category);
     if (existing) existing.items.push(item);
     else groups.push({ category, items: [item] });
   }
   return groups;
+}
+
+/**
+ * 家里常备的那些（盐、糖、油、生抽、葱姜蒜、干香料…）：买菜清单上折叠成一行提示。
+ *
+ * 需求（用户原话）：「柴米油盐只要提示要有就行，不需要说要买多少」。
+ * 它们仍然带克数（份量引擎算得出来），只是不在一行行地摆出来——家里本来就有一瓶一袋。
+ */
+export function stapleItems(items: GroceryItem[]): GroceryItem[] {
+  return items.filter((item) => item.kind === 'aggregate' && item.pantryStaple);
 }
 
 /** 手工行（不属于任何菜谱，重算时保留）：界面上的第二张卡 */

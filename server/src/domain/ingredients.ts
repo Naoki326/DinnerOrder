@@ -124,6 +124,115 @@ export function ingredientExists(db: Db, id: string): boolean {
 }
 
 /**
+ * **家里常备、不用论克买的**（买菜清单的「调料：…（家里要有）」那折叠行）。
+ *
+ * 需求（用户原话）：「柴米油盐只要提示要有就行，不需要说要买多少」。
+ *
+ * 为什么用**封闭名单**而不是几条规则：
+ *   * 「克数小」不行——干贝 5 g、枸杞 5 g 是要买的（论克买），而油 10 g 不用；
+ *   * 「不在互换表里」不行——青椒、鸡蛋也不在互换表里，但它们肯定要买；
+ *   * 「scaling === 'fixed'」不行——那说的是「不随人数放大」，与「要不要论克买」无关
+ *     （虫草花 5 g 是 fixed 但要买）。
+ * 剩下来唯一说得清的判据就是**厨艺常识**：这些东西家里本来就有一瓶一袋，买菜时只需确认「还有」。
+ *
+ * **边界（与 `recommendation.ts` 的 `SEASONINGS` 刻意不同）**：
+ *   * 蒜/姜/葱**在这里算常备**（买一把能吃一阵，不用按 8 g 买），但它们在 `SEASONINGS` 里也算；
+ *   * **辣椒 / 青椒 / 彩椒 / 小米椒 / 红椒 / 蒜苗 / 蒜薹不算**——这些是论个/论斤买的**蔬菜**；
+ *   * **芝麻 / 虾皮 / 干贝 / 枸杞 / 红枣不算**——论克买回来的干货；
+ *   * 干香料（八角/桂皮/香叶/孜然/苗香/丁香/豆蔻/五香粉/十三香/咖喱…）**算**（一次买一小盒能用很久）。
+ *
+ * 两套名单为什么不合：`SEASONINGS` 回答「这道菜的主料是什么」（展示），这里回答「要不要按克买」
+ * （买菜动线）——两个问题各自的正确答案不同（蒜在主料问题上要从简、在买菜问题上要从宽），
+ * 合并就会让其中一边变错。两边共用同一份食材字典（id 稳定）。
+ */
+export const PANTRY_STAPLES = new Set([
+  // 油盐酱醋糖酒
+  'salt',
+  'sugar',
+  'rock_sugar',
+  'brown_sugar',
+  'vinegar',
+  'rice_vinegar',
+  'sweet_rice_vinegar',
+  'cooking_oil',
+  'sesame_oil',
+  'light_soy_sauce',
+  'dark_soy_sauce',
+  'oyster_sauce',
+  'cooking_wine',
+  'fermented_rice_wine',
+  'baijiu',
+  'honey',
+  'starch',
+  'water',
+  'hot_water',
+  // 发酵酱料与复合调味（一盒/一瓶吃很久）
+  'doubanjiang',
+  'pixian_douban',
+  'bean_paste',
+  'soybean_paste',
+  'sweet_bean_sauce',
+  'fermented_black_bean',
+  'fermented_tofu',
+  'tomato_paste',
+  'ketchup',
+  'chili_sauce',
+  'chili_bean_sauce',
+  'chili_oil',
+  'douchi_chili',
+  'chopped_garlic_sauce',
+  'pickled_chili',
+  'worcestershire',
+  'yellow_mustard',
+  'sesame_paste',
+  'sesame_paste_dip',
+  'peanut_butter',
+  'curry_cube',
+  'curry_powder',
+  // 提鲜剂
+  'chicken_bouillon',
+  'monosodium_glutamate',
+  'oyster_mushroom_sauce',
+  'oyster_essence',
+  // 葱姜蒜（买一把能吃一阵，不用按 8 g 买）
+  'garlic',
+  'ginger',
+  'scallion',
+  'garlic_powder',
+  'ginger_powder',
+  // 干香料（一次买一小盒能用很久）
+  'star_anise',
+  'cinnamon',
+  'bay_leaf',
+  'fennel_seed',
+  'cumin',
+  'five_spice',
+  'thirteen_spice',
+  'clove',
+  'cardamom',
+  'turmeric',
+  'coriander_powder',
+  'sichuan_pepper',
+  'sichuan_peppercorn_oil',
+  'white_pepper',
+  'black_pepper',
+  'chili_flakes',
+  'chicken_powder',
+  'vegetable_stock',
+  'chicken_stock',
+  'yeast',
+  'baking_powder',
+  'baking_soda',
+  'vanilla',
+  'gelatin',
+]);
+
+/** 这个食材是不是「家里常备」（买菜清单用它把行折叠成一行提示） */
+export function isPantryStaple(ingredientId: string): boolean {
+  return PANTRY_STAPLES.has(ingredientId);
+}
+
+/**
  * 当月时令的食材 id 集合（推荐期排序用）。
  *
  * 明确一个口径：**时令是排序不是过滤**。“未录时令 = 四季有售”（见 002 的注释），

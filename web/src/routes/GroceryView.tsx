@@ -3,6 +3,7 @@ import type { UseMutationResult } from '@tanstack/react-query';
 import {
   groupByCategory,
   manualItems,
+  stapleItems,
   useAddManualItem,
   useArchiveGrocery,
   useCheckItem,
@@ -189,6 +190,13 @@ export function GroceryView() {
               ))
             )}
 
+            {/*
+              家里常备的（盐/糖/油/生抽/葱姜蒜/干香料…）折叠成一行：
+              「柴米油盐只要提示要有就行，不需要说要买多少」（用户口径）。
+              默认收起——它们是清单上的噪音，但不是可以忘的东西（忘了盐就做不了菜）。
+            */}
+            {stapleItems(list.items).length > 0 ? <StapleRow items={stapleItems(list.items)} /> : null}
+
             {/* 生熟换算参考（原型 v1 的一句话位置）：数字从互换表现算，图表改了这里跟着变 */}
             <div className="sub" data-testid="grocery-exchange-note" style={{ marginTop: 10 }}>
               {list.exchangeNote}（生熟换算参考）
@@ -270,6 +278,40 @@ function staleReasonText(list: GroceryList, today: string): string {
   // 槽位类原因必须带槽（服务端 schema 上成对）：拿不到就只说改法，不编造是哪一餐
   if (list.staleSlotId === null) return staleTail[reason];
   return `${mealLabel(list.staleSlotId.slice(0, 10), mealOf(list.staleSlotId), today)}${staleTail[reason]}`;
+}
+
+/**
+ * 家里常备的调料：**折叠成一行**（默认收起）。
+ *
+ * 需求（用户原话）：「柴米油盐只要提示要有就行，不需要说要买多少」——所以这里
+ * **不显示克数**，只说有哪几味、家里要有。克数仍在服务端算着，只是不摆出来。
+ *
+ * 为什么默认收起而不是完全不显示：这些东西是「忘了就做不了菜」的（没盐、没油），
+ * 买完菜回家才发现就晚了。收起是省地方，不是让它消失。
+ */
+function StapleRow({ items }: { items: GroceryItem[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={styles.staples} data-testid="grocery-staples">
+      <button
+        type="button"
+        className={styles.staplesHead}
+        aria-expanded={open}
+        data-testid="grocery-staples-toggle"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="sub">
+          调料：{items.map((item) => item.name).join('、')}
+        </span>
+        <span className={styles.staplesHint}>{open ? '收起' : '家里要有'}</span>
+      </button>
+      {open ? (
+        <div className="sub" data-testid="grocery-staples-detail" style={{ marginTop: 6 }}>
+          这些不用论克买——翻翻家里还有没有就行。
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /** 过期原因的后半截：「今天午餐」+ 这里的尾巴 */

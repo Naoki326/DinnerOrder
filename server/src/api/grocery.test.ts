@@ -712,3 +712,94 @@ async function deleteItem(itemId: number): Promise<GroceryList> {
   expect(status, JSON.stringify(body)).toBe(200);
   return body.list!;
 }
+
+/**
+ * 调料不算「要买多少」（需求变更，用户原话：「柴米油盐只要提示要有就行，不需要说要买多少」）。
+ *
+ * 判定源是**厨艺常识的封闭名单**（`domain/ingredients.ts` 的 `PANTRY_STAPLES`），不是「克数小」
+ * 也不是「不在互换表里」——所以本组用例也守着几条**不该被误归**的边界：
+ * 青椒/彩椒/小米椒是**要买的蔬菜**（论个买），蒜苗/蒜薹也是；芝麻、虾皮、干贝同理。
+ *
+ * 克数照旧算（`grams` 有值、与份量引擎对得上）：折叠只发生在**呈现层**，不是不算了。
+ */
+describe('调料（家里常备的）与要买的食材分开', () => {
+  it('柴米油盐标 pantryStaple，要买的食材不标；克数两边都照旧算', async () => {
+    harness = createTestHarness();
+    // 可乐鸡翅：鸡翅（要买）+ 食用油（常备）；蒜蓉菜心：菜心（要买）+ 蒜（常备）
+    await book('2025-06-02:lunch', {
+      diners: ALL,
+      dishes: [{ recipeId: 'kelejichi' }, { recipeId: 'suanrongcaixin' }],
+    });
+
+    const grocery = await listOrFail();
+    // 要买的：标 false，且带克数
+    expect(itemOf(grocery, 'chicken_wings').pantryStaple).toBe(false);
+    expect(itemOf(grocery, 'choy_sum').pantryStaple).toBe(false);
+    expect(gramsOf(grocery, 'chicken_wings')).toBeGreaterThan(0);
+
+    // 常备的：标 true，克数**照旧有**（折叠是呈现的事，不是不算）
+    expect(itemOf(grocery, 'cooking_oil').pantryStaple).toBe(true);
+    expect(itemOf(grocery, 'garlic').pantryStaple).toBe(true);
+    const sums = await portionSums(['2025-06-02:lunch']);
+    expect(gramsOf(grocery, 'cooking_oil')).toBe(sums.get('cooking_oil'));
+    expect(gramsOf(grocery, 'garlic')).toBe(sums.get('garlic'));
+  });
+
+  it('边界：辣椒/青椒/彩椒/蒜苗/蒜薹/芝麻 是要买的，不是常备的', async () => {
+    harness = createTestHarness();
+    // 自己造一道菜把这些边界食材都放进去（种子菜里凑不齐）
+    harness.db
+      .prepare(
+        `INSERT INTO recipes (id, name, kind, effort, status, source, cuisine, steps)
+         VALUES ('grocery_staple_probe', '边界探针', 'veg', 'quick', 'active', 'oral', '家常', '炒。')`,
+      )
+      .run();
+    const probe = [
+      'chili', 'green_pepper', 'bell_pepper', 'garlic_chive', 'garlic_sprout', 'sesame', 'salt',
+    ];
+    probe.forEach((ingredientId, position) => {
+      harness.db
+        .prepare(
+          `INSERT INTO recipe_ingredients (recipe_id, ingredient_id, position, adult_grams, scaling, raw_cooked_anchor, source_quantity)
+           VALUES ('grocery_staple_probe', ?, ?, 10, 'fixed', NULL, NULL)`,
+        )
+        .run(ingredientId, position);
+    });
+    await book('2025-06-02:lunch', { diners: ALL, dishes: [{ recipeId: 'grocery_staple_probe' }] });
+
+    const grocery = await listOrFail();
+    // 要买的蔬菜：论个/论斤买，克数有意义
+    for (const id of ['chili', 'green_pepper', 'bell_pepper', 'garlic_chive', 'garlic_sprout']) {
+      expect(itemOf(grocery, id).pantryStaple, `${id} 是要买的蔬菜`).toBe(false);
+    }
+    // 芝麻要买（一小包），盐不用论克
+    expect(itemOf(grocery, 'sesame').pantryStaple).toBe(false);
+    expect(itemOf(grocery, 'salt').pantryStaple).toBe(true);
+  });
+
+  it('手工行不带 pantryStaple（掌勺者自己写进来的，他说要就是要）', async () => {
+    harness = createTestHarness();
+    await book('2025-06-02:lunch', { diners: ALL, dishes: [{ recipeId: 'fanqiechaodan' }] });
+    // 先建清单，再加一条手工行
+    await listOrFail();
+    const after = await addManual('一次性手套');
+    const manual = after.items.find((item) => item.kind === 'manual');
+    expect(manual?.pantryStaple).toBe(false);
+  });
+
+  it('一份清单里只有调料时，要买的那几组仍然是空的（折叠不是隐藏）', async () => {
+    harness = createTestHarness();
+    // 蛋炒饭：大米/蛋/葱——葱是常备，米与蛋要买
+    await book('2025-06-02:lunch', { diners: ALL, dishes: [{ recipeId: 'danchaofan' }] });
+    const grocery = await listOrFail();
+
+    const staples = grocery.items.filter((item) => item.kind === 'aggregate' && item.pantryStaple);
+    const buying = grocery.items.filter((item) => item.kind === 'aggregate' && !item.pantryStaple);
+    expect(staples.map((item) => item.ingredientId).sort()).toEqual(['scallion']);
+    expect(buying.map((item) => item.ingredientId).sort()).toEqual(['egg', 'rice']);
+    // 两类加起来仍是全部聚合行（没有行被悄悄丢掉）
+    expect(staples.length + buying.length).toBe(
+      grocery.items.filter((item) => item.kind === 'aggregate').length,
+    );
+  });
+});

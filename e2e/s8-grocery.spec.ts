@@ -32,6 +32,8 @@ interface ItemJson {
   checked: boolean;
   needsRelabel: boolean;
   category: string | null;
+  /** 家里常备的（调料类）：界面把它们折叠成一行，不逐行摆克数 */
+  pantryStaple: boolean;
   sources: { slotId: string; recipeName: string; date: string; meal: string }[];
 }
 
@@ -396,4 +398,54 @@ test('S1 补完：给我推荐 → 一键接受 → 买菜清单页出现本餐�
   }
   // 生熟换算参考也在（S8 的通过标准含「附生熟换算参考」）
   await expect(page.getByTestId('grocery-exchange-note')).toContainText('生重为准');
+});
+
+/**
+ * 调料折叠成一行（需求变更，用户原话：「柴米油盐只要提示要有就行，不需要说要买多少」）。
+ *
+ * 判别性断言有两边：
+ *   * **要买的**（猪排骨/土豆）逐行摆出来、带克数；
+ *   * **常备的**（盐/糖/油/生抽/葱姜蒜）**不逐行占位**，而是收进 `grocery-staples` 一行摘要里，
+ *     摘要上**不出现克数**。
+ * 只验一边会漏掉「把调料也逐行摆出来」或「把要买的也一起藏了」这两种错。
+ */
+test('S8 补：柴米油盐折叠成一行「家里要有」，不逐行摆克数', async ({ page }) => {
+  // 红烧排骨（猪排骨）+ 蒜蓉菜心（菜心 + 蒜）+ 醋溜土豆丝（土豆 + 醋）：
+  // 要买的（排骨/菜心/土豆）与常备的（蒜/醋）都齐
+  const { lunch, dinner } = await findPair(page);
+  await book(page, lunch, [{ recipeId: 'hongshaopaigu' }, { recipeId: 'suanrongcaixin' }]);
+  await book(page, dinner, [{ recipeId: 'culutudousi' }]);
+
+  await page.goto(`${ROOT_URL}/grocery`);
+  await expect(page.getByTestId('grocery-list')).toBeVisible();
+
+  const list = (await grocery(page))!;
+  // 服务端那一份：两类都标对了
+  expect(itemByIngredient(list, 'pork_ribs').pantryStaple).toBe(false);
+  expect(itemByIngredient(list, 'choy_sum').pantryStaple).toBe(false);
+  expect(itemByIngredient(list, 'garlic').pantryStaple).toBe(true);
+  expect(itemByIngredient(list, 'vinegar').pantryStaple).toBe(true);
+
+  // 界面：要买的逐行摆着、带克数
+  const ribs = itemByIngredient(list, 'pork_ribs');
+  await expect(page.getByTestId(`grocery-name-${ribs.id}`)).toBeVisible();
+  await expect(page.getByTestId(`grocery-grams-${ribs.id}`)).toContainText('g');
+
+  // 常备的：**没有自己的行**（不在任何分类分组里），而是收进那行摘要
+  const garlic = itemByIngredient(list, 'garlic');
+  const vinegar = itemByIngredient(list, 'vinegar');
+  await expect(page.getByTestId(`grocery-item-${garlic.id}`)).toBeHidden();
+  await expect(page.getByTestId(`grocery-item-${vinegar.id}`)).toBeHidden();
+
+  const staples = page.getByTestId('grocery-staples');
+  await expect(staples).toBeVisible();
+  await expect(page.getByTestId('grocery-staples-toggle')).toContainText('蒜');
+  await expect(page.getByTestId('grocery-staples-toggle')).toContainText('醋');
+  await expect(page.getByTestId('grocery-staples-toggle')).toContainText('家里要有');
+  // 摘要里**不出现克数**——这正是「不需要说要买多少」那句
+  await expect(page.getByTestId('grocery-staples-toggle')).not.toContainText('g');
+
+  // 展开是「翻翻家里还有没有」的提示，不是又摆一遍克数
+  await page.getByTestId('grocery-staples-toggle').click();
+  await expect(page.getByTestId('grocery-staples-detail')).toContainText('不用论克买');
 });

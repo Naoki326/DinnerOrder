@@ -9,6 +9,7 @@ import type {
   MealKind,
 } from '../wire-types.js';
 import { exchangeTable, portionOf } from './portion.js';
+import { isPantryStaple } from './ingredients.js';
 import { foldSlot, parseSlotId, todayOf } from './slots.js';
 
 /**
@@ -69,6 +70,8 @@ interface AggregateRow {
   grams: number;
   needsRelabel: boolean;
   category: string;
+  /** 家里常备的（调料类）——参与排序：垫在清单末尾，界面把它们折叠成一行提示 */
+  pantryStaple: boolean;
   sources: GroceryItemSource[];
 }
 
@@ -163,6 +166,7 @@ function aggregateGrocery(db: Db, clock: Clock): AggregateResult {
             grams: 0,
             needsRelabel: false,
             category: categories.get(ingredient.ingredientId) ?? OTHER_LABEL,
+            pantryStaple: isPantryStaple(ingredient.ingredientId),
             sources: [],
           };
         row.grams += ingredient.grams;
@@ -182,7 +186,12 @@ function aggregateGrocery(db: Db, clock: Clock): AggregateResult {
   }
 
   const rows = [...byIngredient.values()].sort(
-    (a, b) => groupRank(a.category) - groupRank(b.category) || b.grams - a.grams || a.name.localeCompare(b.name),
+    (a, b) =>
+      // 家里常备的垫底：买菜动线上“要买的”先送完，“家里要有”的最后扫一眼
+      Number(a.pantryStaple) - Number(b.pantryStaple) ||
+      groupRank(a.category) - groupRank(b.category) ||
+      b.grams - a.grams ||
+      a.name.localeCompare(b.name),
   );
   return { rows, mealCount: slots.length };
 }
@@ -549,6 +558,9 @@ function readGroceryList(db: Db, listId: number): GroceryList {
     needsRelabel: item.needs_relabel === 1,
     checked: item.checked === 1,
     category: item.ingredient_id === null ? null : (categories.get(item.ingredient_id) ?? OTHER_LABEL),
+    // 「家里常备」现算（与 category 同一做法：不落列，改名单不用迁移）。
+    // 手工行恒 false：那是掌勺者自己写进来的，他说要就是要。
+    pantryStaple: item.kind === 'aggregate' && item.ingredient_id !== null && isPantryStaple(item.ingredient_id),
     sources: item.kind === 'aggregate' ? (sourcesByItem.get(item.id) ?? []) : [],
   }));
 

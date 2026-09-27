@@ -1094,6 +1094,16 @@ export interface GroceryItem {
   checked: boolean;
   /** 聚合行按食材分组用的分类（来自互换表已挂的食材指针，见 domain/grocery.ts）；手工行恒为 null */
   category: string | null;
+  /**
+   * **家里常备、不用论克买的**（盐、糖、油、生抽、料酒、淀粉、唐辛子类香料…）。
+   *
+   * 这类行的 `grams` **照旧有值**（它们真进了菜，份量引擎算得出来），只是界面上把它们折叠成
+   * 一行「调料：…（家里要有）」——柴米油盐不需要按 15 g 去买。
+   * 判定源是厨艺常识的封闭名单（`domain/ingredients.ts` 的 `PANTRY_STAPLES`），
+   * 不是「克数小」也不是「不在互换表里」：干贝 5 g 要买、八角 2 g 不用论克。
+   * 手工行恒为 false（掌勺者自己写进来的，他说要就是要）。
+   */
+  pantryStaple: boolean;
   /** 这一份食材来自哪几餐的哪道菜（按餐次、菜序）；手工行为空数组 */
   sources: GroceryItemSource[];
 }
