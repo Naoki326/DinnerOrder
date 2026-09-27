@@ -19,7 +19,7 @@ import styles from './RecipeLibraryView.module.css';
  * 三档 tab（家庭菜谱 / 外部菜谱 / 已退役）＋档内搜索。这一页不占用底部导航（壳用 `hideTabBar`）、
  * 顶部一个「← 设置」返回——它是从设置钻进来的从属页面，不是第五个日常页。
  *
- * 五条口径（改之前先读）：
+ * 四条口径（改之前先读）：
  *   * **三档就是状态机的三个状态**（active / draft / retired），不是另立的分类：
  *     「家庭菜谱」= active、「外部菜谱」= draft、「已退役」= retired。档位与 `recipe.status` 一一对应。
  *   * **「没做过」与「还没上过桌」刻意不同、不得混用**：外部菜档那句是「没做过」（判定源 `status`），
@@ -27,9 +27,11 @@ import styles from './RecipeLibraryView.module.css';
  *     **同一个渲染点只出现一种**——两者判定源不同，混在一行里就是台账点名要避免的「同页双口径」。
  *   * **外部菜档默认只给「待处理」子集**（克数待定的 + 还没细看过的），带一个**可关闭的开关**能切回全部。
  *     做成开关而不是写死：这个分组在真数据出来之前无法验证好用与否，要能随时改。
- *   * **只有掌勺者可写**：回落全局 `is_cook`（菜谱不属于任何一餐，没有「那一餐的掌勺者」可用）。
- *     非掌勺者看到只读的库，知道该找谁改。
- *   * **筛选是纯前端**（与 `DishPicker` 同一纪律）：`GET /recipes?status=all` 一次拿齐，
+ *   * **谁都能写**（需求变更，2026-09-27）：原 spec 的「只有掌勺者可写」已**撤掉**——
+ *     家里任何人打开这一页都能录入 / 修订 / 退役。这是与 **转正入口**有意不同的地方：
+ *     转正看「**这一餐**的掌勺者」（`ReviewView`，spec 明确要求，保持不变），因为那是
+ *     「外部菜上了桌、这餐由谁做」的判断；菜谱库不属于任何一餐，没有「那一餐的掌勺者」可用。
+ *  * **筛选是纯前端**（与 `DishPicker` 同一纪律）：`GET /recipes?status=all` 一次拿齐，
  *     零额外 API 契约。
  */
 type LibraryTab = 'family' | 'external' | 'retired';
@@ -53,7 +55,6 @@ export function RecipeLibraryView() {
   const [creating, setCreating] = useState(false);
 
   const all = recipes.data ?? [];
-  const canWrite = current?.isCook ?? false;
 
   const family = useMemo(() => all.filter((recipe) => recipe.status === 'active'), [all]);
   const external = useMemo(() => all.filter((recipe) => recipe.status === 'draft'), [all]);
@@ -96,18 +97,10 @@ export function RecipeLibraryView() {
     return (
       <div data-testid="recipe-library-view">
         <BackRow onBack={() => setOpenId(null)} backLabel="← 菜谱库" />
-        {canWrite ? (
-          // 草稿与家庭菜谱都能改；**退役的先还原**（领域层也是这么判的）。
-          // 只读态给的是只读的内容 + 一句说明，不给一个按下必报 409 的表单。
-          <RecipeEditor recipe={open} memberId={current?.id} readOnly={open.status === 'retired'} />
-        ) : (
-          <div className="card" data-testid="recipe-cook-only">
-            <b>{open.name}</b>
-            <div className="sub" style={{ marginTop: 6 }}>
-              改菜谱是掌勺者的事——让家里通常做菜的那位来改。
-            </div>
-          </div>
-        )}
+        {/* 谁都能改（spec 改动：撤掉“只有掌勺者可写”）。
+            草稿与家庭菜谱都能改；**退役的先还原**（领域层也是这么判的）。
+            只读态给的是只读的内容 + 一句说明，不给一个按下必报 409 的表单。 */}
+        <RecipeEditor recipe={open} memberId={current?.id} readOnly={open.status === 'retired'} />
       </div>
     );
   }
@@ -122,20 +115,18 @@ export function RecipeLibraryView() {
           <span className="badge">{all.length} 道</span>
         </div>
         <div className="sub" style={{ marginTop: 6 }}>
-          录入新菜、改做法、退役不做的菜。{canWrite ? '' : '改菜谱是掌勺者的事。'}
+          录入新菜、改做法、退役不做的菜。
         </div>
         {/* 录入入口：这是 ADR-0009 的主干动作（“想加一道家里从没做过的新菜”） */}
-        {canWrite ? (
-          <button
-            type="button"
-            className="btn block"
-            style={{ marginTop: 10 }}
-            data-testid="recipe-create-open"
-            onClick={() => setCreating(true)}
-          >
-            ＋ 录入一道新菜
-          </button>
-        ) : null}
+        <button
+          type="button"
+          className="btn block"
+          style={{ marginTop: 10 }}
+          data-testid="recipe-create-open"
+          onClick={() => setCreating(true)}
+        >
+          ＋ 录入一道新菜
+        </button>
       </div>
 
       <div className={styles.tabs} role="tablist" aria-label="菜谱档位">
@@ -215,7 +206,7 @@ export function RecipeLibraryView() {
             {visible.length} 道
             {tab === 'external' && pendingOnly ? '（待处理）' : ''}
           </span>
-          {canWrite && tab !== 'retired' ? (
+          {tab !== 'retired' ? (
             <span className="sub">点一道菜就能改</span>
           ) : (
             <span className="sub">点一道菜看详情</span>
@@ -236,7 +227,6 @@ export function RecipeLibraryView() {
               key={recipe.id}
               recipe={recipe}
               tab={tab}
-              canWrite={canWrite}
               onOpen={() => setOpenId(recipe.id)}
             />
           ))
@@ -275,12 +265,10 @@ function BackRow({ onBack, backLabel }: { onBack: (() => void) | undefined; back
 function RecipeRow({
   recipe,
   tab,
-  canWrite,
   onOpen,
 }: {
   recipe: Recipe;
   tab: LibraryTab;
-  canWrite: boolean;
   onOpen: () => void;
 }) {
   return (
@@ -305,7 +293,6 @@ function RecipeRow({
           </span>
         ) : null}
       </span>
-      {!canWrite ? <span className="sub">只读</span> : null}
     </button>
   );
 }

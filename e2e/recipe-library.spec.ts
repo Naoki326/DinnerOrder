@@ -115,26 +115,43 @@ test('设置 → 菜谱库 → 录入一道新菜 → 改做法 → 保存（入
 });
 
 /**
- * 第二条：**只有掌勺者可写**。回落全局 `is_cook`（菜谱不属于任何一餐）。
+ * 第二条：**谁都能写**（需求变更 2026-09-27，原 spec 的「只有掌勺者可写」已撤）。
  *
- * 判据是全局 `is_cook` 而不是「那一餐的掌勺者」——这是本票与 `ReviewView` 有意不同的地方
- * （菜谱没有餐次，找不到「那一餐」）。
+ * 判别性：切成**大宝**（不是掌勺者，`is_cook=0`）后，编辑表单**照样在**、也能真存下去。
+ * 与 **转正入口**有意不同：那个看「这一餐的掌勺者」（`ReviewView`，spec 明确要求，保持不变）；
+ * 菜谱库不属于任何一餐，没有「那一餐的掌勺者」可用。把掌勺者限制加回来的实现会把这条打红。
  */
-test('菜谱库只有掌勺者可写：切成大宝变只读', async ({ page }) => {
+test('菜谱库谁都能写：切成大宝（不是掌勺者）照样能编辑并保存', async ({ page }) => {
+  await clearDecidedSlots(page);
   await openLibrary(page);
-  // 缺省身份是妈妈（种子 is_cook=1）：看得见编辑入口
-  await page.getByTestId('recipe-search-input').fill('番茄炒蛋');
-  await page.getByTestId('recipe-row-fanqiechaodan').click();
-  await expect(page.getByTestId('recipe-form-fanqiechaodan')).toBeVisible();
 
-  // 切成大宝（不是掌勺者）：编辑表单消失，换成一句说明
+  // 切成大宝：不是掌勺者（种子 is_cook 是妈妈）
   await page.getByTestId('identity-chip').click();
   await page.getByTestId('identity-option-dabao').click();
   await expect(page.getByTestId('identity-name')).toHaveText('大宝');
-  await expect(page.getByTestId('recipe-form-fanqiechaodan')).toBeHidden();
-  await expect(page.getByTestId('recipe-cook-only')).toBeVisible();
 
-  // 复原成妈妈（后续 spec 缺省身份）
+  // 录入入口在（不是掌勺者也看得到）
+  await expect(page.getByTestId('recipe-create-open')).toBeVisible();
+
+  // 打开一道家庭菜：编辑表单在（不是「只给掌勺者」的说明）
+  await page.getByTestId('recipe-search-input').fill('番茄炒蛋');
+  await page.getByTestId('recipe-row-fanqiechaodan').click();
+  await expect(page.getByTestId('recipe-form-fanqiechaodan')).toBeVisible();
+  await expect(page.getByTestId('recipe-cook-only')).toBeHidden();
+
+  // 真存得下去（不是只给看）——台账里记的是大宝
+  const before = await page.request.get(`${ROOT_URL}/api/recipes/fanqiechaodan`);
+  const originalSteps = ((await before.json()) as { recipe: { steps: string } }).recipe.steps;
+  await page.getByTestId('recipe-steps-fanqiechaodan').fill('大宝改的做法：多放点糖。');
+  await page.getByTestId('recipe-save-fanqiechaodan').click();
+  await expect(page.getByTestId('recipe-saved-fanqiechaodan')).toBeVisible({ timeout: 15_000 });
+  const after = await page.request.get(`${ROOT_URL}/api/recipes/fanqiechaodan`);
+  expect(((await after.json()) as { recipe: { steps: string } }).recipe.steps).toContain('大宝改的做法');
+
+  // 还原做法（后续 spec 靠种子态），并复原身份成妈妈
+  await page.request.patch(`${ROOT_URL}/api/recipes/fanqiechaodan`, {
+    data: { steps: originalSteps, memberId: 'mom' },
+  });
   await page.getByTestId('identity-chip').click();
   await page.getByTestId('identity-option-mom').click();
   await expect(page.getByTestId('identity-name')).toHaveText('妈妈');
