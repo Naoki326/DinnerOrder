@@ -150,6 +150,21 @@ async function bookExternal(page: Page, slotId: string, recipeId = EXTERNAL): Pr
   expect(response.ok()).toBe(true);
 }
 
+/**
+ * 回顾卡默认收起（本票）：要评菜/转正就得先展开那一张。
+ *
+ * 用 helper 而不是在每个用例里手写一遍点击：转正入口、反馈条都在展开态里，
+ * 哪一条用例漏点一下就会红在「找不到转正表单」，而原因藏在交互层的改动里、
+ * 从失败信息里看不出来。
+ */
+async function openReviewCard(page: Page, slotId: string) {
+  const card = page.getByTestId(`review-meal-${slotId}`);
+  await expect(card).toBeVisible({ timeout: 15_000 });
+  const toggle = card.getByTestId(`review-toggle-${slotId}`);
+  if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+  return card;
+}
+
 async function getRecipe(page: Page, id: string): Promise<RecipeJson> {
   const response = await page.request.get(`${ROOT_URL}/api/recipes/${id}`);
   expect(response.ok()).toBe(true);
@@ -178,9 +193,9 @@ test('外部菜上桌 → 回顾里转正 → 进家庭库与下次推荐（S6�
 
   // 餐后回顾里看得见这一餐（门槛与回顾同源：最后一条非取消事件 + 过了截止时刻）
   await page.goto(`${ROOT_URL}/review`);
-  const card = page.getByTestId(`review-meal-${slotId}`);
-  await expect(card).toBeVisible({ timeout: 15_000 });
-  await expect(card).toContainText('清炒豆芽');
+  const card = await openReviewCard(page, slotId);
+  // 菜名在缩略态里就该看得到（菜/食谱/营养收起时可达，本票）
+  await expect(card.getByTestId(`review-thumb-dishes-${slotId}`)).toContainText('清炒豆芽');
 
   // 掌勺者（种子缺省身份=妈妈，is_cook=1）看得到「转正」入口；展开它
   const form = card.getByTestId(`promote-${EXTERNAL}`);
@@ -304,8 +319,7 @@ test('转正入口只给掌勺者、「待重标」项看得见（#19 台账点�
   clockShifted = true;
 
   await page.goto(`${ROOT_URL}/review`);
-  const card = page.getByTestId(`review-meal-${slotId}`);
-  await expect(card).toBeVisible({ timeout: 15_000 });
+  const card = await openReviewCard(page, slotId);
 
   // 掌勺者展开表单：待重标项要看得见——那是导入菜与家里确认过的菜最实质的差别之一
   // （转正会把克数固化成家庭基准，所以这一步先把未定的项摆到掌勺者眼前）
@@ -347,8 +361,7 @@ test('转正入口按**这一餐的掌勺者**判定，不是全局 is_cook（�
   clockShifted = true;
 
   await page.goto(`${ROOT_URL}/review`);
-  const card = page.getByTestId(`review-meal-${slotId}`);
-  await expect(card).toBeVisible({ timeout: 15_000 });
+  const card = await openReviewCard(page, slotId);
 
   // 缺省身份是妈妈（全局 is_cook）——她**不是**这一餐的掌勺者，看不到转正入口
   await expect(card.getByTestId(`promote-${PENDING_SAMPLE}`)).toBeHidden();
@@ -381,8 +394,7 @@ test('那一餐没指定掌勺者时，转正入口回落到全局 is_cook', asy
   clockShifted = true;
 
   await page.goto(`${ROOT_URL}/review`);
-  const card = page.getByTestId(`review-meal-${slotId}`);
-  await expect(card).toBeVisible({ timeout: 15_000 });
+  const card = await openReviewCard(page, slotId);
 
   // 妈妈（全局 is_cook）看得到转正入口（回落到全局）
   await expect(card.getByTestId(`promote-open-${PENDING_SAMPLE}`)).toBeVisible();
@@ -411,10 +423,9 @@ test('同一道菜在两张回顾卡上：回执只挂在点过的那张（回�
   clockShifted = true;
 
   await page.goto(`${ROOT_URL}/review`);
-  const lunchCard = page.getByTestId(`review-meal-${lunch}`);
-  const dinnerCard = page.getByTestId(`review-meal-${dinner}`);
-  await expect(lunchCard).toBeVisible({ timeout: 15_000 });
-  await expect(dinnerCard).toBeVisible({ timeout: 15_000 });
+  // 两张卡都展开（同一道菜在两张卡上，转正入口在展开态里）
+  const lunchCard = await openReviewCard(page, lunch);
+  const dinnerCard = await openReviewCard(page, dinner);
 
   // 两张卡上都有转正入口：同一道菜同时出现在两张卡（同一个 `review-dish-*` testid 靠外层卡区分）
   await lunchCard.getByTestId(`promote-open-${DUAL_CARD}`).click();
@@ -438,8 +449,7 @@ test('回顾页的转正表单不吃手机宽度（总纲「手机优先」）',
   clockShifted = true;
 
   await page.goto(`${ROOT_URL}/review`);
-  const card = page.getByTestId(`review-meal-${slotId}`);
-  await expect(card).toBeVisible({ timeout: 15_000 });
+  const card = await openReviewCard(page, slotId);
   await card.getByTestId(`promote-open-${PENDING_SAMPLE}`).click();
   await expect(card.getByTestId(`promote-differences-${PENDING_SAMPLE}`)).toBeVisible();
 

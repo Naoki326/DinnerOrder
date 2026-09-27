@@ -169,6 +169,15 @@ export function feedbackSummary(db: Db, clock: Clock, days = FEEDBACK_SUMMARY_DA
 export const REVIEW_DAYS = 3;
 
 /**
+ * 历史分页一页最多回看多少天。
+ *
+ * 「历史的每一餐」不是无限回溯：一次查全库会让用餐几年后每次都扫几百个餐槽，
+ * 而回顾页是**按需翻**的（先看近期，点「看更早的」才往前）。一页给足 90 天，
+ * 家里每天三餐也才 270 个槽——多数人一辈子不会翻到第二页。
+ */
+export const REVIEW_HISTORY_DAYS = 90;
+
+/**
  * 「饭后餐卡」：窗口内**已经上桌**的餐（过了截止时刻）与它们当前收到的反馈。
  *
  * 口径与 `recentDishes` 一致（每餐槽只认当前有效的那条事件、过了截止时刻才算吃过）：
@@ -177,10 +186,22 @@ export const REVIEW_DAYS = 3;
  * 为什么要一个专用读口而不是把已过的餐塞回 `/api/slots`：那个接口是「下一餐优先」的
  * 工作列表（已过截止的餐次刻意不出现在那里），回顾关心的刚好是它们的反面。
  * 两条取数语义分开，各自不必为对方妥协（也不会让「今天还有哪些餐没定」多出历史噪音）。
+ *
+ * **两个窗口不是一回事**（本票的历史分页）：`days` 是「不早于今天往前 N 天」的**绝对**下限，
+ * `before` 是「不晚于这个餐槽」的**游标**。翻页时两个一起用：第一次不带 `before`
+ * （看近期），再点「看更早的」就把上一批最后一餐的 slotId 当 `before` 递回来。
+ * 游标用 slotId 而不是日期：一餐就是一个游标步长，某几天没开火也不会让翻页空转。
  */
-export function mealsToReview(db: Db, clock: Clock, days = REVIEW_DAYS): ReviewMeal[] {
+export function mealsToReview(
+  db: Db,
+  clock: Clock,
+  days = REVIEW_DAYS,
+  /** 只返回**早于**这个餐槽的那些餐（`'2025-06-02:dinner'`）；不传 = 从当前窗口的最新一餐开始 */
+  before?: string,
+): ReviewMeal[] {
   const today = familyDate(clock.now());
   const from = addDays(today, -(days - 1));
+  // 游标把上界收紧到「那个槽之前」：同日的午餐要挡在晚餐之后，所以不能只比日期
   const rows = db
     .prepare('SELECT DISTINCT slot_id FROM meal_events WHERE slot_date BETWEEN ? AND ?')
     .all(from, today) as { slot_id: string }[];
@@ -206,10 +227,41 @@ export function mealsToReview(db: Db, clock: Clock, days = REVIEW_DAYS): ReviewM
       feedback: slotFeedback(db, slot_id),
     });
   }
-  // 最近的一餐排前面（同一天午餐没评的排在晚餐前：按发生的先后往后看）
-  return meals.sort((a, b) =>
-    a.date === b.date ? b.meal.localeCompare(a.meal) : a.date < b.date ? 1 : -1,
-  );
+  // 最近的一餐排前面：先比日期，同日**晚餐排在午餐前**（晚餐发生得更晚）。
+  // 本票修了一个反向的旧缺陷：原来是 `b.meal.localeCompare(a.meal)`，而 'dinner' < 'lunch'，
+  // 所以同一夭里午餐反而排在了晚餐前面——与「由近到远」正好相反。
+  // 现在与游标共用 `isEarlierThan` 这一处判据，排序与翻页不会各有一套「哪个更早」。
+  const sorted = meals.sort((a, b) => (isEarlierThan(a.slotId, b.slotId) ? 1 : -1));
+  // 游标：排好序再切，否则「早于某餐」的集合会随查询回来的顺序漂移
+  return before === undefined ? sorted : sorted.filter((meal) => isEarlierThan(meal.slotId, before));
+}
+
+/** `a` 是否**严格早于** `b`（餐槽 id）：先比日期，同日午餐早于晚餐——排序与游标**只此一处判据** */
+function isEarlierThan(a: string, b: string): boolean {
+  const left = parseSlotId(a);
+  const right = parseSlotId(b);
+  if (!left || !right) return false;
+  if (left.date !== right.date) return left.date < right.date;
+  // 同一天：午餐早于晚餐（字典序里 'dinner' < 'lunch'，所以不能直接比 meal 字符串）
+  return left.meal === 'lunch' && right.meal === 'dinner';
+}
+
+/**
+ * 「看更早的」下一页该用的游标（由服务端下发，前端不自己算）。
+ *
+ * 两件事决定了它不能在前端拼：
+ *   * 本页有餐卡时，游标是本页**最后一餐**（由近到远，所以就是最旧的那一餐）；
+ *   * 本页刚好为空时（这几天没吃过、但更早的吃过），没有「最后一餐」可拿——
+ *     而那种情形恰恰只剩「看更早的」一条路。这时退到**窗口下界**（今天往前 `days` 天），
+ *     从那里继续往前翻；否则首屏空的家人就彻底看不到历史了。
+ *
+ * 游标不会晚于窗口下界：本页最后一餐比窗口下界还早时（窗口撑得很大、库里没几句餐），
+ * 拿窗口下界当游标会让下一页把已经看过的餐再列一遍。
+ */
+export function reviewCursor(clock: Clock, days: number, oldest?: string): string {
+  const windowStart = `${addDays(familyDate(clock.now()), -(days - 1))}:lunch`;
+  if (!oldest) return windowStart;
+  return isEarlierThan(windowStart, oldest) ? oldest : windowStart;
 }
 
 // ---------------------------------------------------------------- 写入 / 读取 / 撤回

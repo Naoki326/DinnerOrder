@@ -11,6 +11,8 @@ import {
   InvalidFeedbackTagError,
   listFeedback,
   mealsToReview,
+  reviewCursor,
+  REVIEW_DAYS,
   storeFeedback,
   UnknownRecipeError,
   UnknownSlotIdError,
@@ -48,12 +50,30 @@ const deleteSchema = z.object({
 });
 
 const listQuerySchema = z.object({
-  /** 窗口（家规默认 30 天，与反馈摘要同一个窗口）；界面按餐卡回显时用不了这么大，够用即可 */
+  /** 反馈摘要窗口（家规默认 30 天，与推荐管线读的是同一份）；与回顾窗口**分开** */
   days: z.coerce.number().int().min(1).max(365).default(FEEDBACK_SUMMARY_DAYS),
+  /**
+   * 回顾窗口：不早于今天往前 N 天。不传 = 只给近期（`REVIEW_DAYS`）。
+   * 它和 `days` **刻意不是同一个旋钮**：反馈摘要的窗口决定「推荐读到什么」，
+   * 撑大它会让推荐被几年前的旧事影响——而回顾只是给人看的。
+   */
+  reviewDays: z.coerce.number().int().min(1).max(3650).default(REVIEW_DAYS),
+  /**
+   * 「看更早的」游标：只返回早于这个餐槽的餐（上一批的最后一餐的 slotId）。
+   * 用游标而不是页码：翻页期间另一端在写新反馈/新餐槽时，页码会漏掉或重复一条。
+   */
+  before: z.string().min(1).optional(),
 });
 
 export function registerFeedbackRoutes(api: Hono, deps: AppDeps): void {
   const { db, clock } = deps;
+  /**
+   * 探测「还有没有更早的」时额外往前的天数。
+   * * 小 = 首屏空的家人可能被告知“到底了”而其实还差一点；
+   * * 大 = 每次 GET 多扫几个餐槽（回顾页是低频页面，代价可忽略）。
+   * 30 天足以覆盖「上次开火是上个月」这种常见情形。
+   */
+  const PROBE_DAYS = 30;
 
   api.post('/feedback', zodValidator('json', feedbackSchema), (c) => {
     try {
@@ -69,8 +89,27 @@ export function registerFeedbackRoutes(api: Hono, deps: AppDeps): void {
   });
 
   api.get('/feedback', zodValidator('query', listQuerySchema), (c) => {
-    const { days } = c.req.valid('query');
-    return c.json({ feedback: listFeedback(db, clock, days), cooling: coolingDishList(db, clock), meals: mealsToReview(db, clock) });
+    const { days, reviewDays, before } = c.req.valid('query');
+    const meals = mealsToReview(db, clock, reviewDays, before);
+    const oldest = meals[meals.length - 1];
+    // 下一页的游标由**服务端下发**（`reviewCursor`），前端不自己从 `meals` 里猜：
+    //   * 首屏为空时（这几天没吃过、更早的吃过）没有「最后一餐」可当游标，前端就算不出来
+    //     ——而那种情形恰恰只剩「看更早的」一条路可走；
+    //   * 窗口边界（`reviewDays`）本来就是服务端的概念。
+    const cursor = reviewCursor(clock, reviewDays, oldest?.slotId);
+    return c.json({
+      feedback: listFeedback(db, clock, days),
+      cooling: coolingDishList(db, clock),
+      meals,
+      // 还有没有更早的：拿游标再探一次。服务端算比前端猜「満页就是还有」准：
+      // 満页但恰好到底时，前端会多给一个按下去什么都不发生的按钮（“看得见的空动作”）。
+      //
+      // 探测要用**比本页更宽的窗口**：本页游标退到窗口下界时（首屏为空那种情形），
+      // 沿本页的 `reviewDays` 再查一遍是自相矛盾的（“早于 5/30 且不早于 5/30”永远为空），
+      // 于是首屏空的家人会得到一个「再往前就没有了」的谎话。
+      hasEarlier: mealsToReview(db, clock, reviewDays + PROBE_DAYS, cursor).length > 0,
+      olderThan: cursor,
+    });
   });
 
   api.delete('/feedback', zodValidator('json', deleteSchema), (c) => {

@@ -28,6 +28,73 @@
   margin-top: 10px;
 }
 
+/* 卡片行头：整行是展开/收起开关（与加菜器同一模式） */
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  padding: 0;
+  background: none;
+  border: none;
+}
+
+/* 左列可收缩 + min-width:0：长日期/人名在常态下会很长，不这样右侧「展开」会被挤成竖排 */
+.headMain {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.toggle {
+  flex: none;
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 99px;
+  background: var(--chip);
+  color: var(--sub);
+  font-weight: 600;
+}
+
+/* 缩略的一组菜名（收起也看得到）+ 营养入口 */
+.thumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+/* 菜名本身就是食谱入口：做成一枚不抢眼的小按钮，行内看起来仍像文字 */
+.thumbDish {
+  font: inherit;
+  font-size: 13px;
+  color: var(--accent);
+  padding: 0;
+  background: none;
+  border: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.thumbNutrition {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 99px;
+  background: var(--chip);
+  color: var(--sub);
+  font-weight: 600;
+}
+
 .dish {
   display: flex;
   flex-direction: column;
@@ -47,9 +114,23 @@
   gap: 8px;
 }
 
+/* 展开态的菜名：它现在是一个**按钮**（点开食谱），所以先把浏览器默认按钮样式洗掉 */
 .name {
+  font: inherit;
   font-weight: 600;
   font-size: 14px;
+  color: var(--accent);
+  padding: 0;
+  background: none;
+  border: none;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* 缩略态行内的菜名：字号小一点，让它读起来仍像一行文字而不是一排按钮 */
+.nameLink {
+  font-size: 13px;
 }
 
 /* 荤 / 素 / 汤 三色标记（与 HomeView / SlotView 同一套 token） */

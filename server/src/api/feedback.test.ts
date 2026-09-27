@@ -56,8 +56,8 @@ async function feedback(payload: unknown): Promise<{ status: number; body: Feedb
   return { status, body, error: body.error };
 }
 
-async function listFeedback(): Promise<FeedbackListResponse> {
-  const { status, body } = await harness.json<FeedbackListResponse>('/api/feedback');
+async function listFeedback(query = ''): Promise<FeedbackListResponse> {
+  const { status, body } = await harness.json<FeedbackListResponse>(`/api/feedback${query}`);
   expect(status).toBe(200);
   return body;
 }
@@ -443,6 +443,108 @@ describe('餐后回顾（饭后餐卡常驻入口）', () => {
 
     expect((await listFeedback()).meals).toEqual([]);
     expect((await listFeedback()).feedback).toHaveLength(1);
+  });
+
+  it('历史分页：撑大回顾窗口能拿到更早的餐，仍然由近到远', async () => {
+    harness = createTestHarness();
+    seedMeal('2025-05-31:lunch', ['suanrongcaixin']);
+    seedMeal('2025-05-20:dinner', ['qingzhengluyu']);
+    seedMeal('2025-04-01:lunch', ['culutudousi']);
+
+    // 默认窗口（3 天）只看得到 5/31
+    expect((await listFeedback()).meals.map((meal) => meal.slotId)).toEqual(['2025-05-31:lunch']);
+
+    // 撑到 3650 天：三餐都回来，且是**由近到远**（4/1 排最后）
+    const all = await listFeedback('?reviewDays=3650');
+    expect(all.meals.map((meal) => meal.slotId)).toEqual([
+      '2025-05-31:lunch',
+      '2025-05-20:dinner',
+      '2025-04-01:lunch',
+    ]);
+    // 到底了：没有更早的
+    expect(all.hasEarlier).toBe(false);
+  });
+
+  it('分页游标：before 只给早于这一餐的那些，hasEarlier 说到不到底', async () => {
+    harness = createTestHarness();
+    seedMeal('2025-05-31:lunch', ['suanrongcaixin']);
+    seedMeal('2025-05-20:dinner', ['qingzhengluyu']);
+    seedMeal('2025-04-01:lunch', ['culutudousi']);
+
+    // 从 5/20 那一餐往前：只剩 4/1
+    const page = await listFeedback('?reviewDays=3650&before=2025-05-20:dinner');
+    expect(page.meals.map((meal) => meal.slotId)).toEqual(['2025-04-01:lunch']);
+    expect(page.hasEarlier).toBe(false);
+
+    // 从 5/31 往前：5/20 与 4/1 都在，且还有更早的（末尾那餐之前还有 4/1）
+    const second = await listFeedback('?reviewDays=3650&before=2025-05-31:lunch');
+    expect(second.meals.map((meal) => meal.slotId)).toEqual(['2025-05-20:dinner', '2025-04-01:lunch']);
+    expect(second.hasEarlier).toBe(false);
+  });
+
+  it('分页游标分得清同一天的午餐与晚餐：午餐在前，晚餐往回翻不会把午餐漏掉或重复', async () => {
+    harness = createTestHarness();
+    seedMeal('2025-05-20:lunch', ['suanrongcaixin']);
+    seedMeal('2025-05-20:dinner', ['qingzhengluyu']);
+
+    // 由近到远：同一天晚餐排在午餐前面（晚餐发生得更晚）
+    const all = await listFeedback('?reviewDays=3650');
+    expect(all.meals.map((meal) => meal.slotId)).toEqual(['2025-05-20:dinner', '2025-05-20:lunch']);
+
+    // 以晚餐为游标：只剩同日午餐。这里最容易写错的是直接拿 id 做字符串比
+    // （字典序 'dinner' < 'lunch'：拿 id 比大小会把午餐当成比晚餐更早，结果反而丢掉它）
+    const page = await listFeedback('?reviewDays=3650&before=2025-05-20:dinner');
+    expect(page.meals.map((meal) => meal.slotId)).toEqual(['2025-05-20:lunch']);
+
+    // 以午餐为游标：这一天的两餐都已经看过了，什么都没有
+    const none = await listFeedback('?reviewDays=3650&before=2025-05-20:lunch');
+    expect(none.meals).toEqual([]);
+  });
+
+  it('olderThan 由服务端下发：有餐卡就是最后一餐，首屏为空时退到窗口下界', async () => {
+    harness = createTestHarness();
+    seedMeal('2025-05-20:dinner', ['qingzhengluyu']);
+    seedMeal('2025-05-10:lunch', ['suanrongcaixin']);
+
+    // 有餐卡：游标 = 本页最旧的那一餐（拿它往更早翻）
+    const page = await listFeedback('?reviewDays=3650');
+    expect(page.olderThan).toBe('2025-05-10:lunch');
+    expect(page.hasEarlier).toBe(false);
+
+    // 首屏为空（窗口只有 3 天 = 5/30–6/1，库里的餐都在更早）：游标必须**仍然可用**（窗口下界），
+    // 否则首屏空的家人连「看更早的」都没得点——而那是他们唯一的入口
+    const empty = await listFeedback();
+    expect(empty.meals).toEqual([]);
+    expect(empty.olderThan).toBe('2025-05-30:lunch'); // reviewDays=3 → 从 5/30 起
+    expect(empty.hasEarlier).toBe(true);
+  });
+
+  it('拿 olderThan 翻下一页：已经看过的餐不会重复出现', async () => {
+    harness = createTestHarness();
+    seedMeal('2025-05-31:lunch', ['suanrongcaixin']);
+    seedMeal('2025-05-20:dinner', ['qingzhengluyu']);
+    seedMeal('2025-04-01:lunch', ['culutudousi']);
+
+    const first = await listFeedback('?reviewDays=3650');
+    expect(first.meals).toHaveLength(3);
+    // 游标是「严格早于」本页最旧那一餐：翻页后不会把 4/1 再列一遍（分页边界不重不漏）
+    const next = await listFeedback(`?reviewDays=3650&before=${first.olderThan}`);
+    expect(next.meals).toEqual([]);
+    expect(next.hasEarlier).toBe(false);
+  });
+
+  it('分页窗口与反馈摘要窗口是两个旋钮：撑大回顾窗口不会顺带改写反馈摘要', async () => {
+    harness = createTestHarness();
+    seedMeal('2025-04-01:lunch', ['suanrongcaixin']);
+    await feedback({ slotId: '2025-04-01:lunch', recipeId: 'suanrongcaixin', memberId: 'mom', verdict: 'like' });
+
+    // 默认：反馈摘要窗口 30 天，这一条（4/1，早于 30 天前）不在摘要里
+    expect(feedbackSummary(harness.db, harness.clock)).not.toContain('suanrongcaixin');
+
+    // 回顾窗口撑大：餐卡回来了，但反馈摘要**不受影响**——它还走自己那个 `days`
+    const history = await listFeedback('?reviewDays=3650');
+    expect(history.meals.map((meal) => meal.slotId)).toEqual(['2025-04-01:lunch']);
+    expect(feedbackSummary(harness.db, harness.clock)).not.toContain('suanrongcaixin');
   });
 });
 

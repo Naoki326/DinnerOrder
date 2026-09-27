@@ -25,6 +25,8 @@ import { ROOT_URL } from './test-env';
  */
 interface SlotJson {
   id: string;
+  date: string;
+  meal: 'lunch' | 'dinner';
   status: 'undecided' | 'decided';
   menu: { dishes: { recipeId: string; name: string }[] } | null;
 }
@@ -116,6 +118,12 @@ async function feedbackList(page: Page): Promise<FeedbackListJson> {
 }
 
 test.afterEach(async ({ page }) => {
+  // 先复位时钟再清场：时钟拨着时，那些餐已在过去、`DELETE` 也改不了位置
+  // （与 promote.spec.ts 同一顺序，两个 spec 共用同一个 E2E 库）
+  if (clockShifted) {
+    await resetClock(page);
+    clockShifted = false;
+  }
   await clearFeedback(page);
   await clearDecidedSlots(page);
 });
@@ -216,4 +224,169 @@ test('餐后回顾的「吃后感」入口常驻在底部导航，没吃过的�
   await expect(page.getByTestId('review-empty')).toContainText('还没有吃过的一餐');
   // 没吃过的一餐不进回顾卡（它们只是菜单，还没上桌）
   await expect(page.locator('[data-testid^="review-meal-"]')).toHaveCount(0);
+});
+
+/**
+ * 历史的每一餐（本票）：回顾页不只看最近三天——往回翻能看到更早吃过的餐，
+ * **而且是同一批能打分的卡片**（打分功能本来就基于这份历史列表）。
+ *
+ * 造历史只能靠拨钟：定餐接口拒收已过截止的餐槽，所以先定「今天往后」的餐、
+ * 再把时钟往前推几天，它们就成了已经吃过的一餐（`E2E_CLOCK_CONTROL=1` 的 seam）。
+ */
+async function setClock(page: Page, offsetMs: number): Promise<void> {
+  const response = await page.request.put(`${ROOT_URL}/api/e2e/clock`, { data: { offsetMs } });
+  expect(response.ok()).toBe(true);
+}
+
+async function resetClock(page: Page): Promise<void> {
+  const response = await page.request.delete(`${ROOT_URL}/api/e2e/clock`);
+  expect(response.ok()).toBe(true);
+}
+
+/**
+ * 拨过钟就置位，`afterEach` 据此复位。
+ *
+ * 不能只靠用例里的 `try/finally`：断言失败时 `finally` 虽然也会跑，但**声明在用例体里**的
+ * 清理在超时/中断时不一定执行到；而时钟一旦没复位，后续用例（包括别的 spec）全在偏移的
+ * “现在”下跑，失败会散到根本没碰过时钟的那些用例上。
+ */
+let clockShifted = false;
+
+/** 今天之后的**两餐**（同日午/晚要拿到，好让历史里既有午餐也有晚餐） */
+async function twoUpcomingSlots(page: Page): Promise<{ lunch: string; dinner: string }> {
+  const response = await page.request.get(`${ROOT_URL}/api/slots?days=7`);
+  const { today, slots } = (await response.json()) as { today: string; slots: SlotJson[] };
+  const lunch = slots.find((slot) => slot.meal === 'lunch' && slot.date > today);
+  if (!lunch) throw new Error('窗口内没有明天以后的未定午餐');
+  const dinner = slots.find((slot) => slot.meal === 'dinner' && slot.date === lunch.date);
+  if (!dinner) throw new Error(`${lunch.date} 的晚餐不在窗口里`);
+  return { lunch: lunch.id, dinner: dinner.id };
+}
+
+async function book(page: Page, slotId: string, ...recipeIds: string[]): Promise<void> {
+  const response = await page.request.put(`${ROOT_URL}/api/slots/${slotId}`, {
+    data: { diners: ['mom', 'dad', 'dabao', 'xiaobao'], dishes: recipeIds.map((recipeId) => ({ recipeId })) },
+  });
+  expect(response.ok()).toBe(true);
+}
+
+test('回顾页能往回翻出更早的餐，且翻出来的卡片照样能打分（打分基于这份历史列表）', async ({ page }) => {
+  await clearFeedback(page);
+  await clearDecidedSlots(page);
+
+  const { lunch, dinner } = await twoUpcomingSlots(page);
+  await book(page, lunch, 'suanrongcaixin');
+  await book(page, dinner, 'qingzhengluyu');
+
+  // 拨 6 天：这一对餐落到首屏三天窗口之外，但仍在库里
+  await setClock(page, 6 * 86_400_000);
+  clockShifted = true;
+
+  await page.goto(`${ROOT_URL}/review`);
+    await expect(page.getByTestId('review-view')).toBeVisible();
+
+    // 首屏没有这几天的餐：给出实情，而不是一片空白
+    await expect(page.locator('[data-testid^="review-meal-"]')).toHaveCount(0);
+    await expect(page.getByTestId('review-older-only')).toContainText('更早的餐往下能翻到');
+
+    // 「看更早的」翻出历史：两餐都在，且**由近到远**（晚餐比午餐晚，排前面）
+    await page.getByTestId('review-load-earlier').click();
+    const cards = page.locator('[data-testid^="review-meal-"]');
+    await expect(cards).toHaveCount(2, { timeout: 15_000 });
+    const ids = await cards.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-slot-id')));
+    expect(ids).toEqual([dinner, lunch]);
+
+    // 关键：历史里的卡片**照样能打分**（打分功能本来就基于这份历史列表）——
+    // 卡片默认收起，先展开才看得到评论条
+    const historyCard = page.getByTestId(`review-meal-${lunch}`);
+    await historyCard.getByTestId(`review-toggle-${lunch}`).click();
+    await historyCard.locator('[data-testid$="-like-suanrongcaixin"]').click();
+
+    // 落库了（不是只改了个本地样式）
+    await expect
+      .poll(async () => {
+        const list = await feedbackList(page);
+        return list.feedback.some((item) => item.slotId === lunch && item.verdict === 'like');
+      }, { timeout: 15_000 })
+      .toBe(true);
+
+    // 卡片上回显出刚点的赞（不是只改了个本地样式）
+    await expect(historyCard.locator('[data-testid$="-liked-suanrongcaixin"]')).toBeVisible();
+
+    // 收起回缩略态：评论条藏起来，但**菜与营养仍在**（扫历史的人多半是看“吃了什么”）
+    await historyCard.getByTestId(`review-toggle-${lunch}`).click();
+    await expect(historyCard.locator('[data-testid$="-like-suanrongcaixin"]')).toBeHidden();
+    await expect(historyCard.getByTestId(`review-thumb-dishes-${lunch}`)).toContainText('蒜蓉菜心');
+    await expect(historyCard.getByTestId(`review-nutrition-${lunch}`)).toBeVisible();
+});
+
+test('回顾卡默认收起：缩略态是「日期 + 菜名数」，菜/食谱/营养在收起时就可达', async ({ page }) => {
+  await clearFeedback(page);
+  await clearDecidedSlots(page);
+
+  const { lunch } = await twoUpcomingSlots(page);
+  // **5 道**：前 3 道之内与之外的食谱都要点得到（本票修的缺口：「等 N 道」把
+  // 后面那几道的食谱彻底变成不可达，而展开态的菜名当时又不是入口）
+  const dishes = ['suanrongcaixin', 'hongshaopaigu', 'dongguapaigutang', 'fanqiedanhuatang', 'culutudousi'];
+  await book(page, lunch, ...dishes);
+  await setClock(page, 6 * 86_400_000);
+  clockShifted = true;
+
+  await page.goto(`${ROOT_URL}/review`);
+  await page.getByTestId('review-load-earlier').click();
+  const card = page.getByTestId(`review-meal-${lunch}`);
+  await expect(card).toBeVisible({ timeout: 15_000 });
+
+  // 默认收起：评论条不在
+  await expect(card.getByTestId(`review-toggle-${lunch}`)).toHaveAttribute('aria-expanded', 'false');
+  await expect(card.getByTestId(`review-toggle-${lunch}`)).toContainText('展开');
+  await expect(card.locator('[data-testid$="-like-suanrongcaixin"]')).toBeHidden();
+
+  // 缩略态**不截断**：五道菜的食谱入口全部在（没有「等 N 道」把后面几道藏起来）
+  const thumb = card.getByTestId(`review-thumb-dishes-${lunch}`);
+  await expect(thumb).not.toContainText('等 ');
+  for (const dish of dishes) {
+    await expect(card.getByTestId(`review-recipe-${lunch}-${dish}`)).toBeVisible();
+  }
+
+  // 第三道之后那道（列表里第 4 道）的食谱真的打得开
+  await card.getByTestId(`review-recipe-${lunch}-fanqiedanhuatang`).click();
+  await expect(page.getByTestId('recipe-sheet')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('recipe-sheet')).toContainText('番茄蛋花汤');
+  // 弹层不做 Esc 关闭（Sheet 的有意取舍），所以点它自己的关闭按钮
+  await page.getByTestId('recipe-sheet-close').click();
+  await expect(page.getByTestId('recipe-sheet')).toBeHidden();
+
+  // 营养（收起也看得到）
+  await card.getByTestId(`review-nutrition-${lunch}`).click();
+  await expect(page.getByTestId('nutrition-sheet')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('nutrition-sheet-close').click();
+  await expect(page.getByTestId('nutrition-sheet')).toBeHidden();
+
+  // 展开才看到评论——且**展开态的菜名也是食谱入口**（换了状态食谱不该“不见”）
+  await card.getByTestId(`review-toggle-${lunch}`).click();
+  await expect(card.locator('[data-testid$="-like-suanrongcaixin"]')).toBeVisible();
+  await card.getByTestId(`review-dish-recipe-${lunch}-hongshaopaigu`).click();
+  await expect(page.getByTestId('recipe-sheet')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('recipe-sheet-close').click();
+  await expect(page.getByTestId('recipe-sheet')).toBeHidden();
+});
+
+test('翻到底时说的是「再往前就没有了」，而不是留一个按下去没反应的按钮', async ({ page }) => {
+  await clearFeedback(page);
+  await clearDecidedSlots(page);
+
+  // 只定一餐并把它推成历史：翻一次就到头
+  const { lunch } = await twoUpcomingSlots(page);
+  await book(page, lunch, 'suanrongcaixin');
+  await setClock(page, 6 * 86_400_000);
+  clockShifted = true;
+
+  await page.goto(`${ROOT_URL}/review`);
+  await page.getByTestId('review-load-earlier').click();
+  await expect(page.getByTestId(`review-meal-${lunch}`)).toBeVisible({ timeout: 15_000 });
+
+  // 到底了：按钮换成一句实情
+  await expect(page.getByTestId('review-load-earlier')).toBeHidden();
+  await expect(page.getByTestId('review-history-end')).toContainText('再往前就没有了');
 });

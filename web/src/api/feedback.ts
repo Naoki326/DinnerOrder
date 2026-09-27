@@ -28,12 +28,26 @@ export type {
  * 一次 `GET /feedback` 拿三样东西：窗口内的反馈（谁说了什么）、**正在冷藏的菜**
  * （「这道为什么没出现」的解释）与**已上桌的餐**（饭后餐卡的列表）。
  * 三者同源——都取决于「这段时间家里人说过什么」，分开取只会在三处各算一遍窗口。
+ *
+ * **分页**（本票：历史的每一餐）：`before` 是「看更早的」的游标（上一页最后一餐的 slotId）。
+ * 每一页是**不同的 queryKey**（`['feedback', before ?? 'recent']`），所以翻页不是「重写现有缓存」
+ * 而是各页各自缓存：往前翻再翻回来不必重拉，也不会把已显示的卡片弄得一闪一闪。
  */
-export function useFeedback() {
+export function useFeedback(before?: string) {
   return useQuery({
-    queryKey: ['feedback'],
+    queryKey: ['feedback', before ?? 'recent'],
     queryFn: async ({ signal }): Promise<FeedbackListResponse> => {
-      const response = await fetch(apiUrl('/feedback'), { signal, headers: { accept: 'application/json' } });
+      const query = new URLSearchParams();
+      // 翻页时把回顾窗口撑到上限：`REVIEW_DAYS`（3 天）只是**首屏**的默认，
+      // 客人点了「看更早的」就是想看完整的过去，这时候再限 3 天永远翻不出东西。
+      if (before !== undefined) {
+        query.set('reviewDays', '3650');
+        query.set('before', before);
+      }
+      const response = await fetch(apiUrl(query.size > 0 ? `/feedback?${query.toString()}` : '/feedback'), {
+        signal,
+        headers: { accept: 'application/json' },
+      });
       if (!response.ok) throw new Error(`反馈读取失败：HTTP ${response.status}`);
       return (await response.json()) as FeedbackListResponse;
     },
