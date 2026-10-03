@@ -1,33 +1,40 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
-import type { Ingredient, IngredientConflict, IngredientReferenceCount, IngredientReferenceKind } from '@dinnerorder/server/types';
+import type { Ingredient, IngredientConflict, IngredientEditRecord, IngredientReferenceCount, IngredientReferenceKind } from '@dinnerorder/server/types';
 import {
   IngredientWriteError,
   useAllIngredients,
   useCreateIngredient,
   useDeleteIngredient,
+  useIngredientEdits,
   useIngredientReferences,
   useIngredients,
+  usePatchIngredient,
 } from '../api/ingredients';
 import { aliasesForDisplay } from '../components/ingredientVocabulary';
 import { SectionedLayout } from '../components/SectionedLayout';
+import { useIdentity } from '../identity';
 import { useLayout } from '../layout';
 import styles from './IngredientDictionaryView.module.css';
 
 /**
- * 食材字典页（issue #34；ADR-0012）：设置里钻进来的**从属页面**（`/ingredients`），形态照抄菜谱库。
+ * 食材字典页（issue #34/#35；ADR-0012）：设置里钻进来的**从属页面**（`/ingredients`），形态照抄菜谱库。
  *
- * 四条口径（改之前先读）：
+ * 五条口径（改之前先读）：
  *   * **不占主导航**：壳用 `hideNav`，顶部一个「← 设置」返回——它是从设置钻进来的，不是第五个日常页。
  *   * **搜索是纯前端**（与 `RecipeLibraryView` / `DishPicker` 同一纪律）：`GET /ingredients`
  *     一次拿齐，规范名与别名都 `includes` 命中（家人说「西红柿」，字典里叫「番茄」）。零额外 API 契约。
  *   * **录入只有一个必填项**（ADR-0012「决定二」）：别名、时令月份、「含」指针都在同一张表单里、
  *     都可不填。不填时令 = 四季有售（不写月份行）。
+ *   * **改（#35）走部分更新 + 台账**：详情卡上能改规范名、别名、时令月份、「含」指针；
+ *     四个字段一个都没变时服务端报 409，界面把那句「这次提交没有任何改动」原样说出来，
+ *     不假装成功。改名之后菜谱/买菜清单/忌口显示全跟着换说法（无名称快照，本页不做同步）。
  *   * **删只在零引用时给按钮**：有引用时给的是**说明**（被哪几类引用、各几条）而不是一个
  *     按下去必报 409 的按钮——与菜谱库对退役/草稿「把下一步说出来」的既有口径一致。
  *     判据从 `GET /ingredients/:id/references` 取，与 `DELETE` 是同一份领域判定。
  *
- * 词汇按 `CONTEXT.md`：用**录入食材 / 删食材**，不用「加食材」（那是菜谱行里的动作）、「移除」。
+ * 词汇按 `CONTEXT.md`：用**录入食材 / 改食材 / 删食材**，不用「加食材」（那是菜谱行里的动作）、
+ * 也不用「编辑食材」（CONTEXT 明写为 Avoid）。
  */
 export function IngredientDictionaryView() {
   const { layout } = useLayout();
@@ -55,8 +62,11 @@ export function IngredientDictionaryView() {
     setQuery('');
   };
 
-  // 详情卡只构造这一次：宽版塞进右列（`data-section`），窄版整页展示——两分支不再是两份拷贝
-  const detailCard = open ? <IngredientDetailCard ingredient={open} onDeleted={backToList} onOpen={setOpenId} /> : null;
+  // 详情卡只构造这一次：宽版塞进右列（`data-section`），窄版整页展示——两分支不再是两份拷贝。
+  // `key` 钉住当前条目：切换选中时**重新挂载**（编辑态/确认态不会从上一條漏到下一條）。
+  const detailCard = open ? (
+    <IngredientDetailCard key={open.id} ingredient={open} onDeleted={backToList} onOpen={setOpenId} />
+  ) : null;
 
   // 录入表单（issue #34 的主干动作）：整页一张表单，不占列表那一列——与菜谱库的「录入一道新菜」同形。
   if (creating !== null) {
@@ -226,9 +236,13 @@ function IngredientRow({ ingredient, onOpen }: { ingredient: Ingredient; onOpen:
 }
 
 /**
- * 详情卡：别名 / 时令 / 「含」指针 + 删食材。
+ * 详情卡：别名 / 时令 / 「含」指针 + **改食材**（#35）+ 改动台账 + 删食材。
  *
- * **零引用才给删除按钮**；有引用时给说明（被哪几类引用、各几条）——「只能改名」是下一步。
+ * 默认是只读的展示；点「改食材」才切到编辑表单（四个字段都可改，整体提交）。这样既保留了
+ * 「看一眼就知道它是什么」的只读态，又不让一个常驻的表单把详情卡撑得难看。
+ *
+ * **零引用才给删除按钮**；有引用时给说明（被哪几类引用、各几条）——「只能改名」是下一步，
+ * 现在这句话真的可做了（改食材）。
  */
 function IngredientDetailCard({
   ingredient,
@@ -240,8 +254,10 @@ function IngredientDetailCard({
   onOpen: (id: string) => void;
 }) {
   const references = useIngredientReferences(ingredient.id);
+  const edits = useIngredientEdits(ingredient.id);
   const remove = useDeleteIngredient();
   const [confirming, setConfirming] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const aliases = aliasesForDisplay(ingredient);
@@ -257,6 +273,19 @@ function IngredientDetailCard({
       setError(err instanceof Error ? err.message : '删除没成功');
     }
   };
+
+  // 编辑态：整张详情卡换成表单（取消回到只读态）
+  if (editing) {
+    return (
+      <div data-testid={`ingredient-detail-${ingredient.id}`}>
+        <EditIngredientForm
+          ingredient={ingredient}
+          onSaved={() => setEditing(false)}
+          onCancel={() => setEditing(false)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div data-testid={`ingredient-detail-${ingredient.id}`}>
@@ -312,6 +341,21 @@ function IngredientDetailCard({
         )}
       </div>
 
+      {/* 改食材（#35）：改规范名 / 别名 / 时令 / 「含」，每次改留一笔台账 */}
+      <div className={styles.field}>
+        <span className={styles.label}>改食材</span>
+        <button
+          type="button"
+          className={`${styles.rowAction} ${styles.rowActionOpen}`}
+          data-testid={`ingredient-edit-open-${ingredient.id}`}
+          onClick={() => setEditing(true)}
+        >
+          改这条食材
+        </button>
+      </div>
+
+      <IngredientHistory ingredientId={ingredient.id} edits={edits.data ?? []} pending={edits.isPending} />
+
       <div className={styles.field}>
         <span className={styles.label}>删除</span>
         {references.isPending ? (
@@ -351,7 +395,7 @@ function IngredientDetailCard({
             </button>
           )
         ) : (
-          // 有引用：给说明而不是一个按下去必报 409 的按钮（下一步是「改名」，那是 #35）
+          // 有引用：给说明而不是一个按下去必报 409 的按钮（下一步是「改食材」）
           <div className={styles.conflict} data-testid={`ingredient-referenced-${ingredient.id}`}>
             还有地方在用它（{referenceSummary(refs ?? [])}），不能删——有引用的食材只能改名。
           </div>
@@ -363,6 +407,243 @@ function IngredientDetailCard({
           {error}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * 改食材表单（issue #35）：四个字段都可改，提交时整体送给 `PATCH /ingredients/:id`。
+ *
+ * 与录入表单同形，但预填当前值、且**每个字段都可以是「没动」**——四个都没动时服务端报 409
+ * `no_changes`，这里把那句话原样显示（不假装成功，也不写空台账）。
+ * 改名撞了别人 → 409 `ingredient_conflict`，显示冲突对象与「用那条」以外的下一步（改个名再试）。
+ */
+function EditIngredientForm({
+  ingredient,
+  onSaved,
+  onCancel,
+}: {
+  ingredient: Ingredient;
+  onSaved: () => void;
+  onCancel: () => void;
+}) {
+  const { current } = useIdentity();
+  const [name, setName] = useState(ingredient.name);
+  const [aliasesText, setAliasesText] = useState(ingredient.aliases.join('、'));
+  const [months, setMonths] = useState<number[]>([...ingredient.seasonMonths]);
+  // 「含」目标只存 id + 规范名（不需要完整的 Ingredient 形状）：预填现指针 + 搜索挑新的
+  const [contains, setContains] = useState<{ id: string; name: string }[]>(
+    ingredient.contains.map((target) => ({ id: target.ingredientId, name: target.name })),
+  );
+  const [containsQuery, setContainsQuery] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<IngredientConflict | null>(null);
+  const patch = usePatchIngredient();
+
+  const candidates = (useIngredients(containsQuery).data ?? [])
+    .filter((option) => option.id !== ingredient.id && !contains.some((selected) => selected.id === option.id))
+    .slice(0, 6);
+
+  const submit = async (): Promise<void> => {
+    setError(null);
+    setConflict(null);
+    try {
+      await patch.mutateAsync({
+        id: ingredient.id,
+        input: {
+          name,
+          aliases: parseAliases(aliasesText),
+          seasonMonths: months,
+          contains: contains.map((item) => item.id),
+          ...(current ? { memberId: current.id } : {}),
+        },
+      });
+      onSaved();
+    } catch (err) {
+      if (err instanceof IngredientWriteError && err.code === 'ingredient_conflict' && err.conflict) {
+        setConflict(err.conflict);
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError('保存没成功');
+      }
+    }
+  };
+
+  return (
+    <div data-testid={`ingredient-editor-${ingredient.id}`}>
+      <div className="spread">
+        <b>改食材</b>
+        <span className="sub">四个字段没变的话会提示「没有任何改动」</span>
+      </div>
+
+      <div className={styles.field}>
+        <span className={styles.label}>规范名（必填）</span>
+        <input
+          className={styles.input}
+          type="text"
+          value={name}
+          placeholder="如 莴笋"
+          aria-label="食材规范名"
+          data-testid={`ingredient-name-edit-${ingredient.id}`}
+          onChange={(event) => setName(event.target.value)}
+        />
+      </div>
+
+      <div className={styles.field}>
+        <span className={styles.label}>别名（用逗号或顿号分开；留空 = 没有别名）</span>
+        <input
+          className={styles.input}
+          type="text"
+          value={aliasesText}
+          placeholder="如 青笋、莴苣笋"
+          aria-label="食材别名"
+          data-testid={`ingredient-aliases-edit-${ingredient.id}`}
+          onChange={(event) => setAliasesText(event.target.value)}
+        />
+      </div>
+
+      <div className={styles.field}>
+        <span className={styles.label}>时令月份（一个都不选 = 四季有售）</span>
+        <div className={styles.months}>
+          {MONTHS.map((month) => {
+            const on = months.includes(month);
+            return (
+              <button
+                key={month}
+                type="button"
+                className={on ? `${styles.month} ${styles.monthOn}` : styles.month}
+                aria-pressed={on}
+                data-testid={`ingredient-month-edit-${ingredient.id}-${month}`}
+                onClick={() =>
+                  setMonths((current) =>
+                    current.includes(month) ? current.filter((item) => item !== month) : [...current, month].sort((a, b) => a - b),
+                  )
+                }
+              >
+                {month}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className={styles.field}>
+        <span className={styles.label}>隐性忌口「含」（只能挑字典里现有的）</span>
+        <input
+          className={styles.input}
+          type="text"
+          value={containsQuery}
+          placeholder="搜食材（如 贝类）"
+          aria-label="搜「含」的目标"
+          data-testid={`ingredient-contains-search-edit-${ingredient.id}`}
+          onChange={(event) => setContainsQuery(event.target.value)}
+        />
+        {containsQuery.trim() !== '' && candidates.length > 0 ? (
+          <div className={styles.suggestions}>
+            {candidates.map((candidate) => (
+              <button
+                key={candidate.id}
+                type="button"
+                className={styles.suggestion}
+                data-testid={`ingredient-contains-option-edit-${ingredient.id}-${candidate.id}`}
+                onClick={() => {
+                  setContains((current) => [...current, candidate]);
+                  setContainsQuery('');
+                }}
+              >
+                {candidate.name}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {contains.length > 0 ? (
+          <div className={styles.chips}>
+            {contains.map((target) => (
+              <button
+                key={target.id}
+                type="button"
+                className={styles.chip}
+                aria-label={`去掉 ${target.name}`}
+                data-testid={`ingredient-contains-chip-edit-${ingredient.id}-${target.id}`}
+                onClick={() => setContains((current) => current.filter((item) => item.id !== target.id))}
+              >
+                {target.name} ✕
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      {conflict ? (
+        <div className={styles.conflict} data-testid={`ingredient-conflict-${ingredient.id}`}>
+          「{conflict.name}」已经在字典里了——改个别的名字，或者去改那一条。
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className={styles.error} data-testid={`ingredient-error-edit-${ingredient.id}`}>
+          {error}
+        </div>
+      ) : null}
+
+      <div className={styles.actions}>
+        <button
+          type="button"
+          className="btn"
+          data-testid={`ingredient-save-edit-${ingredient.id}`}
+          disabled={patch.isPending}
+          onClick={() => void submit()}
+        >
+          保存改动
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          data-testid={`ingredient-edit-cancel-${ingredient.id}`}
+          disabled={patch.isPending}
+          onClick={onCancel}
+        >
+          取消
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 改动台账（#35）：谁、什么时候、改了什么。只读，由服务端在每次改食材时写入。
+ * 与 `RecipeEditor` 的修改历史同一形态（那边是菜谱，这边是食材）。
+ */
+function IngredientHistory({
+  ingredientId,
+  edits,
+  pending,
+}: {
+  ingredientId: string;
+  edits: IngredientEditRecord[];
+  pending: boolean;
+}) {
+  return (
+    <div className="card sub" data-testid={`ingredient-history-${ingredientId}`} style={{ marginTop: 10 }}>
+      <div className="spread">
+        <b>改动台账</b>
+        <span className="sub">{edits.length} 次</span>
+      </div>
+      {pending ? (
+        <div style={{ marginTop: 6 }}>读取中…</div>
+      ) : edits.length === 0 ? (
+        <div style={{ marginTop: 6 }}>还没有改过——这是它最初的样子。</div>
+      ) : (
+        <div style={{ marginTop: 6 }}>
+          {edits.map((edit, index) => (
+            <div key={index} data-testid={`ingredient-history-item-${ingredientId}-${index}`}>
+              {formatTime(edit.changedAt)} · {edit.memberName ?? '不记名'} · 改了
+              {edit.changedFields.map((field) => FIELD_LABELS[field] ?? field).join('、')}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -565,6 +846,14 @@ function CreateIngredientCard({
 
 const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
+/** 台账的 `changedFields` 是字段名，这里是给人看的说法（与台账同源，不手写两份） */
+const FIELD_LABELS: Record<string, string> = {
+  name: '规范名',
+  aliases: '别名',
+  seasonMonths: '时令月份',
+  contains: '「含」指针',
+};
+
 /** 搜规范名或别名（与列表接口同一口径；家人说「西红柿」，字典里叫「番茄」） */
 function matchKeyword(ingredient: Ingredient, keyword: string): boolean {
   if (keyword === '') return true;
@@ -599,4 +888,13 @@ const REFERENCE_LABELS: Record<IngredientReferenceKind, string> = {
 /** 把引用清单拼成一句「被谁用着、几条」 */
 function referenceSummary(references: IngredientReferenceCount[]): string {
   return references.map((reference) => `${reference.count} ${REFERENCE_LABELS[reference.kind]}`).join('、');
+}
+
+/** 台账时刻 → 「6 月 1 日 18:30」这类展示（与 `RecipeEditor` 同一口径；服务端存的是 ISO） */
+function formatTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${date.getMonth() + 1} 月 ${date.getDate()} 日 ${hour}:${minute}`;
 }

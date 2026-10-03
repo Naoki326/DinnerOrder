@@ -119,6 +119,16 @@
     手写录入、导入工具、种子行都是 `NULL`（没有可回填的单一链接，硬编一个就是编数据）。
     **不种生数据**；不加索引（只作展示，不参与查询）。信任口径见
     [ADR-0011](../../docs/adr/0011-imported-recipes-enter-family-library-via-editor-confirmation.md)。
+  - `016_ingredient_edits` —— **食材变更台账**（M1-16「食材能改，每次改留痕」/ issue #35；ADR-0012）：
+    新建 `ingredient_edits`（`ingredient_id` / `changed_at` / `member_id`（`ON DELETE SET NULL`）/
+    `changed_fields`（逗号分隔的字段名，CHECK 非空））——形状与 `recipe_edits`（014）**同构**。
+    粒度是字段级（能回答「改了名与别名」），不做别名级/指针级 diff；`changed_fields` 存字符串不拆子表
+    （理由同 014）。指 `ingredients` 是 **`ON DELETE CASCADE`**（与 014 指 `recipes` 的默认 RESTRICT
+    **有意不同**）：台账**不算一类引用**，删除时随食材一起走。删除的判据只有一条——**有没有人用它**
+    （那 6 处 `NO ACTION` 引用）；「改过」是来路不是用途，用 RESTRICT 会让改过一次的食材永久删不掉，
+    顶撞 Story 32（错别字条目不该永久留下）与 Story 35（删掉后名字能被重新使用）。见 ADR-0012 修订注。
+    四个字段一个都没变的提交由服务端报 409（`changed_fields` 的非空 CHECK 是同一规则的数据库侧表达）。
+     **不给 `ingredients` 加列**（本功能不需要新字段），**不种任何生数据**。
   - 迁移里只种**规则资产与字典**，生数据（餐槽、菜单、推荐）一律不种：推荐永远现算不落库（总纲 §4）。
 - 种子数据写在迁移里（而不是启动时补种），这样测试 harness、E2E 的文件库、生产库三条路径拿到的是同一份初值。
 - 执行器自身的行为由 `src/db/migrate.test.ts`（临时目录 fixture）覆盖；本目录内容由 `src/db/schema.test.ts` 与

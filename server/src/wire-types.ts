@@ -178,6 +178,8 @@ export type IngredientReferenceKind =
   | 'exchange_items'
   | 'grocery_items'
   | 'ingredient_contains';
+// 注：改动台账 `ingredient_edits` **不是**一类引用（指 `ingredients` 是 ON DELETE CASCADE，
+// 随食材一起走）。「改过」是来路不是用途，算成引用会让改过的食材永久删不掉（见 ADR-0012 修订注）。
 
 /** 一类引用 + 几条（`DELETE /api/ingredients/:id` 在 409 里报出来，界面据此说「只能改名」） */
 export interface IngredientReferenceCount {
@@ -206,6 +208,59 @@ export interface IngredientReferencesResponse {
   id: string;
   /** 只列非零的类别（空数组 = 零引用，可删） */
   references: IngredientReferenceCount[];
+}
+
+/**
+ * `PATCH /api/ingredients/:id` 的入参：**改食材**（CONTEXT「改食材」；issue #35）。
+ *
+ * 部分更新：没传的块保持原样（与 `ProfilePatch` / `RecipePatch` 同一纪律）。传了的块**整体替换**
+ * ——手机上的编辑是一次性提交完整清单（别名/时令/含都是清单）。
+ *
+ * **不是 `PUT`**：改食材是部分更新、且**每次改都留痕**；与 `PATCH /recipes/:id`（修订）同一思路。
+ * 四个字段一个都没变时服务端报 409（`no_changes`）——「点开看了看又保存」不写空台账。
+ */
+export interface IngredientPatch {
+  /** 规范名；trim 后非空，全库唯一（撞别的规范名或别名都是 409） */
+  name?: string;
+  /** 别名清单（整体替换；补/去都靠它） */
+  aliases?: string[];
+  /** 时令月份 1–12（整体替换；传空数组 = 回到「四季有售」） */
+  seasonMonths?: number[];
+  /**
+   * 隐性忌口「含」指针目标（食材 id 数组，整体替换）。目标必须在字典里（含自己 → 400），
+   * 出现字典外的 id → 400、**不静默丢弃**。传空数组 = 去掉全部「含」指针。
+   */
+  contains?: string[];
+  /** 谁改的（界面送当前身份，进台账）；不传 = 不记名 */
+  memberId?: string;
+}
+
+/** `PATCH /api/ingredients/:id` 的响应：改完的完整食材（与列表接口同一形状） */
+export interface IngredientPatchResponse {
+  ingredient: Ingredient;
+}
+
+/**
+ * 一条「改食材」留痕（CONTEXT「改食材」；ADR-0012；issue #35）。
+ *
+ * 与 `RecipeEditRecord`（菜谱修订）**同构但不同表**：那张回答「这道菜最近被改成什么样」，
+ * 这张回答「这条食材最近被改成什么样」。粒度是字段级（`changedFields`），
+ * 不做别名级/指针级 diff。
+ */
+export interface IngredientEditRecord {
+  ingredientId: string;
+  /** 改动发生的瞬间（ISO） */
+  changedAt: string;
+  /** 谁改的（家人被删后为 null，历史行留下） */
+  memberId: string | null;
+  memberName: string | null;
+  /** 这一次改了哪几个字段（字段名，按提交顺序） */
+  changedFields: string[];
+}
+
+/** `GET /api/ingredients/:id/edits` 的响应（与 `RecipeEditListResponse` 同形、并列） */
+export interface IngredientEditListResponse {
+  edits: IngredientEditRecord[];
 }
 
 /** 菜谱荤素类型：荤 / 素 / 汤（汤分荤素，总纲 §2.8） */

@@ -6,22 +6,28 @@ import { listIngredients } from '../domain/ingredients.js';
 import {
   createIngredient,
   deleteIngredient,
+  ingredientEditsOf,
+  ingredientById,
   ingredientReferences,
   ingredientExists,
+  patchIngredient,
   IngredientConflictError,
   IngredientContainsTargetError,
   IngredientNameEmptyError,
+  IngredientNoChangesError,
   IngredientNotFoundError,
   IngredientReferencedError,
+  IngredientSelfContainsError,
 } from '../domain/ingredient-library.js';
+import { MemberNotFoundError } from '../domain/members.js';
 
 /**
- * 食材字典（issue #34；ADR-0012）：从**只读**变成**能录、能删**。
+ * 食材字典（issue #34/#35；ADR-0012）：从**只读**变成**能录、能改、能删**。
  *
- * 本文件只做 #34 范围内的两个写动作（录入 / 删）。「改食材」与它的台账是 #35 的活、
- * 「含」提议是 #37 的活——都不在这里。
+ * 两个写动作 + 一个台账读口：录入 / 改（PATCH + 台账）/ 删。「含」提议是 #37 的活，不在这里。
  *
- * 词汇按 `CONTEXT.md`：**录入食材 / 删食材**，不用「加食材」（那是菜谱行里的动作）。
+ * 词汇按 `CONTEXT.md`：**录入食材 / 改食材 / 删食材**，不用「加食材」（那是菜谱行里的动作）、
+ * 也不用「编辑食材」（CONTEXT 明写为 Avoid）。
  */
 const listQuerySchema = z.object({
   /** 搜索词：同时匹配规范名与别名（模糊） */
@@ -47,6 +53,21 @@ const createSchema = z.object({
   aliases: z.array(z.string().trim().min(1, '别名不能是空白')).optional(),
   seasonMonths: z.array(z.number().int().min(1).max(12)).optional(),
   contains: z.array(z.string().trim().min(1, '「含」的目标不能是空白')).optional(),
+});
+
+/**
+ * 改食材入参（issue #35）：与 `createSchema` 同为四个字段，但**全部可空**（部分更新）。
+ *
+ * 传了的块整体替换；没传的保持原样。四个字段一个都没变时领域层报 409（`no_changes`）。
+ * `name` 在这里仍要 `trim().min(1)`：空名字在形状层就拦住（与录入同一纪律）。
+ */
+const patchSchema = z.object({
+  name: z.string().trim().min(1, '食材规范名不能为空').max(maxNameLength, `规范名最多 ${maxNameLength} 字`).optional(),
+  aliases: z.array(z.string().trim().min(1, '别名不能是空白')).optional(),
+  seasonMonths: z.array(z.number().int().min(1).max(12)).optional(),
+  contains: z.array(z.string().trim().min(1, '「含」的目标不能是空白')).optional(),
+  /** 谁改的（界面送当前身份，进台账）；不传 = 不记名 */
+  memberId: z.string().min(1).optional(),
 });
 
 export function registerIngredientRoutes(api: Hono, deps: AppDeps): void {
@@ -82,6 +103,33 @@ export function registerIngredientRoutes(api: Hono, deps: AppDeps): void {
   });
 
   /**
+   * 这条食材的**改动台账**（CONTEXT「改食材」；issue #35）：时间倒序，含改动人。
+   *
+   * 与 `GET /recipes/:id/edits` 同形、并列。不存在的食材 → 404（不是空台账）。
+   */
+  api.get('/ingredients/:id/edits', (c) => {
+    const id = c.req.param('id');
+    if (!ingredientById(deps.db, id)) return c.json({ error: 'not_found', id }, 404);
+    return c.json({ edits: ingredientEditsOf(deps.db, id) });
+  });
+
+  /**
+   * **改一条食材**（CONTEXT「改食材」；ADR-0012「决定三」）：字段级部分更新 + 留痕。
+   *
+   * **PATCH 而不是 PUT**：改食材是部分更新、且每次改都留痕（与 `PATCH /recipes/:id` 同一思路）。
+   * 改名**天然跟随**引用方：本仓没有名称快照，菜谱详情/买菜清单/忌口显示都读同一条 `ingredients` 行。
+   * 四个字段一个都没变 → 409 `no_changes`（不写台账、也不假装成功）。
+   */
+  api.patch('/ingredients/:id', zodValidator('json', patchSchema), (c) => {
+    const id = c.req.param('id');
+    try {
+      return c.json({ ingredient: patchIngredient(deps.db, deps.clock, id, c.req.valid('json')) });
+    } catch (error) {
+      return ingredientWriteError(c, error);
+    }
+  });
+
+  /**
    * **删一条食材**（ADR-0012「决定四」）：零引用才成功，有引用 → 409 且**报出是哪一类引用、几条**。
    *
    * 物理删而不是软删：这条动作要的正是「名字被释放、以后能重新建」（ADR-0012 的 Further Notes）。
@@ -101,8 +149,10 @@ export function registerIngredientRoutes(api: Hono, deps: AppDeps): void {
  *   * 400 `invalid_request`：zod 已拦在前面（名字空/纯空白、月份越界、别名空白）
  *   * 409 `ingredient_conflict`：名字或别名撞了既有条目——**带冲突对象**，界面据此「用这条」
  *   * 400 `unknown_contains_target`：`contains` 里有字典外的 id（**不静默丢弃**）
+ *   * 400 `self_contains`：把自己挂成自己的「含」目标（改食材这条路才会遇到）
  *   * 404 `not_found`：这条不在字典里了（界面该刷新）
  *   * 409 `ingredient_referenced`：还有人用它——**报出是哪一类、几条**，界面说「只能改名」
+ *   * 409 `no_changes`：这次提交四个字段一个都没变（不写台账，也不假装成功）
  *
  * 与 `recipeWriteError` / `groceryError` 同一纪律：**共用领域错误类型，不共用响应映射**
  * （对外报的字段名与上下文跟着本路由的入参走）。
@@ -117,11 +167,20 @@ function ingredientWriteError(c: Context, error: unknown): Response {
   if (error instanceof IngredientContainsTargetError) {
     return c.json({ error: 'unknown_contains_target', ingredientId: error.ingredientId }, 400);
   }
+  if (error instanceof IngredientSelfContainsError) {
+    return c.json({ error: 'self_contains', ingredientId: error.ingredientId }, 400);
+  }
   if (error instanceof IngredientNotFoundError) {
     return c.json({ error: 'not_found', id: error.ingredientId }, 404);
   }
   if (error instanceof IngredientReferencedError) {
     return c.json({ error: 'ingredient_referenced', id: error.ingredientId, references: error.references }, 409);
+  }
+  if (error instanceof IngredientNoChangesError) {
+    return c.json({ error: 'no_changes', id: error.ingredientId }, 409);
+  }
+  if (error instanceof MemberNotFoundError) {
+    return c.json({ error: 'unknown_member', memberId: error.id }, 400);
   }
   throw error;
 }

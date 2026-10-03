@@ -134,6 +134,8 @@ docs/deploy/README.md   部署与运维手册（安装/卸载/备份恢复/导�
 | `POST /api/ingredients` | **录入食材**（#34、[ADR-0012](docs/adr/0012-ingredient-dictionary-gets-a-write-path.md)）：只要求 `name`；可选 `aliases` / `seasonMonths` / `contains`（目标 id 数组，字典外 → 400，**不静默丢弃**）。id 由服务端按名称派生（客户端送来的 `id` 忽略）；撞规范名或别名 → 409 且带冲突对象的 `id`/`name` |
 | `DELETE /api/ingredients/:id` | **删食材**（#34）：零引用才成功；有引用 → 409 且 `references[]` 报出是哪一类（6 处 `NO ACTION`）、几条；不存在 → 404 |
 | `GET /api/ingredients/:id/references` | 这条食材被谁用着、各几条（与 `DELETE` 同一份判定；界面据此决定给按钮还是给说明） |
+| `PATCH /api/ingredients/:id` | **改食材**（#35、[ADR-0012](docs/adr/0012-ingredient-dictionary-gets-a-write-path.md)）：部分更新 `name` / `aliases` / `seasonMonths` / `contains`（传了的块整体替换）。四个字段一个都没变 → 409（`no_changes`，不写台账）；改名撞规范名或别名 → 409 且带冲突对象；`contains` 字典外 → 400、自指 → 400。成功按「哪几个字段变了」写一行台账 |
+| `GET /api/ingredients/:id/edits` | 这条食材的改动台账（时间倒序，含改动人）；不存在的食材 → 404 |
 | `GET /api/members` · `GET /api/members/:id` | 家人画像（大人/小孩、性别、出生年月、忌口、爱吃）。**已删的家人不出现**（软删除，`GET /members/:id` 也一样 404） |
 | `POST /api/members` | 新增家人：`name` / `emoji` / `kind` / `gender` 必填，小孩另需 `birthMonth`（201 + 落库后的画像） |
 | `PATCH /api/members/:id` | 改画像：`birthMonth` / `avoid[]` / `loves[]`，传了的块整体替换 |

@@ -2,24 +2,33 @@ import { expect, test, type Page } from '@playwright/test';
 import { ROOT_URL } from './test-env';
 
 /**
- * 食材字典（issue #34；ADR-0012）：从**只读**变成**能录、能删、看得见**。
+ * 食材字典（issue #34/#35；ADR-0012）：从**只读**变成**能录、能改、能删、看得见**。
  *
  * 这个文件只验**单测验不了的两件事**（issue 的 Testing Decisions 点名）：
  *   1. **入口路径本身**：设置 → 食材字典 → 列表 → 「← 设置」返回，含 `hideNav` 壳的形态。
- *   2. **「新建 → 搜索命中 → 删除」这条跨层活路径**：界面上录入的食材真的落库、
- *      真能被搜索命中、真能在界面上被删掉——单测各验一半会得到两条都过、合起来错的假绿。
+ *   2. **「新建 → 搜索命中 → 删除」与「改食材 → 台账 → 改名跟随」这两条跨层活路径**：
+ *      界面上录/改的食材真的落库、真能被搜索命中、改写台账真的显示出来——
+ *      单测各验一半会得到两条都过、合起来错的假绿。
  *
  * ## 收尾纪律（E2E 共用一个库）
  *
  * 本 spec 按字母序排在 `meal` 之前，**远早于** `recommend` / `replace` / `review` 这三份依赖种子池的
- * spec。所以本文件只碰**自己新建的条目**（名字带票号 `34-`，出问题时库里的痕迹自报家门），
- * 并在收尾时**用自己的删除功能把它们真删掉**（新条目零引用，删得掉——这是本功能与其它写入功能
- * 不同的地方：它能自己清场）。
+ * spec。所以本文件只碰**自己新建的条目**（名字带票号 `34-` / `35-`，出问题时库里的痕迹自报家门），
+ * 并在收尾时**用自己的删除功能把它们真删掉**（都是零引用，删得掉）。
+ *
+ * **台账不阻挡删除**：`ingredient_edits` 指 `ingredients` 是 `ON DELETE CASCADE`（ADR-0012 修订注）
+ * ——「改过」是来路不是用途。所以 #35 改过的条目也能在 `afterEach` 里删干净，不收尾不遗留。
+ * 两个 project（phone / tablet）跑同一份库，所以条目名**带 project 后缀**（否则 tablet 再建同名会撞 409）。
  */
 
 /** 本文件新建的食材规范名（带票号）+ 一个只用于搜索验证的别名 */
 const NEW_NAME = '34-莴笋';
 const NEW_ALIAS = '34-青笋';
+
+/** #35 改食材用例的条目名：带 project 后缀，避免 phone / tablet 两个 project 撞名字（见文件头） */
+function editName(): string {
+  return `35-莴笋-${test.info().project.name}`;
+}
 
 /** 打开设置面板并进食材字典 */
 async function openDictionary(page: Page): Promise<void> {
@@ -31,16 +40,29 @@ async function openDictionary(page: Page): Promise<void> {
 }
 
 /** 从 API 找本文件新建的那条（按规范名，不写死 id——id 是服务端生成的） */
-async function findNewIngredient(page: Page): Promise<{ id: string; name: string; aliases: string[] } | undefined> {
-  const response = await page.request.get(`${ROOT_URL}/api/ingredients?q=${encodeURIComponent(NEW_NAME)}`);
+async function findIngredientByName(
+  page: Page,
+  name: string,
+): Promise<{ id: string; name: string; aliases: string[] } | undefined> {
+  const response = await page.request.get(`${ROOT_URL}/api/ingredients?q=${encodeURIComponent(name)}`);
   const { ingredients } = (await response.json()) as {
     ingredients: { id: string; name: string; aliases: string[] }[];
   };
-  return ingredients.find((ingredient) => ingredient.name === NEW_NAME);
+  return ingredients.find((ingredient) => ingredient.name === name);
+}
+
+async function findNewIngredient(page: Page): Promise<{ id: string; name: string; aliases: string[] } | undefined> {
+  return findIngredientByName(page, NEW_NAME);
 }
 
 test.afterEach(async ({ page }) => {
-  // 收尾：**用自己的删除功能清场**（不直接 SQL）。零引用 → 删得掉；已经在别处删过就跳过。
+  // 收尾：**用自己的删除功能清场**（不直接 SQL）。都是零引用，删得掉；
+  // #35 改过的条目也一样——台账是 ON DELETE CASCADE，不阻挡删除（ADR-0012 修订注）。
+  const response = await page.request.get(`${ROOT_URL}/api/ingredients?q=${encodeURIComponent('35-')}`);
+  const { ingredients } = (await response.json()) as { ingredients: { id: string; name: string }[] };
+  for (const ingredient of ingredients.filter((item) => item.name.startsWith('35-'))) {
+    await page.request.delete(`${ROOT_URL}/api/ingredients/${ingredient.id}`);
+  }
   const existing = await findNewIngredient(page);
   if (existing) {
     await page.request.delete(`${ROOT_URL}/api/ingredients/${existing.id}`);
@@ -179,4 +201,83 @@ test('食材字典与录入表单不横向溢出（对当前视口宽度断言�
   await expect(page.getByTestId('ingredient-editor-new')).toBeVisible();
   const editorWidth = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(editorWidth).toBeLessThanOrEqual(page.viewportSize()!.width);
+});
+
+/**
+ * 第七条（#35 跨层活路径）：**改食材 → 改名跟着换说法 → 台账看得见**。
+ *
+ * 走产品里的入口：录入 → 进详情 → 「改这条食材」→ 改规范名 + 补别名 → 保存。
+ * 服务端那一份与界面同源：列表里读新名、引用它的菜谱详情也读新名（无名称快照），
+ * 详情卡上的「改动台账」列出这一次改了什么、谁改的。
+ */
+test('改食材：改名后列表与台账都跟着换说法，且留了痕', async ({ page }) => {
+  await openDictionary(page);
+
+  const name = editName();
+  // 改名后的名字与别名都**不包含**旧名：搜索是子串匹配，若新名含旧名，搜旧名会照旧命（那是搜索的行为，不是改名的）
+  const renamed = `35-生菜-${test.info().project.name}`;
+  const alias = `35-鹅仔菜-${test.info().project.name}`;
+
+  // 录入一条（只填规范名）作为待改的对象
+  await page.getByTestId('ingredient-create-open').click();
+  await page.getByTestId('ingredient-name-new').fill(name);
+  await page.getByTestId('ingredient-save-new').click();
+
+  const created = await findIngredientByName(page, name);
+  expect(created?.name).toBe(name);
+  const id = created!.id;
+  await expect(page.getByTestId(`ingredient-detail-${id}`)).toBeVisible({ timeout: 15_000 });
+
+  // 改：规范名 + 别名（走界面）
+  await page.getByTestId(`ingredient-edit-open-${id}`).click();
+  await expect(page.getByTestId(`ingredient-editor-${id}`)).toBeVisible();
+  await page.getByTestId(`ingredient-name-edit-${id}`).fill(renamed);
+  await page.getByTestId(`ingredient-aliases-edit-${id}`).fill(alias);
+  await page.getByTestId(`ingredient-save-edit-${id}`).click();
+
+  // 保存回到只读态：详情与列表都读新名
+  await expect(page.getByTestId(`ingredient-detail-${id}`)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId(`ingredient-detail-name-${id}`)).toHaveText(renamed);
+  await expect.poll(async () => (await findIngredientByName(page, renamed))?.aliases, { timeout: 15_000 }).toContain(alias);
+
+  // 台账看得见（谁、改了哪几块）：名字与别名两块都在
+  const history = page.getByTestId(`ingredient-history-${id}`);
+  await expect(history.getByTestId(`ingredient-history-item-${id}-0`)).toContainText('规范名');
+  await expect(history.getByTestId(`ingredient-history-item-${id}-0`)).toContainText('别名');
+
+  // 回列表搜旧名搜不到、搜新名搜得到（改名之后全跟着换说法）
+  await page.getByTestId('ingredient-back').click();
+  await page.getByTestId('ingredient-search-input').fill(name);
+  await expect(page.getByTestId(`ingredient-row-${id}`)).toHaveCount(0);
+  await page.getByTestId('ingredient-search-input').fill(renamed);
+  await expect(page.getByTestId(`ingredient-row-${id}`)).toBeVisible();
+});
+
+/**
+ * 第八条（#35）：**四个字段一个都没变 → 明确报「没有任何改动」**（不假装成功）。
+ *
+ * 点开「改这条食材」什么都不改就保存——这条用例正是要确认那句提示真的会出现，
+ * 而且**不写台账**（点开看了看又保存不留空记录）。
+ */
+test('改食材：什么都没改就保存，明确提示「没有任何改动」', async ({ page }) => {
+  await openDictionary(page);
+
+  const name = `${editName()}-无改动`;
+  await page.getByTestId('ingredient-create-open').click();
+  await page.getByTestId('ingredient-name-new').fill(name);
+  await page.getByTestId('ingredient-save-new').click();
+  const created = await findIngredientByName(page, name);
+  const id = created!.id;
+  await expect(page.getByTestId(`ingredient-detail-${id}`)).toBeVisible({ timeout: 15_000 });
+
+  // 打开编辑器、什么都不改、直接保存
+  await page.getByTestId(`ingredient-edit-open-${id}`).click();
+  await page.getByTestId(`ingredient-save-edit-${id}`).click();
+
+  // 明确的提示（服务端 409 no_changes 翻成的那句话）
+  await expect(page.getByTestId(`ingredient-error-edit-${id}`)).toContainText('没有任何改动', { timeout: 15_000 });
+
+  // 台账仍是空的（没写空记录），取消后详情上的「改动台账」说还没改过
+  await page.getByTestId(`ingredient-edit-cancel-${id}`).click();
+  await expect(page.getByTestId(`ingredient-history-${id}`)).toContainText('还没有改过');
 });

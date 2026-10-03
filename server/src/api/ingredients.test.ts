@@ -8,7 +8,7 @@ afterEach(() => {
 });
 
 // 线上形状从 wire-types 取（与前端同一处定义），不手抄
-import type { Ingredient as IngredientJson, Recipe as RecipeJson } from '../wire-types.js';
+import type { Ingredient as IngredientJson, IngredientEditRecord, Recipe as RecipeJson } from '../wire-types.js';
 
 async function listIngredients(query = ''): Promise<IngredientJson[]> {
   const { body } = await harness.json<{ ingredients: IngredientJson[] }>(`/api/ingredients${query}`);
@@ -43,6 +43,31 @@ async function deleteIngredient(id: string): Promise<{
   };
 }> {
   return harness.json(`/api/ingredients/${id}`, { method: 'DELETE' });
+}
+
+/** `PATCH /api/ingredients/:id`：改一条食材 */
+async function patchIngredient(id: string, body: unknown): Promise<{
+  status: number;
+  body: {
+    ingredient?: IngredientJson;
+    error?: string;
+    field?: 'name' | 'alias';
+    conflict?: { id: string; name: string };
+    ingredientId?: string;
+    issues?: { path: string; message: string }[];
+  };
+}> {
+  return harness.json(`/api/ingredients/${id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/** `GET /api/ingredients/:id/edits`：该食材的改动台账 */
+async function ingredientEditsOf(id: string): Promise<{ status: number; edits: IngredientEditRecord[] }> {
+  const { status, body } = await harness.json<{ edits: IngredientEditRecord[] }>(`/api/ingredients/${id}/edits`);
+  return { status, edits: body.edits ?? [] };
 }
 
 /**
@@ -441,5 +466,255 @@ describe('食材字典：删（ADR-0012）', () => {
 
     await deleteIngredient(id);
     expect(await listIngredients('?q=残留别名')).toEqual([]);
+  });
+});
+
+/**
+ * 改食材（issue #35；ADR-0012「决定三/五」）：字段级部分更新 + 每次改留一笔台账。
+ *
+ * 只从 HTTP 边界进、看 HTTP 出。关键行为：**改名之后所有引用它的地方全跟着换说法**
+ * （列表接口 + 引用它的菜谱详情都返回新名，无名称快照）；四个字段一个都没变 → 409、不写台账。
+ */
+describe('食材字典：改食材（ADR-0012）', () => {
+  it('改规范名：列表接口与引用它的菜谱详情都返回新名（无名称快照）', async () => {
+    harness = createTestHarness();
+
+    // 自建一条只被一道菜引用的食材，改名后从两个读口核对
+    const created = await createIngredient({ name: '35-莴笋' });
+    const id = created.body.ingredient!.id;
+    const recipe = await harness.json<{ recipe?: RecipeJson }>('/api/recipes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: '35-清炒莴笋', kind: 'veg', ingredients: [{ ingredientId: id, adultGrams: 200 }] }),
+    });
+    const recipeId = recipe.body.recipe!.id;
+    expect(recipe.body.recipe!.ingredients.map((item) => item.name)).toEqual(['35-莴笋']);
+
+    const patched = await patchIngredient(id, { name: '35-生菜', memberId: 'mom' });
+    expect(patched.status).toBe(200);
+    expect(patched.body.ingredient!.name).toBe('35-生菜');
+
+    // 读口一：列表接口
+    expect((await listIngredients('?q=35-生菜')).map((item) => item.name)).toEqual(['35-生菜']);
+    expect(await listIngredients('?q=35-莴笋')).toEqual([]);
+
+    // 读口二：引用它的菜谱详情（没有名称快照，天然跟随同一条 ingredients 行）
+    const detail = await harness.json<{ recipe: RecipeJson }>(`/api/recipes/${recipeId}`);
+    expect(detail.body.recipe.ingredients.map((item) => item.name)).toEqual(['35-生菜']);
+    // 老名字不在任何读口里残留
+    expect(JSON.stringify(detail.body.recipe)).not.toContain('35-莴笋');
+  });
+
+  it('改名撞上别的条目 → 409（带冲突对象的 id 与规范名）', async () => {
+    harness = createTestHarness();
+
+    const created = await createIngredient({ name: '35-莴笋' });
+    const id = created.body.ingredient!.id;
+
+    // 撞规范名
+    const byName = await patchIngredient(id, { name: '番茄' });
+    expect(byName.status).toBe(409);
+    expect(byName.body.error).toBe('ingredient_conflict');
+    expect(byName.body.field).toBe('name');
+    expect(byName.body.conflict).toEqual({ id: 'tomato', name: '番茄' });
+
+    // 撞别人的别名（「西红柿」是番茄的别名）
+    const byAlias = await patchIngredient(id, { name: '西红柿' });
+    expect(byAlias.status).toBe(409);
+    expect(byAlias.body.conflict).toEqual({ id: 'tomato', name: '番茄' });
+
+    // 一个字都没改（还是「35-莴笋」）
+    expect((await listIngredients('?q=35-莴笋')).map((item) => item.id)).toContain(id);
+  });
+
+  it('改名改回自己不算撞（排除自己再判冲突）', async () => {
+    harness = createTestHarness();
+
+    // 种子里黄芪挂着一个与规范名同名的别名——把自己同样的名字/别名写回去不报冲突，
+    // 只要另外有一块真的变了（否则是 no_changes，那是另一条规则）
+    const patched = await patchIngredient('astragalus', { name: '黄芪', aliases: ['黄芪', '35-黄耆'] });
+    expect(patched.status).toBe(200);
+    expect(patched.body.ingredient!.name).toBe('黄芪');
+    expect(patched.body.ingredient!.aliases).toEqual(['黄芪', '35-黄耆']);
+  });
+
+  it('补 / 去别名各自生效（传的是完整清单，整体替换）', async () => {
+    harness = createTestHarness();
+
+    const created = await createIngredient({ name: '35-莴笋' });
+    const id = created.body.ingredient!.id;
+
+    // 补
+    const added = await patchIngredient(id, { aliases: ['35-青笋', '35-莴苣笋'] });
+    expect(added.status).toBe(200);
+    expect(added.body.ingredient!.aliases).toEqual(['35-青笋', '35-莴苣笋']);
+    expect((await listIngredients('?q=35-青笋')).map((item) => item.name)).toEqual(['35-莴笋']);
+
+    // 去（只留一个）
+    const removed = await patchIngredient(id, { aliases: ['35-青笋'] });
+    expect(removed.status).toBe(200);
+    expect(removed.body.ingredient!.aliases).toEqual(['35-青笋']);
+    expect(await listIngredients('?q=35-莴苣笋')).toEqual([]);
+
+    // 全去
+    const cleared = await patchIngredient(id, { aliases: [] });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.ingredient!.aliases).toEqual([]);
+  });
+
+  it('补 / 去时令月份各自生效；去掉后回到「四季有售」（空数组）', async () => {
+    harness = createTestHarness();
+
+    const created = await createIngredient({ name: '35-莴笋' });
+    const id = created.body.ingredient!.id;
+
+    const added = await patchIngredient(id, { seasonMonths: [4, 5, 6] });
+    expect(added.status).toBe(200);
+    expect(added.body.ingredient!.seasonMonths).toEqual([4, 5, 6]);
+
+    const removed = await patchIngredient(id, { seasonMonths: [] });
+    expect(removed.status).toBe(200);
+    expect(removed.body.ingredient!.seasonMonths).toEqual([]);
+
+    // 「四季有售」在时令集合里真的没有它（推荐期的时令加分不会被假信号点亮）
+    const { seasonalIngredientIds } = await import('../domain/ingredients.js');
+    expect(seasonalIngredientIds(harness.db, 4).has(id)).toBe(false);
+  });
+
+  it('补 / 去「含」指针各自生效，且目标必须是字典内条目', async () => {
+    harness = createTestHarness();
+
+    const created = await createIngredient({ name: '35-复合调味' });
+    const id = created.body.ingredient!.id;
+    const target = await createIngredient({ name: '35-贝类' });
+    const targetId = target.body.ingredient!.id;
+
+    // 补
+    const added = await patchIngredient(id, { contains: [targetId] });
+    expect(added.status).toBe(200);
+    expect(added.body.ingredient!.contains).toEqual([{ ingredientId: targetId, name: '35-贝类' }]);
+
+    // 去
+    const removed = await patchIngredient(id, { contains: [] });
+    expect(removed.status).toBe(200);
+    expect(removed.body.ingredient!.contains).toEqual([]);
+
+    // 目标必须在字典里 → 400，不静默丢弃
+    const unknown = await patchIngredient(id, { contains: ['nothing_like_this'] });
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.error).toBe('unknown_contains_target');
+    expect(unknown.body.ingredientId).toBe('nothing_like_this');
+
+    // 自指 → 400（不撞上迁移 002 的 CHECK 报 500）
+    const self = await patchIngredient(id, { contains: [id] });
+    expect(self.status).toBe(400);
+    expect(self.body.error).toBe('self_contains');
+  });
+
+  it('一次成功的改动按「哪几个字段变了」记一行台账（含改动人）', async () => {
+    harness = createTestHarness();
+
+    const created = await createIngredient({ name: '35-莴笋' });
+    const id = created.body.ingredient!.id;
+
+    // 一次改两个字段 → 一行、两个字段名
+    const patched = await patchIngredient(id, { name: '35-生菜', aliases: ['35-鹅仔菜'], memberId: 'mom' });
+    expect(patched.status).toBe(200);
+
+    const { status, edits } = await ingredientEditsOf(id);
+    expect(status).toBe(200);
+    expect(edits).toHaveLength(1);
+    expect(edits[0]!.changedFields).toEqual(['name', 'aliases']);
+    expect(edits[0]!.memberId).toBe('mom');
+    expect(edits[0]!.memberName).toBe('妈妈');
+  });
+
+  it('四个字段一个都没变 → 409「没有任何改动」，且不写台账', async () => {
+    harness = createTestHarness();
+
+    const created = await createIngredient({ name: '35-莴笋', aliases: ['35-青笋'], seasonMonths: [4, 5] });
+    const id = created.body.ingredient!.id;
+
+    // 重传一模一样的四块（顺序不同、重复项都算「没变」）
+    const { status, body } = await patchIngredient(id, {
+      name: '35-莴笋',
+      aliases: ['35-青笋'],
+      seasonMonths: [5, 4],
+      contains: [],
+    });
+    expect(status).toBe(409);
+    expect(body.error).toBe('no_changes');
+
+    // 空 patch（点开看了看又保存）也不写台账
+    const empty = await patchIngredient(id, {});
+    expect(empty.status).toBe(409);
+    expect(empty.body.error).toBe('no_changes');
+
+    // 空台账：一次都没写进去
+    expect((await ingredientEditsOf(id)).edits).toEqual([]);
+  });
+
+  it('台账按时间倒序可读，含改动人', async () => {
+    harness = createTestHarness();
+
+    const created = await createIngredient({ name: '35-莴笋' });
+    const id = created.body.ingredient!.id;
+
+    await patchIngredient(id, { aliases: ['35-青笋'], memberId: 'mom' });
+    harness.clock.advance(60_000);
+    await patchIngredient(id, { seasonMonths: [4], memberId: 'dad' });
+
+    const { edits } = await ingredientEditsOf(id);
+    expect(edits.map((edit) => edit.changedFields)).toEqual([['seasonMonths'], ['aliases']]);
+    // 最近一次在前
+    expect(edits[0]!.changedAt >= edits[1]!.changedAt).toBe(true);
+    expect(edits[0]!.memberName).toBe('爸爸');
+    expect(edits[1]!.memberName).toBe('妈妈');
+  });
+
+  it('不存在的食材取台账 → 404（不是空台账）', async () => {
+    harness = createTestHarness();
+
+    const { status } = await ingredientEditsOf('nothing_like_this');
+    expect(status).toBe(404);
+  });
+
+  it('改不存在的食材 → 404', async () => {
+    harness = createTestHarness();
+
+    const { status, body } = await patchIngredient('nothing_like_this', { name: '随便' });
+    expect(status).toBe(404);
+    expect(body.error).toBe('not_found');
+  });
+
+  it('改过的食材照样删得掉：台账随食材一起走，不阻挡删除', async () => {
+    harness = createTestHarness();
+
+    // 零引用、改过一次 → 删除成功（台账是 ON DELETE CASCADE；「改过」是来路不是用途）
+    const created = await createIngredient({ name: '35-莴笋' });
+    const id = created.body.ingredient!.id;
+    await patchIngredient(id, { aliases: ['35-青笋'] });
+
+    const { status } = await deleteIngredient(id);
+    expect(status).toBe(200);
+
+    // 条目真的消失了，它的台账也一并带走（不留指向不存在食材的历史行）
+    expect(await listIngredients('?q=35-莴笋')).toEqual([]);
+    expect((harness.db.prepare('SELECT COUNT(*) AS n FROM ingredient_edits WHERE ingredient_id = ?').get(id) as { n: number }).n).toBe(0);
+  });
+
+  it('「含」指针指向的目标改名后，源条目的详情跟着换说法', async () => {
+    harness = createTestHarness();
+
+    const sauce = await createIngredient({ name: '35-蚝油类' });
+    const sauceId = sauce.body.ingredient!.id;
+    const shellfish = await createIngredient({ name: '35-贝类' });
+    const shellfishId = shellfish.body.ingredient!.id;
+    await patchIngredient(sauceId, { contains: [shellfishId] });
+
+    // 目标改名 → 源条目读出来的 contains.name 跟着变（存 id 不存名字）
+    await patchIngredient(shellfishId, { name: '35-壳类' });
+    const reread = await listIngredients('?q=35-蚝油类');
+    expect(reread[0]!.contains).toEqual([{ ingredientId: shellfishId, name: '35-壳类' }]);
   });
 });

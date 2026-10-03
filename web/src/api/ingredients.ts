@@ -5,13 +5,17 @@ import type {
   IngredientCreate,
   IngredientCreateResponse,
   IngredientDeleteResponse,
+  IngredientEditListResponse,
+  IngredientEditRecord,
+  IngredientPatch,
+  IngredientPatchResponse,
   IngredientReferenceCount,
   IngredientReferencesResponse,
 } from '@dinnerorder/server/types';
 import { apiUrl } from '../config';
 
 // 线上形状来自 server（ADR-0002「共享类型由 server 导出」），前端不手抄
-export type { Ingredient, IngredientReferenceCount };
+export type { Ingredient, IngredientEditRecord, IngredientPatch, IngredientReferenceCount };
 
 async function fetchIngredients(query: string, signal: AbortSignal): Promise<Ingredient[]> {
   const response = await fetch(apiUrl('/ingredients', { q: query }), {
@@ -95,6 +99,15 @@ async function readWriteError(response: Response): Promise<IngredientWriteError>
   if (body.error === 'unknown_contains_target') {
     return new IngredientWriteError('unknown_contains_target', '「含」的目标不在字典里，刷新一下页面', undefined, undefined, response.status);
   }
+  if (body.error === 'self_contains') {
+    return new IngredientWriteError('self_contains', '「含」的目标不能是它自己', undefined, undefined, response.status);
+  }
+  if (body.error === 'no_changes') {
+    return new IngredientWriteError('no_changes', '这次提交没有任何改动', undefined, undefined, response.status);
+  }
+  if (body.error === 'unknown_member') {
+    return new IngredientWriteError('unknown_member', '身份对不上家人列表，刷新一下页面', undefined, undefined, response.status);
+  }
   if (body.error === 'ingredient_referenced') {
     return new IngredientWriteError('ingredient_referenced', '这条食材还有人用着，删不掉', undefined, body.references, response.status);
   }
@@ -132,6 +145,52 @@ export function useDeleteIngredient() {
       return ((await response.json()) as IngredientDeleteResponse).ingredient;
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ingredients'] }),
+  });
+}
+
+/**
+ * 改一条食材（CONTEXT「改食材」；issue #35）：可改规范名、别名、时令月份、「含」指针。
+ *
+ * 成功后把两处缓存一起刷：`['ingredients']`（列表与搜索）与 `['ingredient-edits', id]`
+ * （刚写的那一条要出现在改动台账里）。四个字段一个都没变时服务端报 409 `no_changes`，
+ * 翻成人话是「这次提交没有任何改动」——不写台账、也不假装成功。
+ */
+export function usePatchIngredient() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, input }: { id: string; input: IngredientPatch }): Promise<Ingredient> => {
+      const response = await fetch(apiUrl(`/ingredients/${id}`), {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) throw await readWriteError(response);
+      return ((await response.json()) as IngredientPatchResponse).ingredient;
+    },
+    onSuccess: (_ingredient, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['ingredients'] });
+      queryClient.invalidateQueries({ queryKey: ['ingredient-edits', variables.id] });
+    },
+  });
+}
+
+/**
+ * 某条食材的改动台账（`GET /ingredients/:id/edits`，时间倒序）。
+ * 与菜谱的 `useRecipeEdits` 并列、各自独立（两张表各自回答一个问题）。
+ */
+export function useIngredientEdits(ingredientId: string | null) {
+  return useQuery({
+    queryKey: ['ingredient-edits', ingredientId],
+    queryFn: async ({ signal }): Promise<IngredientEditRecord[]> => {
+      const response = await fetch(apiUrl(`/ingredients/${ingredientId}/edits`), {
+        signal,
+        headers: { accept: 'application/json' },
+      });
+      if (!response.ok) throw new Error(`改动台账读取失败：HTTP ${response.status}`);
+      return ((await response.json()) as IngredientEditListResponse).edits;
+    },
+    enabled: ingredientId !== null,
+    staleTime: 60_000,
   });
 }
 
