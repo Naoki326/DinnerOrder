@@ -241,6 +241,40 @@ export interface IngredientPatchResponse {
 }
 
 /**
+ * `POST /api/ingredients/contains-suggestion` 的入参：**「含」提议**
+ * （CONTEXT「『含』提议」；ADR-0012「决定六」；issue #37）。
+ *
+ * 两种二选一的指认方式，对应两个录入/改动的时刻：
+ *   * 新建时给 **`name`**（输入框里刚敲的名字，还没有 id）；
+ *   * 修订时给 **`id`**（已在字典里的那条，id 是权威——名字可能刚在表单里改过）。
+ * 两个都给时以 `id` 为准。至少要给一个（路由的 Zod 在形状层拦住「什么都不给」）。
+ */
+export interface IngredientContainsSuggestionRequest {
+  /** 待建议的复合调料规范名（新建时用） */
+  name?: string;
+  /** 待建议的食材 id（修订时用；存在性由领域层判，不在字典里 → 404） */
+  id?: string;
+}
+
+/**
+ * `POST /api/ingredients/contains-suggestion` 的响应：**预填建议**，不是写入。
+ *
+ * `targets` **只含字典内条目**（复用 `IngredientRef`：id + 规范名）。LLM 吐出的字典外名字
+ * 在解析层被丢掉，不会出现在这里——ADR-0001「LLM 只从检索池中选、不自由生成」在食材上的原样复用。
+ *
+ * `degraded` 必须与「没有建议」区分开（ADR-0012「降级必须可区分」）：
+ *   * `degraded: false` + 空数组 = AI 看过了、没有建议（界面说「没有可挂的」）；
+ *   * `degraded: true` + 空数组 = AI 这次用不了（界面说「AI 暂时用不了，你先自己挂」）。
+ * 把这两种空合并会把一次故障说成「这东西确实不含什么」——这条信息的读众是**忌口硬过滤**。
+ */
+export interface IngredientContainsSuggestionResponse {
+  /** 建议挂上的「含」目标（字典内条目）；空数组的含义随 `degraded` 而定 */
+  targets: IngredientRef[];
+  /** 这一次结果是不是「AI 用不了」（降级不是失败：仍返回 200，字段存在的意义就是让界面能说出来） */
+  degraded: boolean;
+}
+
+/**
  * 一条「改食材」留痕（CONTEXT「改食材」；ADR-0012；issue #35）。
  *
  * 与 `RecipeEditRecord`（菜谱修订）**同构但不同表**：那张回答「这道菜最近被改成什么样」，

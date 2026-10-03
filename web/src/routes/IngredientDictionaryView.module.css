@@ -188,3 +188,24 @@
   background: var(--chip);
   color: var(--ink);
 }
+
+/* 「含」提议（issue #37）：预填建议框 + 两种空的三句不同的话。 */
+.suggestionBox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.note {
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--chip);
+  color: var(--sub);
+  font-size: 12px;
+}
+
+.noteInfo {
+  width: 100%;
+}

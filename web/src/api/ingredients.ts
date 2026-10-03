@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   Ingredient,
   IngredientConflict,
+  IngredientContainsSuggestionRequest,
+  IngredientContainsSuggestionResponse,
   IngredientCreate,
   IngredientCreateResponse,
   IngredientDeleteResponse,
@@ -9,13 +11,14 @@ import type {
   IngredientEditRecord,
   IngredientPatch,
   IngredientPatchResponse,
+  IngredientRef,
   IngredientReferenceCount,
   IngredientReferencesResponse,
 } from '@dinnerorder/server/types';
 import { apiUrl } from '../config';
 
 // 线上形状来自 server（ADR-0002「共享类型由 server 导出」），前端不手抄
-export type { Ingredient, IngredientEditRecord, IngredientPatch, IngredientReferenceCount };
+export type { Ingredient, IngredientEditRecord, IngredientPatch, IngredientRef, IngredientReferenceCount };
 
 async function fetchIngredients(query: string, signal: AbortSignal): Promise<Ingredient[]> {
   const response = await fetch(apiUrl('/ingredients', { q: query }), {
@@ -208,5 +211,27 @@ export function useIngredientReferences(id: string | null) {
     },
     enabled: id !== null,
     staleTime: 0,
+  });
+}
+
+/**
+ * 「含」提议（issue #37；CONTEXT「『含』提议」；ADR-0012「决定六」）：给一条复合调料要一份
+ * **预填建议**（不是写入）。返回 `{ targets, degraded }`——调用方必须同时看这两个字段：
+ *   * `degraded: false` + 空 targets = AI 看过了、没有建议（界面说「没有可挂的」）；
+ *   * `degraded: true` + 空 targets = AI 这次用不了（界面说「AI 暂时用不了，你先自己挂」）。
+ * 用 mutation 而不是 query：它是人点一下才发生的动作，不是「进入页面就该拉的数据」。
+ * 预填进 chips 之后**不自动保存**——确认与否由后续的录入/保存提交决定（提议不落库）。
+ */
+export function useContainsSuggestion() {
+  return useMutation({
+    mutationFn: async (input: IngredientContainsSuggestionRequest): Promise<IngredientContainsSuggestionResponse> => {
+      const response = await fetch(apiUrl('/ingredients/contains-suggestion'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) throw await readWriteError(response);
+      return (await response.json()) as IngredientContainsSuggestionResponse;
+    },
   });
 }

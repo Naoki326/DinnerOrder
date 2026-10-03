@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
-import type { Ingredient, IngredientConflict, IngredientEditRecord, IngredientReferenceCount, IngredientReferenceKind } from '@dinnerorder/server/types';
+import type { Ingredient, IngredientConflict, IngredientContainsSuggestionRequest, IngredientEditRecord, IngredientRef, IngredientReferenceCount, IngredientReferenceKind } from '@dinnerorder/server/types';
 import {
   IngredientWriteError,
   useAllIngredients,
+  useContainsSuggestion,
   useCreateIngredient,
   useDeleteIngredient,
   useIngredientEdits,
@@ -432,7 +433,7 @@ function EditIngredientForm({
   const [aliasesText, setAliasesText] = useState(ingredient.aliases.join('、'));
   const [months, setMonths] = useState<number[]>([...ingredient.seasonMonths]);
   // 「含」目标只存 id + 规范名（不需要完整的 Ingredient 形状）：预填现指针 + 搜索挑新的
-  const [contains, setContains] = useState<{ id: string; name: string }[]>(
+  const [contains, setContains] = useState<ContainsTarget[]>(
     ingredient.contains.map((target) => ({ id: target.ingredientId, name: target.name })),
   );
   const [containsQuery, setContainsQuery] = useState('');
@@ -442,7 +443,8 @@ function EditIngredientForm({
 
   const candidates = (useIngredients(containsQuery).data ?? [])
     .filter((option) => option.id !== ingredient.id && !contains.some((selected) => selected.id === option.id))
-    .slice(0, 6);
+    .slice(0, 6)
+    .map((option) => ({ id: option.id, name: option.name }));
 
   const submit = async (): Promise<void> => {
     setError(null);
@@ -573,6 +575,12 @@ function EditIngredientForm({
             ))}
           </div>
         ) : null}
+        <ContainsSuggestionBox
+          request={{ id: ingredient.id }}
+          selected={contains}
+          onAdopt={(target) => setContains((current) => (current.some((item) => item.id === target.ingredientId) ? current : [...current, { id: target.ingredientId, name: target.name }]))}
+          testId={`edit-${ingredient.id}`}
+        />
       </div>
 
       {conflict ? (
@@ -648,6 +656,98 @@ function IngredientHistory({
   );
 }
 
+/** 「含」字段只存 id + 规范名（不需要完整的 Ingredient 形状）：预填现指针 + 搜索挑新的 */
+interface ContainsTarget {
+  id: string;
+  name: string;
+}
+
+/**
+ * 「含」提议（issue #37；CONTEXT「『含』提议」；ADR-0012「决定六」）：给一条复合调料预填
+ * 几个「可能含」的**字典内**目标。
+ *
+ * 三处界面口径都在这里落成代码（改前先读）：
+ *   * **只从字典现有条目里挑**：建议的标记用字典里的规范名 + id，掌勺者点一下只是把预填放进
+ *     chips（**不落库**）——落库与否由后续的录入/保存提交决定。字典里没有可挂的基础条目时
+ *     如实报「没有可挂的」并提示可先建那一条（先建「贝类」可能排在「蚝油」前面）。
+ *   * **两种空必须说成两句不同的话**：`degraded: false` + 空 = AI 看过了没建议（说「没有可挂的」）；
+ *     `degraded: true` = AI 这次用不了（说「AI 暂时用不了，你先自己挂」）。把一次故障说成
+ *     「这东西确实不含什么」是错的。
+ *   * **降级时不显示任何建议、也不显示「没有建议」**：只提示 AI 不可用且手填照常。
+ *
+ * 文案用「『含』提议」，**不用**「自动识别忌口」（它只是提议，不是识别）。
+ */
+function ContainsSuggestionBox({
+  request,
+  selected,
+  onAdopt,
+  testId,
+}: {
+  request: IngredientContainsSuggestionRequest;
+  selected: ContainsTarget[];
+  onAdopt: (target: IngredientRef) => void;
+  testId: string;
+}) {
+  const suggestion = useContainsSuggestion();
+  const result = suggestion.data;
+  const degraded = result?.degraded === true;
+  // 服务端确实给了建议（与「过滤掉已采纳的之后为空」是两件事——后者不能显示成「没有可挂的」）
+  const hasSuggestions = (result?.targets ?? []).length > 0;
+  // 已经在 chips 里的不再重复建议（刚采纳过的那条）
+  const targets = (result?.targets ?? []).filter((target) => !selected.some((item) => item.id === target.ingredientId));
+  // 新建时名字还没填就别提议（空名字没有可建议的对象）
+  const ready = request.id !== undefined || (request.name ?? '').trim() !== '';
+
+  return (
+    <div className={styles.suggestionBox} data-testid={`ingredient-contains-suggest-box-${testId}`}>
+      <button
+        type="button"
+        className={styles.rowAction}
+        data-testid={`ingredient-contains-suggest-${testId}`}
+        disabled={suggestion.isPending || !ready}
+        onClick={() => suggestion.mutate(request)}
+      >
+        {suggestion.isPending ? '问一下 AI…' : '「含」提议'}
+      </button>
+
+      {suggestion.isError ? (
+        <div className={styles.error} data-testid={`ingredient-contains-suggest-error-${testId}`}>
+          提议没问成，刷新一下页面再试。
+        </div>
+      ) : null}
+
+      {degraded ? (
+        // 降级：只说 AI 用不了，**不显示任何建议、也不显示「没有建议」**——手填照常
+        <div className={styles.note} data-testid={`ingredient-contains-suggest-degraded-${testId}`}>
+          AI 暂时用不了，你先自己挂。
+        </div>
+      ) : result && !hasSuggestions ? (
+        // AI 看过了、没有建议：如实报「没有可挂的」，并提示可先建那一条
+        <div className={styles.note} data-testid={`ingredient-contains-suggest-empty-${testId}`}>
+          没有可挂的目标——字典里没有可挂的基础条目，先建那一条（如「贝类」）再回来。
+        </div>
+      ) : result && targets.length > 0 ? (
+        <div className={`${styles.note} ${styles.noteInfo}`} data-testid={`ingredient-contains-suggestions-${testId}`}>
+          <span className="sub">可能含（点一下填进去，确认才保存）：</span>
+          <div className={styles.suggestions}>
+            {targets.map((target) => (
+              <button
+                key={target.ingredientId}
+                type="button"
+                className={styles.suggestion}
+                data-testid={`ingredient-contains-suggestion-${testId}-${target.ingredientId}`}
+                onClick={() => onAdopt(target)}
+              >
+                ＋ {target.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** 录入表单（只有一个必填项：规范名）。撞名时给冲突对象与「用这条」。 */
 function CreateIngredientCard({
   initialName,
@@ -661,7 +761,7 @@ function CreateIngredientCard({
   const [name, setName] = useState(initialName);
   const [aliasesText, setAliasesText] = useState('');
   const [months, setMonths] = useState<number[]>([]);
-  const [contains, setContains] = useState<Ingredient[]>([]);
+  const [contains, setContains] = useState<ContainsTarget[]>([]);
   const [containsQuery, setContainsQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<IngredientConflict | null>(null);
@@ -669,7 +769,8 @@ function CreateIngredientCard({
 
   const candidates = (useIngredients(containsQuery).data ?? [])
     .filter((option) => !contains.some((selected) => selected.id === option.id))
-    .slice(0, 6);
+    .slice(0, 6)
+    .map((option) => ({ id: option.id, name: option.name }));
 
   const submit = async (): Promise<void> => {
     setError(null);
@@ -796,6 +897,12 @@ function CreateIngredientCard({
             ))}
           </div>
         ) : null}
+        <ContainsSuggestionBox
+          request={{ name }}
+          selected={contains}
+          onAdopt={(target) => setContains((current) => (current.some((item) => item.id === target.ingredientId) ? current : [...current, { id: target.ingredientId, name: target.name }]))}
+          testId="new"
+        />
       </div>
 
       {conflict ? (

@@ -1,20 +1,27 @@
 import type { Db } from '../db/index.js';
 import type { Clock } from '../clock.js';
+import type { LlmClient } from '../llm/types.js';
 import type {
   Ingredient,
   IngredientConflict,
+  IngredientContainsSuggestionRequest,
+  IngredientContainsSuggestionResponse,
   IngredientCreate,
   IngredientEditRecord,
   IngredientPatch,
+  IngredientRef,
   IngredientReferenceCount,
 } from '../wire-types.js';
 import { listIngredients } from './ingredients.js';
 import { findMember, MemberNotFoundError } from './members.js';
+import { suggestContains } from '../llm/contains-suggestion-schema.js';
 
 // 线上形状定义在 wire-types.ts（前端也从那里取）
 export type {
   Ingredient,
   IngredientConflict,
+  IngredientContainsSuggestionRequest,
+  IngredientContainsSuggestionResponse,
   IngredientCreate,
   IngredientEditRecord,
   IngredientPatch,
@@ -398,6 +405,51 @@ function countReference(db: Db, reference: (typeof REFERENCE_TABLES)[number], id
 export function ingredientById(db: Db, id: string): Ingredient | null {
   // 复用列表的取数（别名/时令/含指针三张表一次取齐），只按 id 过滤——形状不可能与列表漂移
   return listIngredients(db).find((ingredient) => ingredient.id === id) ?? null;
+}
+
+// ---------------------------------------------------------------- 「含」提议
+
+/**
+ * 「含」提议（CONTEXT「『含』提议」；ADR-0012「决定六」；issue #37）：给一条复合调料
+ * 预填几个「可能含」的**字典内**目标。
+ *
+ * 与转正链路同一形态（一次单次 completion、产出是**预填而非写入**），但有三处刻意的差别：
+ *
+ *   1. **不落库**：这里只读字典（拿候选池）与返回建议，一个字节都不写；
+ *   2. **越界丢该条而不整次失败**：目标对不上字典就丢那一条（LLM 解析层做，见
+ *      `llm/contains-suggestion-schema.ts` 的文件头），建议列表少一条对人无害；
+ *   3. **降级不是失败**：LLM 用不了就返回 `{ targets: [], degraded: true }`（路由照 200）——
+ *      手填这条路永远不受影响，界面把那句「AI 暂时用不了，你先自己挂」说出来。
+ *
+ * **候选池来自字典现有条目**（`listIngredients`），这就是 ADR-0001 在食材上的复用：
+ * LLM 只能从检索池里选，不自由生成。字典里没有「贝类」时它只能报「没有可挂的目标」。
+ *
+ * `id` 给了就以它为准（修订场景：id 是权威，名字可能刚在表单里改过）；不在字典里 → 404。
+ * 只给 `name`（新建场景）时按名字做提示，不校验存在性——它本来就还没进字典。
+ */
+export async function suggestContainsFor(
+  db: Db,
+  llm: LlmClient,
+  input: IngredientContainsSuggestionRequest,
+): Promise<IngredientContainsSuggestionResponse> {
+  // 修订：id 是权威（名字可能是表单里刚敲的，还没落库）
+  let name = input.name?.trim() ?? '';
+  if (input.id !== undefined) {
+    const existing = ingredientById(db, input.id);
+    if (!existing) throw new IngredientNotFoundError(input.id);
+    if (name === '') name = existing.name;
+  }
+
+  // 候选池 = 字典现有条目。**排除自己**：自指被迁移 002 的 CHECK 拦着，给了也落不了库。
+  // 两条路都要排：修订时按 id（权威），新建时按**规范名**（用户敲的名字已存在同名条目时，
+  // 那条“自己”也不该出现在「可能含」的建议里）。
+  // 这里现读整张表：字典是几十到几百行量级，提议是人点一下才跑一次，不值得为它加缓存。
+  const pool: IngredientRef[] = listIngredients(db)
+    .filter((ingredient) => ingredient.id !== input.id && ingredient.name !== name)
+    .map((ingredient) => ({ ingredientId: ingredient.id, name: ingredient.name }));
+
+  const outcome = await suggestContains(llm, { name, pool });
+  return { targets: outcome.targets, degraded: outcome.degraded };
 }
 
 // ---------------------------------------------------------------- 内部工具

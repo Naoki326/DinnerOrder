@@ -9,6 +9,7 @@ afterEach(() => {
 
 // 线上形状从 wire-types 取（与前端同一处定义），不手抄
 import type { Ingredient as IngredientJson, IngredientEditRecord, Recipe as RecipeJson } from '../wire-types.js';
+import { CONTAINS_OUT_OF_POOL_PROBE, CONTAINS_POOL_MARK, pickContainsSuggestion } from '../llm/contains-suggestion-schema.js';
 
 async function listIngredients(query = ''): Promise<IngredientJson[]> {
   const { body } = await harness.json<{ ingredients: IngredientJson[] }>(`/api/ingredients${query}`);
@@ -68,6 +69,17 @@ async function patchIngredient(id: string, body: unknown): Promise<{
 async function ingredientEditsOf(id: string): Promise<{ status: number; edits: IngredientEditRecord[] }> {
   const { status, body } = await harness.json<{ edits: IngredientEditRecord[] }>(`/api/ingredients/${id}/edits`);
   return { status, edits: body.edits ?? [] };
+}
+
+async function containsSuggestion(body: unknown): Promise<{
+  status: number;
+  body: { targets?: { ingredientId: string; name: string }[]; degraded?: boolean; error?: string; issues?: { path: string; message: string }[] };
+}> {
+  return harness.json('/api/ingredients/contains-suggestion', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
 
 /**
@@ -716,5 +728,158 @@ describe('食材字典：改食材（ADR-0012）', () => {
     await patchIngredient(shellfishId, { name: '35-壳类' });
     const reread = await listIngredients('?q=35-蚝油类');
     expect(reread[0]!.contains).toEqual([{ ingredientId: shellfishId, name: '35-壳类' }]);
+  });
+});
+
+/**
+ * 「含」提议（issue #37；CONTEXT「『含』提议」；ADR-0012「决定六」）在**库这一侧**的行为。
+ *
+ * 只从 HTTP 边界进、看 HTTP 出。四条要守住的东西：
+ *   1. **候选池来自字典现有条目**（LLM 收到的是字典里的名字，不是自由生成的起点）；
+ *   2. **越界目标被拦下**：fake 吐一个字典外的名字 → 它没被返回、也没落库；
+ *   3. **两种空可区分**：`degraded: false` + 空（AI 看过了、没有建议）与
+ *      `degraded: true` + 空（AI 用不了）是**两条不同的响应**；
+ *   4. **预填而非写入**：调用之后字典里没有新条目、那条食材的 `contains` 一个字节没变。
+ */
+describe('食材字典：「含」提议（issue #37）', () => {
+  it('候选池来自字典现有条目，目标只含字典内条目（复用 IngredientRef 形状）', async () => {
+    harness = createTestHarness();
+    // 让 fake 从 prompt 里读回池子、给一条建议（与 E2E 同一条确定性路径）
+    harness.llm.setCompletion((request) => pickContainsSuggestion(request.prompt) ?? '{"targets":[]}');
+
+    const { status, body } = await containsSuggestion({ name: '蚝油' });
+    expect(status).toBe(200);
+    expect(body.degraded).toBe(false);
+    // 蚝油 → 贝类（种子字典里就有这一条）；形状是 id + 规范名
+    const shellfish = body.targets!.find((target) => target.name === '贝类');
+    expect(shellfish).toBeDefined();
+    expect(shellfish!.ingredientId).toBe('shellfish');
+
+    // 池子确实来自字典：LLM 收到的 prompt 里带上了字典里的条目（不只是「贝类」）
+    const prompt = harness.llm.completionCalls.at(-1)!.request.prompt;
+    expect(prompt).toContain('贝类');
+    expect(prompt).toContain('辣椒');
+    expect(prompt).toContain(CONTAINS_POOL_MARK);
+  });
+
+  it('越界目标被拦下：fake 吐一个字典外的名字 → 没被返回、没落库', async () => {
+    harness = createTestHarness();
+    // 先建一条自己的复合调料 + 一个池内目标，让断言不依赖种子的形状
+    const sauce = await createIngredient({ name: '37-越界蚝油' });
+    const sauceId = sauce.body.ingredient!.id;
+    const shellfish = await createIngredient({ name: '37-贝类' });
+    const shellfishId = shellfish.body.ingredient!.id;
+
+    // fake 的探针：名字带「越界」时会额外吐一个字典外的目标
+    harness.llm.setCompletion((request) => pickContainsSuggestion(request.prompt) ?? '{"targets":[]}');
+    const { status, body } = await containsSuggestion({ id: sauceId });
+    expect(status).toBe(200);
+
+    const names = body.targets!.map((target) => target.name);
+    expect(names).toContain('37-贝类');
+    // 字典外的那条没被返回
+    expect(names).not.toContain(CONTAINS_OUT_OF_POOL_PROBE);
+    // 返回的每一条都必须真是字典里的条目（池内条目，id 对得上）
+    const dictionaryIds = new Set((await listIngredients()).map((item) => item.id));
+    expect(body.targets!.every((target) => dictionaryIds.has(target.ingredientId))).toBe(true);
+    expect(body.targets!.some((target) => target.ingredientId === shellfishId)).toBe(true);
+
+    // 也没落库：字典里没有那条凭空生成的名字，且这条调料的 contains 还是空的
+    expect(await listIngredients(`?q=${encodeURIComponent(CONTAINS_OUT_OF_POOL_PROBE)}`)).toEqual([]);
+    const reread = await listIngredients('?q=37-越界蚝油');
+    expect(reread[0]!.contains).toEqual([]);
+  });
+
+  it('提议不落库：调用之后字典里没有新条目、该食材的 contains 不变', async () => {
+    harness = createTestHarness();
+    harness.llm.setCompletion((request) => pickContainsSuggestion(request.prompt) ?? '{"targets":[]}');
+
+    const created = await createIngredient({ name: '37-蚝油类' });
+    const id = created.body.ingredient!.id;
+    const before = (await listIngredients()).length;
+
+    const { status, body } = await containsSuggestion({ name: '37-蚝油类' });
+    expect(status).toBe(200);
+    expect(body.targets!.length).toBeGreaterThan(0);
+
+    // 字典条目数不变、这条的 contains 仍是空（预填而非写入）
+    expect((await listIngredients()).length).toBe(before);
+    expect((await listIngredients('?q=37-蚝油类'))[0]!.contains).toEqual([]);
+    // 也没有「提议台账」之类的副产物（本路由只读 + 调 LLM）
+    expect((await listIngredients(`?q=${encodeURIComponent('37-贝类')}`)).length).toBe(0);
+
+    void id;
+  });
+
+  it('字典里没有合式目标 → degraded: false + 空数组（「AI 看过了、没有建议」）', async () => {
+    harness = createTestHarness();
+    harness.llm.setCompletion('{"targets":[]}');
+
+    const { status, body } = await containsSuggestion({ name: '蚝油' });
+    expect(status).toBe(200);
+    expect(body.degraded).toBe(false);
+    expect(body.targets).toEqual([]);
+  });
+
+  it('LLM 不可用 → 200 + degraded: true + 空数组（不报错）', async () => {
+    harness = createTestHarness();
+    harness.llm.setCompletionError(new Error('端点不可达'));
+
+    const { status, body } = await containsSuggestion({ name: '蚝油' });
+    expect(status).toBe(200);
+    expect(body.degraded).toBe(true);
+    expect(body.targets).toEqual([]);
+  });
+
+  it('两种空是两条不同的响应（degraded 分得开，界面据此说两句不同的话）', async () => {
+    harness = createTestHarness();
+    // 空输入得当：LLM 回了空数组（AI 看过了、没有建议）
+    harness.llm.setCompletion('{"targets":[]}');
+    const noSuggestion = await containsSuggestion({ name: '37-没有任何关键词' });
+
+    // 换一个 harness（另一个库、另一个 fake）造「AI 用不了」
+    harness.close();
+    harness = createTestHarness();
+    harness.llm.setCompletionError(new Error('端点不可达'));
+    const degraded = await containsSuggestion({ name: '37-没有任何关键词' });
+
+    expect(noSuggestion.body.targets).toEqual(degraded.body.targets);
+    expect(noSuggestion.body.degraded).toBe(false);
+    expect(degraded.body.degraded).toBe(true);
+    // 两种情况的响应不相等（把它们合并会把一次故障说成「这东西确实不含什么」）
+    expect(noSuggestion.body).not.toEqual(degraded.body);
+  });
+
+  it('入参二选一：不存在的 id → 404；一个字段都不给 → 400', async () => {
+    harness = createTestHarness();
+
+    const { status, body } = await containsSuggestion({ id: 'nothing_like_this' });
+    expect(status).toBe(404);
+    expect(body.error).toBe('not_found');
+
+    // 一个字段都不给 → 400（没法知道要建议哪条）
+    const missing = await containsSuggestion({});
+    expect(missing.status).toBe(400);
+    expect(missing.body.error).toBe('invalid_request');
+  });
+
+  it('手动填「含」指针的路径不受影响：AI 挂了一样能挂', async () => {
+    harness = createTestHarness();
+    harness.llm.setCompletionError(new Error('端点不可达'));
+
+    // AI 不可用时照样能手工挂上（PATCH 的 contains 不经过 LLM）
+    const created = await createIngredient({ name: '37-手工蚝油' });
+    const id = created.body.ingredient!.id;
+    const target = await createIngredient({ name: '37-手工贝类' });
+    const targetId = target.body.ingredient!.id;
+
+    const patched = await patchIngredient(id, { contains: [targetId] });
+    expect(patched.status).toBe(200);
+    expect(patched.body.ingredient!.contains).toEqual([{ ingredientId: targetId, name: '37-手工贝类' }]);
+
+    // 录入时直接带「含」也照旧
+    const withContains = await createIngredient({ name: '37-录入带含', contains: [targetId] });
+    expect(withContains.status).toBe(201);
+    expect(withContains.body.ingredient!.contains).toEqual([{ ingredientId: targetId, name: '37-手工贝类' }]);
   });
 });

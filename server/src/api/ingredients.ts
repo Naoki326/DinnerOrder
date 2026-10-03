@@ -11,6 +11,7 @@ import {
   ingredientReferences,
   ingredientExists,
   patchIngredient,
+  suggestContainsFor,
   IngredientConflictError,
   IngredientContainsTargetError,
   IngredientNameEmptyError,
@@ -24,10 +25,14 @@ import { MemberNotFoundError } from '../domain/members.js';
 /**
  * 食材字典（issue #34/#35；ADR-0012）：从**只读**变成**能录、能改、能删**。
  *
- * 两个写动作 + 一个台账读口：录入 / 改（PATCH + 台账）/ 删。「含」提议是 #37 的活，不在这里。
+ * 两个写动作 + 一个台账读口：录入 / 改（PATCH + 台账）/ 删。
  *
  * 词汇按 `CONTEXT.md`：**录入食材 / 改食材 / 删食材**，不用「加食材」（那是菜谱行里的动作）、
  * 也不用「编辑食材」（CONTEXT 明写为 Avoid）。
+ *
+ * 除三个写动作 + 两个台账/引用读口之外，本票（#37）加的是**「含」提议**：
+ * `POST /ingredients/contains-suggestion`——只读字典拿候选池、调一次 LLM、回预填建议，
+ * **不落库**。
  */
 const listQuerySchema = z.object({
   /** 搜索词：同时匹配规范名与别名（模糊） */
@@ -70,10 +75,49 @@ const patchSchema = z.object({
   memberId: z.string().min(1).optional(),
 });
 
+/**
+ * 「含」提议入参（issue #37）：**二选一**地指认待建议的那条。
+ *
+ *   * `id`：修订场景（已在字典里那条，id 是权威——名字可能刚在表单里改过）；
+ *   * `name`：新建场景（表单里刚敲的名字，还没进字典）。
+ * 两个都给时以 `id` 为准（领域层判）；一个都不给 → 400，因为没法知道要建议哪条。
+ */
+const containsSuggestionSchema = z
+  .object({
+    name: z.string().trim().min(1, '待建议的食材名不能是空白').max(maxNameLength).optional(),
+    id: z.string().trim().min(1, '食材 id 不能是空白').optional(),
+  })
+  .refine((value) => value.name !== undefined || value.id !== undefined, {
+    message: '要么给食材名（新建），要么给食材 id（修订）',
+    path: ['name'],
+  });
+
 export function registerIngredientRoutes(api: Hono, deps: AppDeps): void {
   api.get('/ingredients', zodValidator('query', listQuerySchema), (c) => {
     const { q } = c.req.valid('query');
     return c.json({ ingredients: listIngredients(deps.db, q) });
+  });
+
+  /**
+   * **「含」提议**（CONTEXT「『含』提议」；ADR-0012「决定六」）：给一条复合调料预填几个
+   * 「可能含」的字典内目标。
+   *
+   * 三条口径（与领域层 `suggestContainsFor` 同源，这里只管 HTTP 形状）：
+   *   * **预填而非写入**：本路由只读字典（拿候选池）与调 LLM，一个字节都不写；
+   *   * **只含字典内条目**：越界目标在 LLM 解析层就被丢掉（不报错、不返回、不落库），
+   *     所以响应的 `targets` 里不可能出现字典外的名字；
+   *   * **降级不是失败**：LLM 用不了时 **200 + `degraded: true` + 空数组**——
+   *     手填这条路不受影响，界面据 `degraded` 把「AI 暂时用不了」与「没有可挂的」说成两句不同的话。
+   *
+   * 修订时给 `id` 但不在字典里 → 404（与其它读口同一形状）；两个都不给 → 400。
+   */
+  api.post('/ingredients/contains-suggestion', zodValidator('json', containsSuggestionSchema), async (c) => {
+    const body = c.req.valid('json');
+    try {
+      return c.json(await suggestContainsFor(deps.db, deps.llm, { name: body.name, id: body.id }));
+    } catch (error) {
+      return ingredientWriteError(c, error);
+    }
   });
 
   /**

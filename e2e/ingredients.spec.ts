@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { ROOT_URL } from './test-env';
+import { LLM_DOWN_URL, ROOT_URL } from './test-env';
 
 /**
  * 食材字典（issue #34/#35；ADR-0012）：从**只读**变成**能录、能改、能删、看得见**。
@@ -30,9 +30,25 @@ function editName(): string {
   return `35-莴笋-${test.info().project.name}`;
 }
 
+/**
+ * 两种空的界面文案关键词：**同一处定义**，这样「两句不是同一句」能被**并置断言**
+ * （每条用例都交叉否定：含自己那句、不含对方那句）。把一次 AI 故障说成「这东西确实不含什么」是错的。
+ */
+const EMPTY_NOTE_KEYWORD = '没有可挂的目标';
+const DEGRADED_NOTE_KEYWORD = 'AI 暂时用不了';
+
 /** 打开设置面板并进食材字典 */
 async function openDictionary(page: Page): Promise<void> {
   await page.goto(`${ROOT_URL}/`);
+  await page.getByTestId('settings-button').click();
+  await expect(page.getByTestId('settings-sheet')).toBeVisible();
+  await page.getByTestId('settings-ingredients-entry').click();
+  await expect(page.getByTestId('ingredient-dictionary-view')).toBeVisible({ timeout: 15_000 });
+}
+
+/** 同上，但打开 **LLM 故障实例**（`E2E_LLM_MODE=fail`，端口 8792）的字典页（降级用例用） */
+async function openDictionaryOnLlmDown(page: Page): Promise<void> {
+  await page.goto(`${LLM_DOWN_URL}/`);
   await page.getByTestId('settings-button').click();
   await expect(page.getByTestId('settings-sheet')).toBeVisible();
   await page.getByTestId('settings-ingredients-entry').click();
@@ -58,10 +74,13 @@ async function findNewIngredient(page: Page): Promise<{ id: string; name: string
 test.afterEach(async ({ page }) => {
   // 收尾：**用自己的删除功能清场**（不直接 SQL）。都是零引用，删得掉；
   // #35 改过的条目也一样——台账是 ON DELETE CASCADE，不阻挡删除（ADR-0012 修订注）。
-  const response = await page.request.get(`${ROOT_URL}/api/ingredients?q=${encodeURIComponent('35-')}`);
-  const { ingredients } = (await response.json()) as { ingredients: { id: string; name: string }[] };
-  for (const ingredient of ingredients.filter((item) => item.name.startsWith('35-'))) {
-    await page.request.delete(`${ROOT_URL}/api/ingredients/${ingredient.id}`);
+  // #37 的「含」提议用例建的临时条目也一并清掉（名字带 `37-`）。
+  for (const prefix of ['35-', '37-']) {
+    const response = await page.request.get(`${ROOT_URL}/api/ingredients?q=${encodeURIComponent(prefix)}`);
+    const { ingredients } = (await response.json()) as { ingredients: { id: string; name: string }[] };
+    for (const ingredient of ingredients.filter((item) => item.name.startsWith(prefix))) {
+      await page.request.delete(`${ROOT_URL}/api/ingredients/${ingredient.id}`);
+    }
   }
   const existing = await findNewIngredient(page);
   if (existing) {
@@ -280,4 +299,163 @@ test('改食材：什么都没改就保存，明确提示「没有任何改动�
   // 台账仍是空的（没写空记录），取消后详情上的「改动台账」说还没改过
   await page.getByTestId(`ingredient-edit-cancel-${id}`).click();
   await expect(page.getByTestId(`ingredient-history-${id}`)).toContainText('还没有改过');
+});
+
+/**
+ * 第九条（#37 主验收面）：「含」提议 → 建议 → 确认后进 chips → **保存才落库**。
+ *
+ * 走产品里的入口：字典页录入表单填一条复合调料（蚝油）→ 点「『含』提议」→ 显示建议 →
+ * 点建议进 chips → 保存。断言最后一刻才落库（点建议之后字典里还没有这条、`contains` 也没挂）。
+ *
+ * 名字带 `37-`（收尾清场按这个前缀），且**同一名字不能含关键词「越界」**（那是探针，见下一条）。
+ */
+test('「含」提议 → 建议 → 确认后进 chips → 保存才落库', async ({ page }) => {
+  await openDictionary(page);
+
+  const name = `37-蚝油-${test.info().project.name}`;
+  await page.getByTestId('ingredient-create-open').click();
+  await expect(page.getByTestId('ingredient-editor-new')).toBeVisible();
+  await page.getByTestId('ingredient-name-new').fill(name);
+
+  // 点「『含』提议」：出现建议（fake 按「蚝油」→ 池子里名字含「贝」的条目）
+  await page.getByTestId('ingredient-contains-suggest-new').click();
+  const suggestions = page.getByTestId('ingredient-contains-suggestions-new');
+  await expect(suggestions).toBeVisible({ timeout: 15_000 });
+  await expect(suggestions).toContainText('可能含');
+
+  // **预填而非写入**：点建议之前，字典里还没有这条复合调料
+  expect(await findIngredientByName(page, name)).toBeUndefined();
+
+  // 点建议 → 进 chips（还没保存）
+  const shellfish = await findIngredientByName(page, '贝类');
+  expect(shellfish).toBeDefined();
+  await page.getByTestId(`ingredient-contains-suggestion-new-${shellfish!.id}`).click();
+  await expect(page.getByTestId(`ingredient-contains-chip-${shellfish!.id}`)).toBeVisible();
+
+  // **仍未落库**（字典里还查不到这条）——提议与确认都只是预填
+  expect(await findIngredientByName(page, name)).toBeUndefined();
+
+  // 保存 → 才落库，且「含」指针真的挂上了
+  await page.getByTestId('ingredient-save-new').click();
+  await expect.poll(async () => (await findIngredientByName(page, name))?.name, { timeout: 15_000 }).toBe(name);
+  const detail = await page.request.get(`${ROOT_URL}/api/ingredients?q=${encodeURIComponent(name)}`);
+  const { ingredients } = (await detail.json()) as { ingredients: { name: string; contains: { ingredientId: string; name: string }[] }[] };
+  const stored = ingredients.find((item) => item.name === name)!;
+  expect(stored.contains).toEqual([{ ingredientId: shellfish!.id, name: '贝类' }]);
+});
+
+/**
+ * 第十条（#37 AC：越界目标被拦下）：让 fake 吐一个字典外的名字 → 页面层也拿不到它。
+ *
+ * fake 的探针：待建议的名字含「越界」时，它会额外吐一个字典外的目标
+ * （`CONTAINS_OUT_OF_POOL_PROBE`，见 `llm/contains-suggestion-schema.ts`）。
+ * 服务端解析层把它丢掉（不返回），所以界面上**不该出现**这个名字；保存后也不落库。
+ */
+test('越界目标被拦下：fake 吐一个字典外的名字，页面上拿不到它', async ({ page }) => {
+  await openDictionary(page);
+
+  const name = `37-越界蚝油-${test.info().project.name}`;
+  await page.getByTestId('ingredient-create-open').click();
+  await expect(page.getByTestId('ingredient-editor-new')).toBeVisible();
+  await page.getByTestId('ingredient-name-new').fill(name);
+
+  await page.getByTestId('ingredient-contains-suggest-new').click();
+  const suggestions = page.getByTestId('ingredient-contains-suggestions-new');
+  await expect(suggestions).toBeVisible({ timeout: 15_000 });
+
+  // 池内的建议（贝类）在；字典外的那条不在（任何 testid / 文案里都不该出现）
+  await expect(page.getByTestId(`ingredient-contains-suggestion-new-${(await findIngredientByName(page, '贝类'))!.id}`)).toBeVisible();
+  await expect(page.getByText('字典里没有这条食材')).toHaveCount(0);
+
+  // 服务端响应里也没有它（第二道网）
+  const response = await page.request.post(`${ROOT_URL}/api/ingredients/contains-suggestion`, { data: { name } });
+  const body = (await response.json()) as { targets: { name: string }[]; degraded: boolean };
+  expect(body.degraded).toBe(false);
+  expect(body.targets.map((target) => target.name)).not.toContain('字典里没有这条食材');
+  expect(body.targets.some((target) => target.name === '贝类')).toBe(true);
+});
+
+/**
+ * 第十一条（#37 AC：两种空是两句不同的话）：`degraded: false` + 空 =「没有可挂的」。
+ *
+ * 用一个 fake 认不出的名字（池子里没有对得上的条目）→ 服务端回 `degraded: false` + 空数组，
+ * 界面说「没有可挂的目标」，并提示可先建那一条。
+ */
+test('degraded: false + 空 → 「没有可挂的」并提示可先建那一条', async ({ page }) => {
+  await openDictionary(page);
+
+  // 名字不含任何 fake 的关键词 → 建议恒为空（degraded: false）
+  const name = `37-无建议的调料-${test.info().project.name}`;
+  await page.getByTestId('ingredient-create-open').click();
+  await page.getByTestId('ingredient-name-new').fill(name);
+  await page.getByTestId('ingredient-contains-suggest-new').click();
+
+  const empty = page.getByTestId('ingredient-contains-suggest-empty-new');
+  await expect(empty).toBeVisible({ timeout: 15_000 });
+  await expect(empty).toContainText(EMPTY_NOTE_KEYWORD);
+  await expect(empty).toContainText('贝类');
+  // 这一句与降级那句**不是同一句**：交叉否定（含自己那句、不含对方那句）
+  await expect(empty).not.toContainText(DEGRADED_NOTE_KEYWORD);
+  await expect(page.getByTestId('ingredient-contains-suggest-degraded-new')).toHaveCount(0);
+});
+
+/**
+ * 第十二条（#37 AC：LLM 不可用）：跑在 `E2E_LLM_MODE=fail` 的实例上（端口 8792）。
+ *
+ * 点「『含』提议」→ **不报错**（200 + degraded），界面说「AI 暂时用不了，你先自己挂」，
+ * 且**不显示任何建议、也不显示「没有建议」**。手填照常：从搜索挑一条挂上、照旧能保存——
+ * AI 不可用不拦保存。
+ *
+ * 这条用的是**独立库**（`data/e2e-llm-down.db`，与根实例不是同一个）：根实例的 `afterEach` 打的是
+ * `ROOT_URL`，管不到它，所以**本条用例自己在 `finally` 里清场**（断言中途失败也不留残留）。
+ */
+test('LLM 不可用 → 「AI 暂时用不了，你先自己挂」，且不显示任何建议、也不显示「没有建议」', async ({ page }) => {
+  await openDictionaryOnLlmDown(page);
+
+  const name = `37-降级蚝油-${test.info().project.name}`;
+
+  try {
+    // 服务端那一侧先声明：200 + degraded: true + 空数组（不报错）
+    const response = await page.request.post(`${LLM_DOWN_URL}/api/ingredients/contains-suggestion`, { data: { name } });
+    expect(response.ok()).toBe(true);
+    const body = (await response.json()) as { targets: unknown[]; degraded: boolean };
+    expect(body.degraded).toBe(true);
+    expect(body.targets).toEqual([]);
+
+    // 界面上：录入表单里点「『含』提议」→ 降级那句出现
+    await page.getByTestId('ingredient-create-open').click();
+    await page.getByTestId('ingredient-name-new').fill(name);
+    await page.getByTestId('ingredient-contains-suggest-new').click();
+
+    const degraded = page.getByTestId('ingredient-contains-suggest-degraded-new');
+    await expect(degraded).toBeVisible({ timeout: 15_000 });
+    await expect(degraded).toContainText(DEGRADED_NOTE_KEYWORD);
+    // 与「没有可挂的」**不是同一句**：交叉否定（含自己那句、不含对方那句）
+    await expect(degraded).not.toContainText(EMPTY_NOTE_KEYWORD);
+    // 建议与「没有建议」都不出现（后者会把一次故障说成「这东西确实不含什么」）
+    await expect(page.getByTestId('ingredient-contains-suggest-empty-new')).toHaveCount(0);
+    await expect(page.getByTestId('ingredient-contains-suggestions-new')).toHaveCount(0);
+
+    // 手填照常：AI 不可用不拦保存——从搜索挑一条（贝类）挂上，保存成功。
+    await page.getByTestId('ingredient-contains-search-new').fill('贝类');
+    await page.getByTestId('ingredient-contains-option-shellfish').click();
+    await expect(page.getByTestId('ingredient-contains-chip-shellfish')).toBeVisible();
+    await page.getByTestId('ingredient-save-new').click();
+    await expect(page.getByTestId('ingredient-editor-new')).toHaveCount(0, { timeout: 15_000 });
+
+    // 服务端真的收下了（含指针挂上了）
+    const savedResponse = await page.request.get(`${LLM_DOWN_URL}/api/ingredients?q=${encodeURIComponent(name)}`);
+    const { ingredients } = (await savedResponse.json()) as {
+      ingredients: { id: string; name: string; contains: { ingredientId: string; name: string }[] }[];
+    };
+    const saved = ingredients.find((item) => item.name === name)!;
+    expect(saved.contains).toEqual([{ ingredientId: 'shellfish', name: '贝类' }]);
+  } finally {
+    // 收尾（独立库，断言失败也清）：用删除口把自己建的这条扫掉
+    const response = await page.request.get(`${LLM_DOWN_URL}/api/ingredients?q=${encodeURIComponent('37-')}`);
+    const { ingredients } = (await response.json()) as { ingredients: { id: string; name: string }[] };
+    for (const ingredient of ingredients.filter((item) => item.name.startsWith('37-'))) {
+      await page.request.delete(`${LLM_DOWN_URL}/api/ingredients/${ingredient.id}`);
+    }
+  }
 });
