@@ -1,16 +1,19 @@
 import { Sheet } from './Sheet';
+import { formatNutrition as format } from './ingredientVocabulary';
 import { useSlotNutrition, type MenuNutrition } from '../api/nutrition';
 import styles from './NutritionSheet.module.css';
 
 /**
  * 整餐营养弹层（本票）：点餐槽卡上的「📊 营养」打开。
  *
- * 三件必须说清的事（都不是装饰）：
+ * 四件必须说清的事（都不是装饰）：
  * 1. **口径是整餐总量**，不是每人份——分母是「按 N 人算（Σ系数 ×）」。
  *    与旁边「共 N g」的整餐生重是同一份量，所以数字对得上；想换算成人均就再除一下。
- * 2. **缺数据的食材要看得见**（`missingIngredients`）：合计是「部分食材的合计」，
- *    不说出来家人会以为这餐就这么点热量。
- * 3. **是估算不是医学建议**（`nutritionSource`）：成分表是平均值、份量是生重、未计烹饪损耗。
+ * 2. **缺数据的食材要看得见**（`missingIngredients`）：那几项**没算进合计**，所以数字确实偏低。
+ * 3. **含估算的食材要说成另一句话**（`estimatedIngredients`；ADR-0013；#38）：那几项**已经算进去了**，
+ *    数字是**参考**而不是偏低。两句措辞与后果都不同，**不得合并**（CONTEXT「部分食材的合计」）。
+ * 4. **是估算不是医学建议**（`nutritionSource`）：成分表是平均值/读数、份量是生重、未计烹饪损耗；
+ *    含估算项时服务端已经换成另一种措辞（那句「取成分表平均值」在那种读数上是假话）。
  */
 export function NutritionSheet({ slotId, onClose }: { slotId: string; onClose: () => void }) {
   const query = useSlotNutrition(slotId, true);
@@ -72,6 +75,21 @@ function NutritionBody({ nutrition }: { nutrition: MenuNutrition }) {
         </div>
       ) : null}
 
+      {/*
+       * 「含估算」是**另一句话**（ADR-0013「决定二」；#38）：这些项**已经进合计**，
+       * 数字是参考而不是偏低。把两者合并成一句会吓错人（或把真实缺失藏起来）。
+       * 两个块都各自点名，同一项不会既在缺数据里又在估算里（服务端的判据是互斥的）。
+       */}
+      {nutrition.estimatedIngredients.length > 0 ? (
+        <div className={styles.estimated} data-testid="nutrition-estimated">
+          <b>有食材的营养是估算的</b>
+          <div>
+            {nutrition.estimatedIngredients.map((item) => item.name).join('、')} —— 这几项是估算的，数字是参考
+            （已算进上面的数字，出处见各食材的 source）。
+          </div>
+        </div>
+      ) : null}
+
       <div className={styles.dishes} data-testid="nutrition-dishes">
         {nutrition.dishes.map((dish) => (
           <div key={dish.recipeId} className={styles.dish} data-testid={`nutrition-dish-${dish.recipeId}`}>
@@ -81,7 +99,9 @@ function NutritionBody({ nutrition }: { nutrition: MenuNutrition }) {
             </div>
             <div className="sub">
               蛋白 {format(dish.proteinG)} g · 脂肪 {format(dish.fatG)} g · 碳水 {format(dish.carbG)} g
-              {dish.partial ? ' · 这道里有食材没数据' : ''}
+              {/* 两种情形分开说：缺数据是「没数据」（没进合计），含估算是「有估算」（进了合计） */}
+              {dish.missing ? ' · 这道里有食材没数据' : ''}
+              {dish.estimated ? ' · 这道里有食材的营养是估算的' : ''}
             </div>
           </div>
         ))}
@@ -103,11 +123,6 @@ function Macro({ label, value, testId }: { label: string; value: number; testId:
       </div>
     </div>
   );
-}
-
-/** 一位小数就够（营养是估算值，展示更多位是假精度）；整数时不带小数点 */
-export function format(value: number): string {
-  return Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);
 }
 
 /** Σ系数展示到 3 位小数，抹掉浮点尾巴（1.7560000000000002 这种） */

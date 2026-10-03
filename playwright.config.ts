@@ -46,11 +46,14 @@ export default defineConfig({
     // Testing Decisions「两版式：手机与平板各跑一次入口路径」而写，且**名字带 project 后缀**
     // （`uniqueSuffix` 含 `test.info().project.name`）——不会有 `recipe-library.spec.ts` 那种
     // 「固定名字跨 project 命中上一轮」的干扰。
+    //
+    // `nutrition-estimate.spec.ts`（#38）**也在白名单里**：issue 的 AC 明写「手机 / 平板两版式都能用」
+    // （四项营养的录入表单最容易在窄屏上吃穿），且它同样**名字带 project 后缀 + 自己清场**。
     { name: 'phone', use: { ...devices['Desktop Chrome'], viewport: E2E.viewport } },
     {
       name: 'tablet',
       use: { ...devices['Desktop Chrome'], viewport: E2E.tabletViewport },
-      testMatch: /(tablet|views|smoke|review|ingredients|recipe-editor-create-ingredient)\.spec\.ts/,
+      testMatch: /(tablet|views|smoke|review|ingredients|recipe-editor-create-ingredient|nutrition-estimate)\.spec\.ts/,
     },
   ],
   webServer: [

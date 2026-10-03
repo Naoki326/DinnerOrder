@@ -589,6 +589,9 @@
       还有芝麻 10 / 鸡肉 5 / 芥末 / 白葡萄酒 / 小苏打 / 蒜粉 / 姜粉。013 的头部只谈了「含」指针要
       一起挂，没提营养，所以这批漏得很安静。
     * **食材字典开放写入后，每条新录的食材默认也缺营养**——不补的话缺口会持续增长。
+      ✅ **已由 #38 给出路**（2026-10-03）：录入时可以用「估算营养」预填四项（人确认才落库，
+      `source` 自证是估算）。但**这是估算不是读数**，所以 136 条存量缺口与市面常见调料仍靠
+      **人工补录**（归 #39）——两条路刻意分开（估算那条标着估算，人工那条是查来的）。
   * 高频缺口现状（按引用它的菜数）：**蚝油 50**（原先记 46）/**八角 27**（原 24）/**香叶 23**（原 22）
     /辣椒粉 17/黑胡椒 15/孜然 14/**猪肉 13**/桂皮 11/芝麻 10。
     蚝油仍然是**最值得补**的一条（它糖高、盐高，漏掉它会让用了蚝油的菜热量偏低；
@@ -603,11 +606,18 @@
   * 新录食材的营养走 **LLM 估算 + 人确认**（ADR-0013）——注意它**部分修正了 ADR-0004**：
     估算值**进合计**，代价是 `nutritionSource` 那句“食材营养取《中国食物成分表》平均值”
     在含估算项的读数上是**假话**，必须按「本次读数里有没有估算项」分两种措辞。
+    ✅ **已由 #38 落地**（2026-10-03）：`MenuNutrition.nutritionSource` 两种措辞在
+    `domain/nutrition.ts` 的 `NUTRITION_SOURCE_NOTE` / `..._ESTIMATED`；界面拿服务端那句，
+    前端不写死口径。
   * **ADR-0013 的第二条决定必须落地，否则「数字偏低」的信号会静默消失**：
     缺数据的食材一旦都有了估算，`partial` 会变 `false`、`missingIngredients` 会变空，
     界面**不再说**「合计偏低」——而差额并没消失，只是从「已知的缺失」变成了「不知道的误差」。
     所以「缺数据」与「含估算」要**分开报**（措辞与后果都不同），详见 CONTEXT 的「部分食材的合计」。
     已有断言会因此变红，是预期内的：`nutrition.test.ts` 那两条拿蚝油当缺数据样本的用例。
+    ✅ **已由 #38 落地**：`partial` = 「合计不是全由读数构成」，新增 `estimatedIngredients`
+    （与 `missingIngredients` 并列）与 `DishNutrition.missing` / `.estimated`；
+    `nutrition.test.ts` 那两条已按新语义改准（**不是删断言**），界面两句分开说
+    （`nutrition-estimated` / `nutrition-missing`，见 `e2e/nutrition-estimate.spec.ts`）。
   补充说明：本表的数字来自**平均食物成分**（同一食材不同季节/品种/部位差别不小），
   份量是**生重**，**未计烹饪损耗**——这个口径已在界面（`nutrition-note`）与服务端
   （`MenuNutrition.nutritionSource`）两处如实标注，不得在后续票里改成「精确营养」之类措词。
@@ -896,6 +906,35 @@
   已有「折叠的调料在 `grocery-staples` 里」的那组断言），或改为只在展开摘要后断言。
   **不在 #34 修**：属买菜清单票（#23）的范围，且 #34 明确要求「遇到超出本工单 AC 的存量 bug
   只报不修」。
+
+## 归属 #38（食材估算营养：AI 预填、人确认、标明估算）
+
+- ✅ **本票已交付**（2026-10-03）。实现面：
+  * LLM 层 `server/src/llm/nutrition-estimate-schema.ts`（+19 条单测）：prompt 标记、池内参照校验、
+    两种空（降级 / 估不出来）分开、`estimatedNutritionSource` 固定前缀、确定性 fake；
+  * 领域 `server/src/domain/ingredient-nutrition.ts`：池子（**只含非估算读数**）、写入口、
+    `NutritionLockedError`（已有读数拒收估算）/ `NutritionReferenceError`（参照必须真有读数）；
+  * 路由 `POST /api/ingredients/nutrition-suggestion`（预填、不落库）+ `nutrition` 字段接进
+    `POST /api/ingredients` 与 `PATCH /api/ingredients/:id`；
+  * 读数 `server/src/domain/nutrition.ts`：`estimatedIngredients` / `DishNutrition.estimated` /
+    `MenuNutrition.partial` 语义扩写 + `nutritionSource` 两种措辞；
+  * 界面：字典页录入/改表单的四项输入 + 「估算营养」按钮（`NutritionField`）、详情卡只读展示
+    （估算值 vs 成分表读数）、`NutritionSheet` 的两句话（`nutrition-estimated` / `nutrition-missing`）；
+  * 测试：`api/ingredient-nutrition.test.ts`（18 条）+ `e2e/nutrition-estimate.spec.ts`（14 条，
+    phone/tablet 两 project 都跑）。
+
+- **本票新增的三个口径已记进 ADR-0013 的「实施注记」**（数字由模型给但参照必须过池内校验、
+  四项 all-or-nothing、改食材时四项原样提交不算改动）——它们超出 ADR 原文，后来者需要先读到。
+
+- **`ingredient_nutrition` 的 `source` 是唯一判定处，但线上形状多了一个 `estimated` 布尔**
+  （来源：本票实施）。判定仍然只有服务端一处（`isEstimatedNutritionSource`，靠固定前缀），
+  但字典条目与每餐营养的线上形状把它作为字段下发给前端——**前端不解析 source 文本**。
+  日后若要改前缀，改 `ESTIMATED_SOURCE_PREFIX` 一处即可，但**已有行的 source 不会跟着变**
+  （它们是真落库的文本），所以要改前缀就必须配套一次数据迁移。
+
+- **估算的参照池是「所有非估算读数行」，不是「同类食材」**（来源：本票实施）。
+  prompt 把整张读数表（约 140 条）都给模型，由它挑最接近的一条。字典变到上千条时
+  prompt 会变大，届时该按名字/类别做检索——但那属于优化，不在本票范围。
 
 ## 归属 #36（菜谱编辑器里搜不到食材，就地新建）
 

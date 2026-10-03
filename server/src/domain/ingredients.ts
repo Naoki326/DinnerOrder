@@ -1,5 +1,6 @@
 import type { Db } from '../db/index.js';
-import type { Ingredient, IngredientRef } from '../wire-types.js';
+import type { Ingredient, IngredientNutrition, IngredientRef } from '../wire-types.js';
+import { ingredientNutritionRow, type NutritionTableRow } from './ingredient-nutrition.js';
 
 // 线上形状定义在 wire-types.ts（前端也从那里取）
 export type { Ingredient };
@@ -77,6 +78,8 @@ export function listIngredients(db: Db, query?: string): Ingredient[] {
   }
 
   const containsByIngredient = containsRefs(db, rows.map((row) => row.id));
+  // 营养（#38）：一次把这一批的营养行取齐（与其余三张附属表同一路数）
+  const nutritionByIngredient = nutritionRefs(db, rows.map((row) => row.id));
 
   return rows.map((row) => ({
     id: row.id,
@@ -84,7 +87,25 @@ export function listIngredients(db: Db, query?: string): Ingredient[] {
     aliases: aliasesByIngredient.get(row.id) ?? [],
     seasonMonths: monthsByIngredient.get(row.id) ?? [],
     contains: containsByIngredient.get(row.id) ?? [],
+    nutrition: nutritionByIngredient.get(row.id) ?? null,
   }));
+}
+
+/**
+ * 食材的营养行（每 100 g 可食部）——`null` = 暂无（既有的合法状态）。
+ *
+ * 行→线上形状的映射收在 `domain/ingredient-nutrition.ts` 的 `ingredientNutritionRow`（那边拥有这张表）：
+ * 两处各写一份就会在「`estimated` 怎么算」这类细节上漂（ADR-0013「决定一」的判定只有一处）。
+ */
+function nutritionRefs(db: Db, ingredientIds: string[]): Map<string, IngredientNutrition> {
+  const placeholders = ingredientIds.map(() => '?').join(', ');
+  const rows = db
+    .prepare(
+      `SELECT ingredient_id, energy_kcal, protein_g, fat_g, carb_g, source, note
+         FROM ingredient_nutrition WHERE ingredient_id IN (${placeholders})`,
+    )
+    .all(...ingredientIds) as NutritionTableRow[];
+  return new Map(rows.map((row) => [row.ingredient_id, ingredientNutritionRow(row)]));
 }
 
 /**

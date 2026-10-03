@@ -209,3 +209,21 @@
 .noteInfo {
   width: 100%;
 }
+
+/*
+ * 估算营养（issue #38）：四项输入一行两列（手机上不挤，平板上也不拉得太长）。
+ * `minmax(0, 1fr)` 而不是 `1fr`：默认的 `min-width: auto` 会让长内容把格子撑破（#31 的横向溢出教训）。
+ */
+.nutritionGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.nutritionCell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}

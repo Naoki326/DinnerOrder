@@ -139,6 +139,14 @@ export interface Ingredient {
    * 这里只给**直接**指针；递归展开（含的含）由服务端在菜谱忌口推导里做，前端要的是一次展开后的结果。
    */
   contains: IngredientRef[];
+  /**
+   * 这条食材的每 100 g 营养（issue #38）；`null` = **暂无营养**（既有的合法状态，不是缺录）。
+   *
+   * 字典页拿它区分三种情况：**有读数**（`source` 指向成分表，估算不许改写）、
+   * **含估算**（`estimated: true`）、**暂无**（null）。界面不自己解析 source 前缀——
+   * 「是不是估算」的判定只有服务端一处（ADR-0013「决定一」），前端不另立第二套判据。
+   */
+  nutrition: IngredientNutrition | null;
 }
 
 // ---------------------------------------------------------------- 食材字典维护（issue #34；ADR-0012）
@@ -162,6 +170,74 @@ export interface IngredientCreate {
    * 出现字典外的 id → 400（**不静默丢弃**）。缺省空数组。
    */
   contains?: string[];
+  /**
+   * **估算营养**（CONTEXT「估算营养」；ADR-0013；issue #38）：人确认过之后的四项营养。
+   * 不传 = 这条食材暂时没有营养（既有的合法状态，不拦保存）。
+   */
+  nutrition?: IngredientNutritionInput;
+}
+
+/**
+ * 一项「人确认过」的营养（录入/改食材里提交的四项）。
+ *
+ * **四项要么全给、要么不给**：只有部分项有值时会得到一行半真半假的营养——合计里那一项按
+ * 半份算、界面也说不出是「缺」还是「有」。所以路由层的 Zod 把它钉成 all-or-nothing
+ * （见 `api/ingredients.ts` 的 `nutritionInputSchema`）。
+ *
+ * `reference` 是**参照的成分表条目 id**（`NutritionEstimate.reference.ingredientId`）——
+ * 数字可以是人改过的，但出处必须是**真读数**：指向一条没有成分表读数的条目 → 400
+ * （ADR-0013「决定一」：`source` 要能回查到参照的成分表条目）。
+ */
+export interface IngredientNutritionInput {
+  energyKcal: number;
+  proteinG: number;
+  fatG: number;
+  carbG: number;
+  /** 参照的成分表条目 id（必须是**已有读数**的字典条目） */
+  reference: string;
+  /**
+   * 产出这份估算的**模型标识**（估算提议的响应里那个 `model`）。
+   *
+   * 为什么不直接用服务端配置里的模型名：ADR-0013 要求 source 写「LLM 估算（模型 X）」，
+   * 而 X 应该是**真的回了这一份**的那个模型（端点可以在响应里报一个与配置不同的名字）。
+   * 不传就回落到服务端配置的模型名（手填四项的路径没有提议，也就没有更准的名字可用）。
+   * 与 `memberId` 同一性质：客户端送来的元数据，只影响那一行文本，不影响任何判定。
+   */
+  model?: string;
+}
+
+/**
+ * `PATCH /api/ingredients/:id` 的入参：**改食材**（CONTEXT「改食材」；issue #35）。
+ *
+ * 部分更新：没传的块保持原样（与 `ProfilePatch` / `RecipePatch` 同一纪律）。传了的块**整体替换**
+ * ——手机上的编辑是一次性提交完整清单（别名/时令/含都是清单）。
+ *
+ * **不是 `PUT`**：改食材是部分更新、且**每次改都留痕**；与 `PATCH /recipes/:id`（修订）同一思路。
+ * 一个字段都没变时服务端报 409（`no_changes`）——「点开看了看又保存」不写空台账。
+ * 营养（#38）也按这条判：四项原样提交同样不算改动。
+ */
+export interface IngredientPatch {
+  /** 规范名；trim 后非空，全库唯一（撞别的规范名或别名都是 409） */
+  name?: string;
+  /** 别名清单（整体替换；补/去都靠它） */
+  aliases?: string[];
+  /** 时令月份 1–12（整体替换；传空数组 = 回到「四季有售」） */
+  seasonMonths?: number[];
+  /**
+   * 隐性忌口「含」指针目标（食材 id 数组，整体替换）。目标必须在字典里（含自己 → 400），
+   * 出现字典外的 id → 400、**不静默丢弃**。传空数组 = 去掉全部「含」指针。
+   */
+  contains?: string[];
+  /**
+   * **估算营养**（issue #38）：重估或手改这一条的营养。
+   *
+   * **已有成分表读数的食材不许被估算改写**（ADR-0013「决定三」）：那类行命中时服务端报
+   * 409 `nutrition_locked`（明确报错，不是静默忽略）。估算行本身（`source` 带估算前缀）
+   * 与还没有营养行的食材都可以写。
+   */
+  nutrition?: IngredientNutritionInput;
+  /** 谁改的（界面送当前身份，进台账）；不传 = 不记名 */
+  memberId?: string;
 }
 
 /** 冲突对象的指认：id + 规范名（界面据此给出「用这条」） */
@@ -210,30 +286,6 @@ export interface IngredientReferencesResponse {
   references: IngredientReferenceCount[];
 }
 
-/**
- * `PATCH /api/ingredients/:id` 的入参：**改食材**（CONTEXT「改食材」；issue #35）。
- *
- * 部分更新：没传的块保持原样（与 `ProfilePatch` / `RecipePatch` 同一纪律）。传了的块**整体替换**
- * ——手机上的编辑是一次性提交完整清单（别名/时令/含都是清单）。
- *
- * **不是 `PUT`**：改食材是部分更新、且**每次改都留痕**；与 `PATCH /recipes/:id`（修订）同一思路。
- * 四个字段一个都没变时服务端报 409（`no_changes`）——「点开看了看又保存」不写空台账。
- */
-export interface IngredientPatch {
-  /** 规范名；trim 后非空，全库唯一（撞别的规范名或别名都是 409） */
-  name?: string;
-  /** 别名清单（整体替换；补/去都靠它） */
-  aliases?: string[];
-  /** 时令月份 1–12（整体替换；传空数组 = 回到「四季有售」） */
-  seasonMonths?: number[];
-  /**
-   * 隐性忌口「含」指针目标（食材 id 数组，整体替换）。目标必须在字典里（含自己 → 400），
-   * 出现字典外的 id → 400、**不静默丢弃**。传空数组 = 去掉全部「含」指针。
-   */
-  contains?: string[];
-  /** 谁改的（界面送当前身份，进台账）；不传 = 不记名 */
-  memberId?: string;
-}
 
 /** `PATCH /api/ingredients/:id` 的响应：改完的完整食材（与列表接口同一形状） */
 export interface IngredientPatchResponse {
@@ -1028,8 +1080,16 @@ export interface DishNutrition {
   proteinG: number;
   fatG: number;
   carbG: number;
-  /** 这道菜里有食材没有营养数据（界面上说不说得出「为什么看起来偏低」全靠它） */
+  /**
+   * 这道菜的合计**不是全由成分表读数构成**（CONTEXT「部分食材的合计」；ADR-0013）。
+   * 两种情形**分开报**：`missing`（缺数据，那一项没进合计、数字确凿地偏低）与
+   * `estimated`（含估算，已进合计、数字是参考）。
+   */
   partial: boolean;
+  /** 这道菜里有食材**完全没有**营养行（没进合计 → 合计偏低） */
+  missing: boolean;
+  /** 这道菜里有食材的营养是**估算值**（已进合计 → 数字是参考，不是偏低） */
+  estimated: boolean;
 }
 
 /**
@@ -1054,9 +1114,30 @@ export interface MenuNutrition {
   /**
    * 有食材没有营养数据时非空：整餐的四项合计是「**部分食材**的合计」。
    * 逐条给出是哪些食材（同名的会合并），界面据此把话说出来。
+   *
+   * **语义不变**（ADR-0013「决定二」）：只指**完全没有**营养行的食材——那一项**没进合计**，
+   * 数字确凿地偏低。含估算的项**不在这里**（它们已进合计，见 `estimatedIngredients`）。
    */
   missingIngredients: { ingredientId: string; name: string }[];
-  /** 这些食材只是**没录进本表**，不代表它们没有营养——`source` 是数据出处，供界面折叠展示 */
+  /**
+   * 这一餐里**营养是估算值**的食材（ADR-0013「决定二」新增的报法；issue #38）。
+   *
+   * 与 `missingIngredients` 分开报的理由是两者**后果不同**：缺数据是「没算进上面的数字，
+   * 所以合计偏低」；含估算是「已经算进去了，数字是参考」。把两者合并成一句会吓错人
+   * （或把真实缺失藏起来）——措辞见 CONTEXT「部分食材的合计」。
+   */
+  estimatedIngredients: { ingredientId: string; name: string }[];
+  /**
+   * 这一餐的合计**不是全由成分表读数构成**（ADR-0013「决定二」把 `partial` 的语义从
+   * 「有食材没数据」扩成这个）。缺数据与含估算都让它为真，两者靠上面两个清单区分。
+   */
+  partial: boolean;
+  /**
+   * 这些食材只是**没录进本表**，不代表它们没有营养——`source` 是数据出处，供界面折叠展示。
+   *
+   * 含估算项的读数上这句是**两种措辞**之一（ADR-0013：现在那句「食材营养取《中国食物成分表》
+   * 平均值」在含估算的读数上是假话）。
+   */
   nutritionSource: string;
 }
 
@@ -1069,6 +1150,11 @@ export interface IngredientNutrition {
   carbG: number;
   /** 逐行出处（哪个平台的哪个食物名、原始数值） */
   source: string;
+  /**
+   * 这一行是**估算值**还是成分表读数（ADR-0013「决定一」：判定靠 `source` 的固定前缀，
+   * 但那个判定只在服务端做一次，线上形状把它作为字段给出来）。
+   */
+  estimated: boolean;
   note: string | null;
 }
 
@@ -1096,6 +1182,45 @@ export interface RecipeDetailResponse {
 /** `GET /api/slots/:id/nutrition` 的响应 */
 export interface MenuNutritionResponse {
   nutrition: MenuNutrition;
+}
+
+/**
+ * `POST /api/ingredients/nutrition-suggestion` 的入参：**估算营养**
+ * （CONTEXT「估算营养」；ADR-0013；issue #38）。
+ *
+ * 只有一件事要问：**哪条食材**（按规范名——估算发生在录入的那一刻，那时它还没有 id）。
+ *
+ * 名字带 `Suggestion` 是为了与 `llm/nutrition-estimate-schema.ts` 的 `NutritionEstimateRequest`
+ * 分开：那个是**领域层**的入参（名字 + 从库里现读的成分表读数池子），这个是**线上**的入参（只有名字）。
+ */
+export interface NutritionSuggestionRequest {
+  /** 待估算的食材规范名（表单里刚敲的名字） */
+  name: string;
+}
+
+/**
+ * `POST /api/ingredients/nutrition-suggestion` 的响应：**预填的估算**，不是写入。
+ *
+ * `degraded` 与 `estimate === undefined` 是**两件事**（与「含」提议同一口径）：
+ *   * `estimate` 有值 = AI 估出来了（人看一眼、改一改，确认才落库）；
+ *   * `estimate === undefined` + `degraded: false` = AI 看过了、这条估不出来；
+ *   * `degraded: true` = AI 这次用不了（四种空与前者分得开，界面说两句不同的话）。
+ *
+ * `model` 只在估出来时给：落库行的 `source` 要写上它（ADR-0013「决定一」）。
+ */
+export interface NutritionEstimateResponse {
+  estimate?: {
+    energyKcal: number;
+    proteinG: number;
+    fatG: number;
+    carbG: number;
+    /** 参照的成分表条目（池内条目：id + 成分表食物名） */
+    reference: IngredientRef;
+  };
+  /** 这一次是不是「AI 用不了」（降级不是失败：仍返回 200） */
+  degraded: boolean;
+  /** 模型标识（写进落库行的 source；估算不出来时不给） */
+  model?: string;
 }
 
 /** 互换表里的一条：`grams` 的本品等价于同组 `anchorGrams` 的 `anchorName` */

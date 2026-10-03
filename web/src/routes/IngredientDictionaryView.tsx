@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
-import type { Ingredient, IngredientConflict, IngredientContainsSuggestionRequest, IngredientEditRecord, IngredientRef, IngredientReferenceCount, IngredientReferenceKind } from '@dinnerorder/server/types';
+import type { Ingredient, IngredientConflict, IngredientContainsSuggestionRequest, IngredientEditRecord, IngredientNutrition, IngredientRef, IngredientReferenceCount, IngredientReferenceKind } from '@dinnerorder/server/types';
 import {
   IngredientWriteError,
   useAllIngredients,
@@ -10,9 +10,11 @@ import {
   useIngredientEdits,
   useIngredientReferences,
   useIngredients,
+  useNutritionSuggestion,
   usePatchIngredient,
+  type IngredientNutritionInput,
 } from '../api/ingredients';
-import { aliasesForDisplay, parseAliases } from '../components/ingredientVocabulary';
+import { aliasesForDisplay, formatNutrition, parseAliases } from '../components/ingredientVocabulary';
 import { SectionedLayout } from '../components/SectionedLayout';
 import { useIdentity } from '../identity';
 import { useLayout } from '../layout';
@@ -28,7 +30,7 @@ import styles from './IngredientDictionaryView.module.css';
  *   * **录入只有一个必填项**（ADR-0012「决定二」）：别名、时令月份、「含」指针都在同一张表单里、
  *     都可不填。不填时令 = 四季有售（不写月份行）。
  *   * **改（#35）走部分更新 + 台账**：详情卡上能改规范名、别名、时令月份、「含」指针；
- *     四个字段一个都没变时服务端报 409，界面把那句「这次提交没有任何改动」原样说出来，
+ *     一个字段都没变时服务端报 409，界面把那句「这次提交没有任何改动」原样说出来，
  *     不假装成功。改名之后菜谱/买菜清单/忌口显示全跟着换说法（无名称快照，本页不做同步）。
  *   * **删只在零引用时给按钮**：有引用时给的是**说明**（被哪几类引用、各几条）而不是一个
  *     按下去必报 409 的按钮——与菜谱库对退役/草稿「把下一步说出来」的既有口径一致。
@@ -239,7 +241,7 @@ function IngredientRow({ ingredient, onOpen }: { ingredient: Ingredient; onOpen:
 /**
  * 详情卡：别名 / 时令 / 「含」指针 + **改食材**（#35）+ 改动台账 + 删食材。
  *
- * 默认是只读的展示；点「改食材」才切到编辑表单（四个字段都可改，整体提交）。这样既保留了
+ * 默认是只读的展示；点「改食材」才切到编辑表单（各字段都可改，整体提交）。这样既保留了
  * 「看一眼就知道它是什么」的只读态，又不让一个常驻的表单把详情卡撑得难看。
  *
  * **零引用才给删除按钮**；有引用时给说明（被哪几类引用、各几条）——「只能改名」是下一步，
@@ -342,6 +344,8 @@ function IngredientDetailCard({
         )}
       </div>
 
+      <NutritionReadout ingredient={ingredient} />
+
       {/* 改食材（#35）：改规范名 / 别名 / 时令 / 「含」，每次改留一笔台账 */}
       <div className={styles.field}>
         <span className={styles.label}>改食材</span>
@@ -413,7 +417,7 @@ function IngredientDetailCard({
 }
 
 /**
- * 改食材表单（issue #35）：四个字段都可改，提交时整体送给 `PATCH /ingredients/:id`。
+ * 改食材表单（issue #35）：各字段都可改（含 #38 的四项营养），提交时整体送给 `PATCH /ingredients/:id`。
  *
  * 与录入表单同形，但预填当前值、且**每个字段都可以是「没动」**——四个都没动时服务端报 409
  * `no_changes`，这里把那句话原样显示（不假装成功，也不写空台账）。
@@ -437,6 +441,7 @@ function EditIngredientForm({
     ingredient.contains.map((target) => ({ id: target.ingredientId, name: target.name })),
   );
   const [containsQuery, setContainsQuery] = useState('');
+  const [nutrition, setNutrition] = useState<NutritionDraft>(draftFromNutrition(ingredient.nutrition));
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<IngredientConflict | null>(null);
   const patch = usePatchIngredient();
@@ -449,6 +454,15 @@ function EditIngredientForm({
   const submit = async (): Promise<void> => {
     setError(null);
     setConflict(null);
+    // 与录入同一条口径：四项只填了一半就**当场拦下**（不静默丢）
+    if (nutritionInput(nutrition) === null) {
+      setError(
+        nutrition.reference
+          ? '营养四项要么全填、要么全空——只填一部分保存不了。'
+          : '营养四项要先点一下「估算营养」拿到出处，或者全部清空（暂缺也能保存）。',
+      );
+      return;
+    }
     try {
       await patch.mutateAsync({
         id: ingredient.id,
@@ -457,6 +471,10 @@ function EditIngredientForm({
           aliases: parseAliases(aliasesText),
           seasonMonths: months,
           contains: contains.map((item) => item.id),
+          // 四项没动就不提交这一块（否则会多写一笔空台账）
+          ...(nutritionChanged(ingredient.nutrition, nutrition) && nutritionInput(nutrition)
+            ? { nutrition: nutritionInput(nutrition)! }
+            : {}),
           ...(current ? { memberId: current.id } : {}),
         },
       });
@@ -476,7 +494,7 @@ function EditIngredientForm({
     <div data-testid={`ingredient-editor-${ingredient.id}`}>
       <div className="spread">
         <b>改食材</b>
-        <span className="sub">四个字段没变的话会提示「没有任何改动」</span>
+        <span className="sub">什么都没改的话会提示「没有任何改动」</span>
       </div>
 
       <div className={styles.field}>
@@ -583,6 +601,15 @@ function EditIngredientForm({
         />
       </div>
 
+      {/* 估算营养（#38）：已有读数时只给说明（估算不许改写它）；否则可重估或手改 */}
+      <NutritionField
+        name={name}
+        value={nutrition}
+        onChange={setNutrition}
+        testId={`edit-${ingredient.id}`}
+        locked={ingredient.nutrition !== null && !ingredient.nutrition.estimated}
+      />
+
       {conflict ? (
         <div className={styles.conflict} data-testid={`ingredient-conflict-${ingredient.id}`}>
           「{conflict.name}」已经在字典里了——改个别的名字，或者去改那一条。
@@ -661,6 +688,236 @@ interface ContainsTarget {
   id: string;
   name: string;
 }
+
+/**
+ * 四项营养的**草稿**（输入框里的字符串）。
+ *
+ * 存字符串而不是数字：空串是「暂缺」，而 0 是一个**合法读数**（盐的能量就是 0）——
+ * 把空串折成 0 会让「没填」与「确实是 0」分不开（与 `RecipeEditor` 的克数同一纪律）。
+ */
+interface NutritionDraft {
+  energyKcal: string;
+  proteinG: string;
+  fatG: string;
+  carbG: string;
+  /** 参照的成分表条目（AI 给的建议里带来的；人手动填四项时可能为空） */
+  reference: IngredientRef | null;
+  /** 产出这份估算的模型标识（写进 source；人全手填时为空） */
+  model: string;
+}
+
+function emptyNutritionDraft(): NutritionDraft {
+  return { energyKcal: '', proteinG: '', fatG: '', carbG: '', reference: null, model: '' };
+}
+
+/** 从已落库的营养行回填草稿（改食材时用；`null` = 暂无营养） */
+function draftFromNutrition(nutrition: IngredientNutrition | null): NutritionDraft {
+  if (!nutrition) return emptyNutritionDraft();
+  return {
+    energyKcal: String(nutrition.energyKcal),
+    proteinG: String(nutrition.proteinG),
+    fatG: String(nutrition.fatG),
+    carbG: String(nutrition.carbG),
+    // 已有行的出处文字不是「参照条目」的 id；界面不需要回填它（重估会重新带一个）
+    reference: null,
+    model: '',
+  };
+}
+
+/**
+ * 草稿 → 提交形状。**四项要么全给、要么不给**（与路由层同一口径）：
+ * 四项都空 = 不提交 `nutrition`（「暂缺」的合法表达）；任何一项有值就要求四项都有。
+ *
+ * 返回 `undefined` 表示「四项都没填」；返回 `null` 表示「填了但不完整」（调用方拦保存）。
+ */
+function nutritionInput(draft: NutritionDraft): IngredientNutritionInput | undefined | null {
+  const values = [draft.energyKcal, draft.proteinG, draft.fatG, draft.carbG];
+  const filled = values.filter((value) => value.trim() !== '');
+  if (filled.length === 0) return undefined;
+  if (filled.length < values.length) return null;
+  const numbers = values.map((value) => Number(value.trim()));
+  if (numbers.some((value) => !Number.isFinite(value) || value < 0)) return null;
+  // 参照条目：AI 给的预填自带；人全手填时没有参照，就不能落库（出处必须是真读数）——
+  // 这时界面把「先点一下估算营养」说出来（服务端的 `unknown_nutrition_reference` 是第二道网）
+  if (!draft.reference) return null;
+  return {
+    energyKcal: numbers[0]!,
+    proteinG: numbers[1]!,
+    fatG: numbers[2]!,
+    carbG: numbers[3]!,
+    reference: draft.reference.ingredientId,
+    ...(draft.model.trim() !== '' ? { model: draft.model.trim() } : {}),
+  };
+}
+
+/**
+ * **估算营养**（CONTEXT「估算营养」；ADR-0013；issue #38）：四项输入框 + 一个「估算营养」按钮。
+ *
+ * 四条界面口径（都不是装饰）：
+ *   * **预填而非写入**：点一下只是把四项填进输入框（并记住参照的成分表条目），**保存才落库**；
+ *   * **人可改**：预填值就是普通输入框的值，掌勺者看一眼、改一改再保存；
+ *   * **AI 不可用不拦保存**：降级时四项**留空**、只说一句「AI 暂时用不了，你先自己填」，
+ *     保存按钮照旧可用（缺营养是既有的合法状态）；
+ *   * **两种空是两句不同的话**：`degraded: true` 说「AI 暂时用不了」；
+ *     没有估算但没降级说「AI 也拿不准」（把一次故障说成「这东西估不出来」是错的）。
+ *
+ * 四项**要么全填、要么全空**：只填部分时不给保存（不半真半假地进合计）。
+ */
+function NutritionField({
+  name,
+  value,
+  onChange,
+  testId,
+  locked,
+}: {
+  name: string;
+  value: NutritionDraft;
+  onChange: (next: NutritionDraft) => void;
+  testId: string;
+  /** 已有成分表读数：这一条不许被估算改写（界面把按钮换成说明，不给一个按下去必报错的按钮） */
+  locked?: boolean;
+}) {
+  const suggestion = useNutritionSuggestion();
+  const result = suggestion.data;
+  const degraded = result?.degraded === true;
+  const noEstimate = result !== undefined && !degraded && result.estimate === undefined;
+
+  /**
+   * **预填**（AC 原文）：估算一回来就填进四项，不用再点一下。
+   *
+   * 两处刻意的护栏：
+   *   * 只在**四项全空**时填——掌勺者已经敲过的数字不许被后到的建议覆盖（他是看过的那个）；
+   *   * 依赖 `suggestion.data`（每次提问一个新对象）：重新提问时新结果照样填进去。
+   * 预填不是写入：填的只是输入框的值，保存才落库（`onChange` 就是表单的 state）。
+   */
+  useEffect(() => {
+    const estimate = result?.estimate;
+    if (!estimate) return;
+    if (value.energyKcal.trim() !== '' || value.proteinG.trim() !== '' || value.fatG.trim() !== '' || value.carbG.trim() !== '') {
+      return;
+    }
+    onChange({
+      energyKcal: String(estimate.energyKcal),
+      proteinG: String(estimate.proteinG),
+      fatG: String(estimate.fatG),
+      carbG: String(estimate.carbG),
+      reference: estimate.reference,
+      model: result?.model ?? '',
+    });
+    // `value` / `onChange` 故意不进依赖：它们每次渲染都变，进了会变成死循环。
+    // 本仓没有 react-hooks 插件（eslint.config.js 只上 typescript-eslint），所以不写 disable 注释
+    // ——依赖数组只有 `result`，而它每次提问都是**新对象**，重新提问时新结果照样填得进去。
+  }, [result]);
+
+  const adopt = (): void => {
+    const estimate = result?.estimate;
+    if (!estimate) return;
+    onChange({
+      energyKcal: String(estimate.energyKcal),
+      proteinG: String(estimate.proteinG),
+      fatG: String(estimate.fatG),
+      carbG: String(estimate.carbG),
+      reference: estimate.reference,
+      model: result?.model ?? '',
+    });
+  };
+
+  const partial = nutritionInput(value) === null;
+  const ready = name.trim() !== '';
+
+  return (
+    <div className={styles.field} data-testid={`ingredient-nutrition-${testId}`}>
+      <span className={styles.label}>营养（每 100 g 可食部，可不填）</span>
+
+      {locked ? (
+        // 已有读数：不给按钮，把「为什么不能改」说出来（ADR-0013「决定三」）
+        <div className={styles.note} data-testid={`ingredient-nutrition-locked-${testId}`}>
+          这条已经有成分表读数，估算不能改写它——要改只能人来改。
+        </div>
+      ) : (
+        <button
+          type="button"
+          className={styles.rowAction}
+          data-testid={`ingredient-nutrition-suggest-${testId}`}
+          disabled={suggestion.isPending || !ready}
+          onClick={() => suggestion.mutate({ name: name.trim() })}
+        >
+          {suggestion.isPending ? '问一下 AI…' : '估算营养'}
+        </button>
+      )}
+
+      {suggestion.isError ? (
+        <div className={styles.error} data-testid={`ingredient-nutrition-error-${testId}`}>
+          估算没问成，刷新一下页面再试。
+        </div>
+      ) : null}
+
+      {degraded ? (
+        <div className={styles.note} data-testid={`ingredient-nutrition-degraded-${testId}`}>
+          AI 暂时用不了，你先自己填（不填也能保存）。
+        </div>
+      ) : noEstimate ? (
+        <div className={styles.note} data-testid={`ingredient-nutrition-none-${testId}`}>
+          AI 也拿不准这一条，你自己填吧（不填也能保存）。
+        </div>
+      ) : result?.estimate ? (
+        <div className={`${styles.note} ${styles.noteInfo}`} data-testid={`ingredient-nutrition-estimate-${testId}`}>
+          已按估算填进四项（参照《中国食物成分表》「{result.estimate.reference.name}」）——这是估算值，看一眼、改一改再保存：
+          <button
+            type="button"
+            className={styles.suggestion}
+            data-testid={`ingredient-nutrition-adopt-${testId}`}
+            onClick={adopt}
+          >
+            ↺ 重新填入
+          </button>
+        </div>
+      ) : null}
+
+      <div className={styles.nutritionGrid}>
+        {NUTRIENT_FIELDS.map((field) => (
+          <label key={field.key} className={styles.nutritionCell}>
+            <span className={styles.label}>{field.label}</span>
+            <input
+              className={styles.input}
+              type="text"
+              inputMode="decimal"
+              value={value[field.key]}
+              placeholder="—"
+              aria-label={field.label}
+              data-testid={`ingredient-nutrition-${testId}-${field.key}`}
+              onChange={(event) => onChange({ ...value, [field.key]: event.target.value })}
+            />
+          </label>
+        ))}
+      </div>
+
+      {/* 四项留空 = 暂缺（不拦保存）；只填了一部分时说清楚为什么保存不了 */}
+      {partial ? (
+        <div className={styles.error} data-testid={`ingredient-nutrition-partial-${testId}`}>
+          四项要么全填、要么全空（不半真半假地进合计）{value.reference ? '' : '；先点一下「估算营养」拿到出处'}。
+        </div>
+      ) : null}
+
+      {value.reference ? (
+        <div className="sub" data-testid={`ingredient-nutrition-reference-${testId}`}>
+          参照：{value.reference.name}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** 四项营养的数字键（草稿与已落库行共有；`reference` / `model` 是出处，不是读数） */
+type NutritionNumberKey = 'energyKcal' | 'proteinG' | 'fatG' | 'carbG';
+
+/** 四项营养的标签与键（顺序就是界面上的顺序） */
+const NUTRIENT_FIELDS: { key: NutritionNumberKey; label: string }[] = [
+  { key: 'energyKcal', label: '能量 kcal' },
+  { key: 'proteinG', label: '蛋白质 g' },
+  { key: 'fatG', label: '脂肪 g' },
+  { key: 'carbG', label: '碳水 g' },
+];
 
 /**
  * 「含」提议（issue #37；CONTEXT「『含』提议」；ADR-0012「决定六」）：给一条复合调料预填
@@ -763,6 +1020,7 @@ function CreateIngredientCard({
   const [months, setMonths] = useState<number[]>([]);
   const [contains, setContains] = useState<ContainsTarget[]>([]);
   const [containsQuery, setContainsQuery] = useState('');
+  const [nutrition, setNutrition] = useState<NutritionDraft>(emptyNutritionDraft());
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<IngredientConflict | null>(null);
   const create = useCreateIngredient();
@@ -775,12 +1033,23 @@ function CreateIngredientCard({
   const submit = async (): Promise<void> => {
     setError(null);
     setConflict(null);
+    // 营养四项只填了一半（或填满了但没有参照出处）：**当场拦下**，不静默丢——
+    // 静默丢会让掌勺者以为自己填的营养存上了（服务端的 400 是第二道网，但那时他已经离开表单）
+    if (nutritionInput(nutrition) === null) {
+      setError(
+        nutrition.reference
+          ? '营养四项要么全填、要么全空——只填一部分保存不了。'
+          : '营养四项要先点一下「估算营养」拿到出处，或者全部清空（暂缺也能保存）。',
+      );
+      return;
+    }
     try {
       const created = await create.mutateAsync({
         name,
         aliases: parseAliases(aliasesText),
         seasonMonths: months,
         contains: contains.map((item) => item.id),
+        ...(nutritionInput(nutrition) ? { nutrition: nutritionInput(nutrition)! } : {}),
       });
       onCreated(created.id);
     } catch (err) {
@@ -905,6 +1174,9 @@ function CreateIngredientCard({
         />
       </div>
 
+      {/* 估算营养（#38）：四项预填、人可改，确认才落库 */}
+      <NutritionField name={name} value={nutrition} onChange={setNutrition} testId="new" />
+
       {conflict ? (
         <div className={styles.conflict} data-testid="ingredient-conflict">
           「{conflict.name}」已经在字典里了——别建重复的，直接用那一条。
@@ -953,12 +1225,71 @@ function CreateIngredientCard({
 
 const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
+/**
+ * 草稿里的营养与库里那一行是不是不一样（改食材时决定要不要提交这一块）。
+ *
+ * 两处刻意的宽松（都是为了不写空台账）：
+ *   * 库里本来没有营养（`null`）而草稿也全空 → 没变；
+ *   * 只比四项数字，不比参照条目（重估时参照可能换成另一条读数，而那不改变数字）。
+ */
+function nutritionChanged(before: IngredientNutrition | null, draft: NutritionDraft): boolean {
+  const next = nutritionInput(draft);
+  if (next === undefined) return before !== null;
+  if (next === null) return false;
+  if (!before) return true;
+  return (
+    before.energyKcal !== next.energyKcal ||
+    before.proteinG !== next.proteinG ||
+    before.fatG !== next.fatG ||
+    before.carbG !== next.carbG
+  );
+}
+
+/**
+ * 四项营养的只读展示（详情卡）：**三种情况分开说**——
+ * 有读数（“成分表读数”）、含估算（“估算值”，ADR-0013）、暂无（“暂缺”）。
+ *
+ * 两种「有值」的区分靠服务端下发的 `estimated` 字段，**不在前端解析 source 文本**：
+ * 判据只有服务端一处（ADR-0013「决定一」）。
+ */
+function NutritionReadout({ ingredient }: { ingredient: Ingredient }) {
+  const nutrition = ingredient.nutrition;
+  return (
+    <div className={styles.field}>
+      <span className={styles.label}>营养（每 100 g 可食部）</span>
+      {nutrition ? (
+        <div data-testid={`ingredient-nutrition-${ingredient.id}`}>
+          <div className={styles.nutritionGrid}>
+            {NUTRIENT_FIELDS.map((field) => (
+              <div key={field.key} className={styles.nutritionCell}>
+                <span className={styles.label}>{field.label}</span>
+                <span data-testid={`ingredient-nutrition-value-${ingredient.id}-${field.key}`}>
+                  {formatNutrition(nutrition[field.key])}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="sub" data-testid={`ingredient-nutrition-source-${ingredient.id}`} style={{ marginTop: 6 }}>
+            {nutrition.estimated ? '估算值：' : '成分表读数：'}
+            {nutrition.source}
+          </div>
+        </div>
+      ) : (
+        <span className="sub" data-testid={`ingredient-nutrition-${ingredient.id}`}>
+          暂缺（缺营养是合法的；可以点「改这条食材」里填上）
+        </span>
+      )}
+    </div>
+  );
+}
+
 /** 台账的 `changedFields` 是字段名，这里是给人看的说法（与台账同源，不手写两份） */
 const FIELD_LABELS: Record<string, string> = {
   name: '规范名',
   aliases: '别名',
   seasonMonths: '时令月份',
   contains: '「含」指针',
+  nutrition: '营养',
 };
 
 /** 搜规范名或别名（与列表接口同一口径；家人说「西红柿」，字典里叫「番茄」） */

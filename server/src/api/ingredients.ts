@@ -20,6 +20,11 @@ import {
   IngredientReferencedError,
   IngredientSelfContainsError,
 } from '../domain/ingredient-library.js';
+import {
+  suggestNutritionFor,
+  NutritionLockedError,
+  NutritionReferenceError,
+} from '../domain/ingredient-nutrition.js';
 import { MemberNotFoundError } from '../domain/members.js';
 
 /**
@@ -43,6 +48,34 @@ const listQuerySchema = z.object({
 const maxNameLength = 60;
 
 /**
+ * 四项营养的入参（issue #38）：**四项要么全给、要么不给**（`.strict()` + 全必填）。
+ *
+ * 为什么不容忍「只有部分项有值」：那会落一行半真半假的营养——合计里那项按半份算，
+ * 界面也说不出是「缺」还是「有」（CONTEXT「部分食材的合计」把两种情况分得很清）。
+ * 四项留空表示「暂缺」的**唯一**表达是**整个 `nutrition` 字段都不传**。
+ *
+ * 写法：字段全必填 + `{ error: NUTRITION_ALL_OR_NOTHING }`。**缺项时的默认报错是 zod 的
+ * 通用句式**（`Invalid input: expected number, received undefined`），而这句话会原样显示给
+ * 掌勺者（前端把 `issues[0].message` 当人话用）——自定义那句直接把「四项要么全给、要么不给」
+ * 说出来。`.strict()` 顺带挡住「传了 nutrition 但多给一个键」这种拼写走样。
+ * 四项上界是防幻觉（每 100 g 的读数不可能超过这些量级），不是产品上限。
+ */
+const NUTRITION_ALL_OR_NOTHING = '营养的四项要么全给、要么不给（不半真半假地进合计）';
+
+const nutritionInputSchema = z
+  .object({
+    energyKcal: z.number({ error: NUTRITION_ALL_OR_NOTHING }).finite().min(0).max(1000),
+    proteinG: z.number({ error: NUTRITION_ALL_OR_NOTHING }).finite().min(0).max(100),
+    fatG: z.number({ error: NUTRITION_ALL_OR_NOTHING }).finite().min(0).max(100),
+    carbG: z.number({ error: NUTRITION_ALL_OR_NOTHING }).finite().min(0).max(100),
+    /** 参照的成分表条目 id（领域层校验它**真有读数**） */
+    reference: z.string({ error: NUTRITION_ALL_OR_NOTHING }).trim().min(1, '要说明参照的是哪条成分表条目'),
+    /** 产出这份估算的模型标识（不传就回落到服务端配置的模型名）；只影响 source 里那句话 */
+    model: z.string().trim().min(1).max(120).optional(),
+  })
+  .strict();
+
+/**
  * 录入入参：**只有 `name` 必填**（ADR-0012「决定二」），其余三个都可空。
  *
  * 三个刻意的形状选择：
@@ -58,12 +91,14 @@ const createSchema = z.object({
   aliases: z.array(z.string().trim().min(1, '别名不能是空白')).optional(),
   seasonMonths: z.array(z.number().int().min(1).max(12)).optional(),
   contains: z.array(z.string().trim().min(1, '「含」的目标不能是空白')).optional(),
+  nutrition: nutritionInputSchema.optional(),
 });
 
 /**
- * 改食材入参（issue #35）：与 `createSchema` 同为四个字段，但**全部可空**（部分更新）。
+ * 改食材入参（issue #35）：与 `createSchema` 同为那几块，但**全部可空**（部分更新）。
  *
- * 传了的块整体替换；没传的保持原样。四个字段一个都没变时领域层报 409（`no_changes`）。
+ * 传了的块整体替换；没传的保持原样。一个字段都没变时领域层报 409（`no_changes`）——
+ * 营养（#38）也按这条判：四项**原样提交**同样不算一次改动。
  * `name` 在这里仍要 `trim().min(1)`：空名字在形状层就拦住（与录入同一纪律）。
  */
 const patchSchema = z.object({
@@ -71,6 +106,8 @@ const patchSchema = z.object({
   aliases: z.array(z.string().trim().min(1, '别名不能是空白')).optional(),
   seasonMonths: z.array(z.number().int().min(1).max(12)).optional(),
   contains: z.array(z.string().trim().min(1, '「含」的目标不能是空白')).optional(),
+  /** 重估或手改这一条的营养（已有成分表读数时领域层报 409 `nutrition_locked`） */
+  nutrition: nutritionInputSchema.optional(),
   /** 谁改的（界面送当前身份，进台账）；不传 = 不记名 */
   memberId: z.string().min(1).optional(),
 });
@@ -91,6 +128,16 @@ const containsSuggestionSchema = z
     message: '要么给食材名（新建），要么给食材 id（修订）',
     path: ['name'],
   });
+
+/**
+ * **估算营养**入参（issue #38）：只有一件事要问——哪条食材（按规范名）。
+ *
+ * 为什么按名字而不是 id：估算发生在**录入的那一刻**（表单里刚敲的名字，还没有 id），
+ * 而那正是本功能要解决的场景（新食材默认缺营养）。已经在字典里的条目按名字同样问得通。
+ */
+const nutritionSuggestionSchema = z.object({
+  name: z.string().trim().min(1, '待估算的食材名不能是空白').max(maxNameLength, `食材名最多 ${maxNameLength} 字`),
+});
 
 export function registerIngredientRoutes(api: Hono, deps: AppDeps): void {
   api.get('/ingredients', zodValidator('query', listQuerySchema), (c) => {
@@ -121,13 +168,28 @@ export function registerIngredientRoutes(api: Hono, deps: AppDeps): void {
   });
 
   /**
+   * **估算营养**（CONTEXT「估算营养」；ADR-0013；issue #38）：给一条还没有读数的食材预填四项。
+   *
+   * 三条口径（与领域层 `suggestNutritionFor` 同源，这里只管 HTTP 形状）：
+   *   * **预填而非写入**：本路由只读库（拿成分表读数当池子）与调 LLM，一个字节都不写；
+   *   * **参照必须是真读数**：模型挑的参照条目在池子外时**整条不可用**（不把幻觉的名字写进出处）；
+   *   * **降级不是失败**：LLM 用不了时 **200 + `degraded: true` + 无估算**——手填这条路不受影响，
+   *     界面据 `degraded` 把「AI 暂时用不了」与「AI 也拿不准」说成两句不同的话。
+   */
+  api.post('/ingredients/nutrition-suggestion', zodValidator('json', nutritionSuggestionSchema), async (c) => {
+    const { name } = c.req.valid('json');
+    return c.json(await suggestNutritionFor(deps.db, deps.llm, name));
+  });
+
+  /**
    * **录入一条新食材**（ADR-0012）。录完立刻能被菜谱引用、被忌口指向——没有「审核」这一步。
    *
    * 成功 201 返回**完整的食材线上形状**（与列表接口同一形状），调用方不必再查一次。
    */
   api.post('/ingredients', zodValidator('json', createSchema), (c) => {
+    const body = c.req.valid('json');
     try {
-      return c.json({ ingredient: createIngredient(deps.db, c.req.valid('json')) }, 201);
+      return c.json({ ingredient: createIngredient(deps.db, body, deps.llm.model) }, 201);
     } catch (error) {
       return ingredientWriteError(c, error);
     }
@@ -162,12 +224,12 @@ export function registerIngredientRoutes(api: Hono, deps: AppDeps): void {
    *
    * **PATCH 而不是 PUT**：改食材是部分更新、且每次改都留痕（与 `PATCH /recipes/:id` 同一思路）。
    * 改名**天然跟随**引用方：本仓没有名称快照，菜谱详情/买菜清单/忌口显示都读同一条 `ingredients` 行。
-   * 四个字段一个都没变 → 409 `no_changes`（不写台账、也不假装成功）。
+   * 一个字段都没变 → 409 `no_changes`（不写台账、也不假装成功）。
    */
   api.patch('/ingredients/:id', zodValidator('json', patchSchema), (c) => {
     const id = c.req.param('id');
     try {
-      return c.json({ ingredient: patchIngredient(deps.db, deps.clock, id, c.req.valid('json')) });
+      return c.json({ ingredient: patchIngredient(deps.db, deps.clock, id, c.req.valid('json'), deps.llm.model) });
     } catch (error) {
       return ingredientWriteError(c, error);
     }
@@ -196,7 +258,9 @@ export function registerIngredientRoutes(api: Hono, deps: AppDeps): void {
  *   * 400 `self_contains`：把自己挂成自己的「含」目标（改食材这条路才会遇到）
  *   * 404 `not_found`：这条不在字典里了（界面该刷新）
  *   * 409 `ingredient_referenced`：还有人用它——**报出是哪一类、几条**，界面说「只能改名」
- *   * 409 `no_changes`：这次提交四个字段一个都没变（不写台账，也不假装成功）
+ *   * 409 `no_changes`：这次提交一个字段都没变（不写台账，也不假装成功）
+ *   * 400 `unknown_nutrition_reference`：营养的参照条目没有成分表读数（出处不能是编的）
+ *   * 409 `nutrition_locked`：这条食材已有成分表读数，不许被估算改写（要改只能人来改）
  *
  * 与 `recipeWriteError` / `groceryError` 同一纪律：**共用领域错误类型，不共用响应映射**
  * （对外报的字段名与上下文跟着本路由的入参走）。
@@ -225,6 +289,12 @@ function ingredientWriteError(c: Context, error: unknown): Response {
   }
   if (error instanceof MemberNotFoundError) {
     return c.json({ error: 'unknown_member', memberId: error.id }, 400);
+  }
+  if (error instanceof NutritionReferenceError) {
+    return c.json({ error: 'unknown_nutrition_reference', ingredientId: error.reference }, 400);
+  }
+  if (error instanceof NutritionLockedError) {
+    return c.json({ error: 'nutrition_locked', ingredientId: error.ingredientId }, 409);
   }
   throw error;
 }

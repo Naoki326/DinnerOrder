@@ -15,6 +15,7 @@ import type {
 import { listIngredients } from './ingredients.js';
 import { findMember, MemberNotFoundError } from './members.js';
 import { suggestContains } from '../llm/contains-suggestion-schema.js';
+import { writeIngredientNutrition, nutritionChanged } from './ingredient-nutrition.js';
 
 // 线上形状定义在 wire-types.ts（前端也从那里取）
 export type {
@@ -140,7 +141,7 @@ export class IngredientReferencedError extends Error {
  * 最后在一个事务里落库——一次写入里出任何错都不留半截行（半条食材比没有更糟：
  * 它会被忌口/菜谱搜到，却少了别的那几项）。
  */
-export function createIngredient(db: Db, input: IngredientCreate): Ingredient {
+export function createIngredient(db: Db, input: IngredientCreate, llmModel?: string): Ingredient {
   const name = input.name.trim();
   if (name === '') throw new IngredientNameEmptyError();
 
@@ -171,6 +172,9 @@ export function createIngredient(db: Db, input: IngredientCreate): Ingredient {
     for (const month of months) insertMonth.run(id, month);
     const insertContains = db.prepare('INSERT INTO ingredient_contains (ingredient_id, contains_id) VALUES (?, ?)');
     for (const target of contains) insertContains.run(id, target);
+    // 估算营养（#38）：人确认过的四项。参照越界会在这一层抛错，整个事务回滚——
+    // 不留下「食材建好了但没有营养」这种半截行（那会让人以为营养写成功了）
+    if (input.nutrition) writeIngredientNutrition(db, id, input.nutrition, llmModel ?? '');
   });
   apply();
 
@@ -217,16 +221,16 @@ function slugOf(name: string): string {
 /**
  * 改一条已在字典里的食材（CONTEXT「改食材」；ADR-0012；issue #35）：字段级部分更新 + 留痕。
  *
- * 四个可改字段：`name` / `aliases` / `seasonMonths` / `contains`。传了的块**整体替换**
+ * 可改字段：`name` / `aliases` / `seasonMonths` / `contains` / `nutrition`。传了的块**整体替换**
  * （清单类字段在手机上是一次性提交完整清单）；没传的保持原样。
  *
- * **四个字段一个都没变 → `IngredientNoChangesError`（路由报 409）**，且不写台账——
+ * **一个字段都没变 → `IngredientNoChangesError`（路由报 409）**，且不写台账——
  * 「点开看了看又保存」不悄悄成功、也不留一条空记录（ADR-0012「决定五」）。
  *
  * 改名**天然跟随**：本仓没有名称快照，菜谱详情/买菜清单/忌口显示都读同一条 `ingredients` 行，
  * 改完这里它们就全跟着换说法（本函数**不做**任何同步逻辑）。
  */
-export function patchIngredient(db: Db, clock: Clock, id: string, patch: IngredientPatch): Ingredient {
+export function patchIngredient(db: Db, clock: Clock, id: string, patch: IngredientPatch, llmModel?: string): Ingredient {
   const existing = ingredientById(db, id);
   if (!existing) throw new IngredientNotFoundError(id);
   // 身份校验：与 `patchRecipe` 同一纪律（软删的家人也会被 `findMember` 挡住）
@@ -275,6 +279,15 @@ export function patchIngredient(db: Db, clock: Clock, id: string, patch: Ingredi
     }
   }
 
+  // 营养单独算一块（#38）：它不在 `Ingredient` 的形状里（那是字典条目，营养是读数），
+  // 但改了它就**必须**记一笔台账——否则台账会出现「改了营养但字段列是空的」这种空行
+  // （迁移 016 的 `changed_fields <> ''` 正是拦这个的）。
+  // **四项原样提交不算改动**（与其它字段同一口径）：「点开看了看又保存」不写空台账。
+  const nutritionEdit =
+    patch.nutrition !== undefined && nutritionChanged(db, id, patch.nutrition) ? patch.nutrition : undefined;
+  if (nutritionEdit) changed.push('nutrition');
+
+  // 「什么都没变」的判定必须在营养也算完之后——否则「只提交了四项营养」会被当成没有改动
   if (changed.length === 0) throw new IngredientNoChangesError(id);
 
   const apply = db.transaction((): void => {
@@ -296,6 +309,9 @@ export function patchIngredient(db: Db, clock: Clock, id: string, patch: Ingredi
       const insertContains = db.prepare('INSERT INTO ingredient_contains (ingredient_id, contains_id) VALUES (?, ?)');
       for (const target of contains) insertContains.run(id, target);
     }
+    // 营养（#38）：已有读数时 `writeIngredientNutrition` 会抛 `NutritionLockedError`，
+    // 事务回滚——台账与其它字段一并不写（不留下「台账说改了、营养没变」的错位）
+    if (nutritionEdit) writeIngredientNutrition(db, id, nutritionEdit, llmModel ?? '');
     db.prepare(
       `INSERT INTO ingredient_edits (ingredient_id, changed_at, member_id, changed_fields) VALUES (?, ?, ?, ?)`,
     ).run(id, clock.now().toISOString(), patch.memberId ?? null, changed.join(','));

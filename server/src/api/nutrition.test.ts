@@ -22,6 +22,8 @@ afterEach(() => {
  *    与没有引用，能量读数必须不同（只靠常量断言证明不了「乘法真的接上了」）。
  * 2. **缺失食材不当 0**：缺数据的食材那一项是 null 且不进合计，整餐把「哪些食材没有数据」
  *    报出来（`missingIngredients`）。拿蚝油生菜（蚝油平台查不到）当真实样本。
+ *    #38 之后又多了一份 `estimatedIngredients`（含估算：已进合计、数字是参考），与前者分开报——
+ *    本文件里那两条拿蚝油当缺数据样本的用例因此按新语义改准（预期内的红，见 issue #38）。
  * 3. **空 steps 要能优雅表达**：食谱接口照原样返回空串，不自作主张编一句做法。
  *
  * 与其余 API 测试同口径：只断言外部可见行为（HTTP 形状与数字），不查表结构。
@@ -148,8 +150,15 @@ describe('缺数据的食材', () => {
     const lettuce = dish.ingredients.find((item) => item.ingredientId === 'lettuce')!;
     expect(dish.energyKcal).toBeCloseTo(lettuce.energyKcal!, 1);
     expect(dish.partial).toBe(true);
+    // `partial` 的语义已扩成「合计不是全由成分表读数构成」（ADR-0013「决定二」）：
+    // 这一道是**缺数据**那种（`missing` 真、`estimated` 假），两种情形分开报
+    expect(dish.missing).toBe(true);
+    expect(dish.estimated).toBe(false);
     // 缺口在整餐这一层说得出来（界面上「为什么看起来偏低」全靠它）
     expect(result.missingIngredients).toEqual([{ ingredientId: 'oyster_sauce', name: '蚝油' }]);
+    // 「含估算」是**另一份**清单（本餐一条也没有：这里全是缺数据）
+    expect(result.estimatedIngredients).toEqual([]);
+    expect(result.partial).toBe(true);
     expect(result.nutritionSource).toContain('参考值');
   });
 
@@ -166,6 +175,9 @@ describe('缺数据的食材', () => {
     expect(result.energyKcal).toBeGreaterThan(0);
     expect(result.dishes.find((dish) => dish.recipeId === 'hongshaopaigu')?.partial).toBe(false);
     expect(result.dishes.find((dish) => dish.recipeId === 'haoyoushengcai')?.partial).toBe(true);
+    // 整餐那一层也分得清：本餐只有缺数据，没有估算项
+    expect(result.partial).toBe(true);
+    expect(result.estimatedIngredients).toEqual([]);
   });
 
   it('水不算「缺数据」：定义性零点不污染缺口清单（否则每道炖菜都报警）', async () => {

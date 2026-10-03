@@ -1,9 +1,12 @@
 /**
- * 食材的展示小工具（issue #34）。
+ * 食材的展示小工具（issue #34、#38）。
  *
  * 修一个既有渲染毛病：给食材挂上**与规范名同名**的别名时，界面会显示成「莴笋（莴笋）」。
  * 种子库里已经有 5 条这种数据（黄芪、麻酱、鸡胸肉、板栗、柱侯酱），而字典页要渲染**完整别名列表**，
  * 正是第一个会大面积撞上它的地方——所以把判据收在这一处，两处调用点共用。
+ *
+ * #38 加了 `formatNutrition`：字典页的详情卡与每餐营养弹层都要把每 100 g 读数写成一位小数，
+ * 两处各写一份就会漂（同一个数在两屏上长得不一样）。
  */
 
 /**
@@ -33,4 +36,13 @@ export function parseAliases(text: string): string[] {
     .split(/[,，、\s]+/)
     .map((item) => item.trim())
     .filter((item) => item !== '');
+}
+
+/**
+ * 营养读数的人话：一位小数就够（营养是估算值/平均值，展示更多位是假精度）；整数时不带小数点。
+ *
+ * 与 `NutritionSheet` 的 `format` 同一个口径——两处各写一份就会漂（同一个数在两屏上不一样）。
+ */
+export function formatNutrition(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);
 }

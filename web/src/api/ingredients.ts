@@ -9,16 +9,27 @@ import type {
   IngredientDeleteResponse,
   IngredientEditListResponse,
   IngredientEditRecord,
+  IngredientNutritionInput,
   IngredientPatch,
   IngredientPatchResponse,
   IngredientRef,
   IngredientReferenceCount,
   IngredientReferencesResponse,
+  NutritionSuggestionRequest,
+  NutritionEstimateResponse,
 } from '@dinnerorder/server/types';
 import { apiUrl } from '../config';
 
 // 线上形状来自 server（ADR-0002「共享类型由 server 导出」），前端不手抄
-export type { Ingredient, IngredientEditRecord, IngredientPatch, IngredientRef, IngredientReferenceCount };
+export type {
+  Ingredient,
+  IngredientEditRecord,
+  IngredientNutritionInput,
+  IngredientPatch,
+  IngredientRef,
+  IngredientReferenceCount,
+  NutritionEstimateResponse,
+};
 
 async function fetchIngredients(query: string, signal: AbortSignal): Promise<Ingredient[]> {
   const response = await fetch(apiUrl('/ingredients', { q: query }), {
@@ -108,6 +119,24 @@ async function readWriteError(response: Response): Promise<IngredientWriteError>
   if (body.error === 'no_changes') {
     return new IngredientWriteError('no_changes', '这次提交没有任何改动', undefined, undefined, response.status);
   }
+  if (body.error === 'unknown_nutrition_reference') {
+    return new IngredientWriteError(
+      'unknown_nutrition_reference',
+      '参照的成分表条目没有读数，重新估算一次',
+      undefined,
+      undefined,
+      response.status,
+    );
+  }
+  if (body.error === 'nutrition_locked') {
+    return new IngredientWriteError(
+      'nutrition_locked',
+      '这条食材已经有成分表读数，估算不能改写它——要改只能人来改',
+      undefined,
+      undefined,
+      response.status,
+    );
+  }
   if (body.error === 'unknown_member') {
     return new IngredientWriteError('unknown_member', '身份对不上家人列表，刷新一下页面', undefined, undefined, response.status);
   }
@@ -155,7 +184,7 @@ export function useDeleteIngredient() {
  * 改一条食材（CONTEXT「改食材」；issue #35）：可改规范名、别名、时令月份、「含」指针。
  *
  * 成功后把两处缓存一起刷：`['ingredients']`（列表与搜索）与 `['ingredient-edits', id]`
- * （刚写的那一条要出现在改动台账里）。四个字段一个都没变时服务端报 409 `no_changes`，
+ * （刚写的那一条要出现在改动台账里）。一个字段都没变时服务端报 409 `no_changes`，
  * 翻成人话是「这次提交没有任何改动」——不写台账、也不假装成功。
  */
 export function usePatchIngredient() {
@@ -211,6 +240,30 @@ export function useIngredientReferences(id: string | null) {
     },
     enabled: id !== null,
     staleTime: 0,
+  });
+}
+
+/**
+ * **估算营养**（CONTEXT「估算营养」；ADR-0013；issue #38）：给一条还没有成分表读数的食材
+ * 要一份**预填**（不是写入）。返回 `{ estimate?, degraded, model? }`——调用方必须同时看这几个：
+ *   * 有 `estimate` = AI 估出来了（预填进四项输入框，**保存才落库**）；
+ *   * 无 `estimate` + `degraded: false` = AI 看过了、这条估不出来（界面说「AI 也拿不准，你自己填」）；
+ *   * `degraded: true` = AI 这次用不了（界面说「AI 暂时用不了，你先自己填」）。
+ *
+ * 用 mutation 而不是 query：它是人点一下才发生的动作，不是「进入页面就该拉的数据」。
+ * 四项可留空 = 暂缺（缺营养是既有的合法状态，不拦保存）。
+ */
+export function useNutritionSuggestion() {
+  return useMutation({
+    mutationFn: async (input: NutritionSuggestionRequest): Promise<NutritionEstimateResponse> => {
+      const response = await fetch(apiUrl('/ingredients/nutrition-suggestion'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) throw await readWriteError(response);
+      return (await response.json()) as NutritionEstimateResponse;
+    },
   });
 }
 

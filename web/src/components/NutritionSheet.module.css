@@ -60,6 +60,20 @@
   line-height: 1.55;
 }
 
+/*
+ * 含估算的食材：与 `.missing` **刻意不同色**——两者后果不同（一个没进合计、一个进了）。
+ * 用中性信息色而不是警示色：估算不是异常，是「已标明来源的参考值」。
+ */
+.estimated {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--chip);
+  color: var(--sub);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .dishes {
   margin-top: 10px;
   display: flex;

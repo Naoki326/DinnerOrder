@@ -10,6 +10,8 @@ import type {
 import { portionOf, type PortionInput, type PortionOptions } from './portion.js';
 import { RecipeNotFoundError } from './promotion.js';
 import { findRecipe } from './recipes.js';
+import { isEstimatedNutritionSource } from '../llm/nutrition-estimate-schema.js';
+import { ingredientNutritionRow, type NutritionTableRow } from './ingredient-nutrition.js';
 
 /**
  * 每餐营养（本票）：Σ(portionOf 给出的逐食材本餐克数 ÷ 100 × 每 100 g 营养)。
@@ -26,6 +28,11 @@ import { findRecipe } from './recipes.js';
  *    而「缺数据的食材按 0 计的合计 + 一句『这几味没有数据』」给出的数是**下界**，
  *    方向上不会骗人（缺的只会让真实值更高）。整餐拒绝计算只在「主力食材缺数据」时才诚实，
  *    但那种情况在界面上与「一味香料缺数据」无法区分，做不到——所以统一用「部分合计 + 明示」。
+ *
+ *    本票（#38）之后**多了一种「有数据但不是读数」的项**：估算行（ADR-0013）。它与缺数据的
+ *    后果完全不同——估算**已进合计**，数字是**参考**而不是偏低。所以两者分开报
+ *    （`missingIngredients` / `estimatedIngredients`），`partial` 的语义扩成「合计不是全由
+ *    读数构成」（CONTEXT「部分食材的合计」）。
  * 3. **口径是整餐总量**（本餐全部生重的合计），不是「每人份」。分母是 `portion.factorSum`：
  *    界面在合计旁写「按 N 人算（Σ系数 ×）」就是让数字可复算——想换算成人均就再除一下。
  *    写成「每人份」会与旁边「共 475 g」的整餐生重对不上（那份量是整餐的量）。
@@ -39,11 +46,14 @@ export function nutritionOf(
   const portion = portionOf(db, clock, input, options);
   const facts = nutritionTable(db);
   const missing = new Map<string, string>();
+  const estimated = new Map<string, string>();
 
   const dishes: DishNutrition[] = portion.dishes.map((dish) => {
     const ingredients: DishNutritionIngredient[] = dish.ingredients.map((item) => {
       const per100g = facts.get(item.ingredientId) ?? null;
+      // 缺数据 = 没有营养行；含估算 = 有行但 source 自证是估算（ADR-0013）——两者后果不同
       if (!per100g) missing.set(item.ingredientId, item.name);
+      else if (isEstimatedNutritionSource(per100g.source)) estimated.set(item.ingredientId, item.name);
       return {
         ingredientId: item.ingredientId,
         name: item.name,
@@ -56,6 +66,11 @@ export function nutritionOf(
         carbG: per100g ? round1((item.grams / 100) * per100g.carbG) : null,
       };
     });
+    // 这一道里的两种「不是纯读数」：缺数据（没进合计）与含估算（进了合计）
+    const dishMissing = ingredients.some((item) => item.per100g === null);
+    const dishEstimated = ingredients.some(
+      (item) => item.per100g !== null && isEstimatedNutritionSource(item.per100g.source),
+    );
     return {
       recipeId: dish.recipeId,
       name: dish.name,
@@ -67,7 +82,11 @@ export function nutritionOf(
       proteinG: sum(ingredients.map((item) => item.proteinG)),
       fatG: sum(ingredients.map((item) => item.fatG)),
       carbG: sum(ingredients.map((item) => item.carbG)),
-      partial: ingredients.some((item) => item.per100g === null),
+      // `partial` = 合计**不是全由成分表读数构成**（ADR-0013「决定二」把它的语义从
+      // 「有食材没数据」扩到这里）：缺数据与含估算都算，两种情形靠 missing/estimated 分开说
+      partial: dishMissing || dishEstimated,
+      missing: dishMissing,
+      estimated: dishEstimated,
     };
   });
 
@@ -83,17 +102,32 @@ export function nutritionOf(
     carbG: round1(sum(dishes.map((dish) => dish.carbG))),
     // 缺口按**第一次出现**的顺序给（＝菜与食材在菜单里的次序），家人扫一眼就知道是哪道菜
     missingIngredients: [...missing.entries()].map(([ingredientId, name]) => ({ ingredientId, name })),
-    nutritionSource: NUTRITION_SOURCE_NOTE,
+    // 「含估算」单独一份清单：措辞是「这几项是估算的，数字是参考」，**不是**「没算进合计」
+    estimatedIngredients: [...estimated.entries()].map(([ingredientId, name]) => ({ ingredientId, name })),
+    // 合计不是全由读数构成（缺数据或含估算）——界面据此决定说不说「参考/偏低」那一句
+    partial: missing.size > 0 || estimated.size > 0,
+    // 注记按「本次读数里有没有估算项」分两种措辞：原句在含估算的读数上是假话（ADR-0013）
+    nutritionSource: estimated.size > 0 ? NUTRITION_SOURCE_NOTE_ESTIMATED : NUTRITION_SOURCE_NOTE,
   };
 }
 
 /**
  * 整餐营养的口径注记（每份读数都带）。放在服务端而不是前端写死：
  * 它是**计算结果的一部分**（「这些数字是什么口径」），前端改文案不该改口径。
+ *
+ * **两种措辞**（ADR-0013「三条判据」的最后一条）：本次读数里**没有**估算项时用原句
+ * （食材营养取《中国食物成分表》平均值）；**有**估算项时换成 `..._ESTIMATED`——
+ * 那种情况下再说「食材营养取成分表平均值」就是假话（其中几项根本不是成分表读数）。
  */
 const NUTRITION_SOURCE_NOTE =
   '每餐营养按本餐全部生重估算：食材营养取《中国食物成分表》每 100 g 可食部平均值，' +
   '份量含年龄折算与留量上浮，未计烹饪损耗（加热、沥油、汤汁残留）。数字为参考值，不是医学营养建议。';
+
+/** 含估算项时的口径注记：说清**哪一部分**不是成分表读数（并把「参考」的分量说足） */
+const NUTRITION_SOURCE_NOTE_ESTIMATED =
+  '每餐营养按本餐全部生重估算：其中部分食材的营养是 AI 估算值（不是《中国食物成分表》读数，' +
+  '出处见各食材的 source），其余取成分表每 100 g 可食部读数；份量含年龄折算与留量上浮，' +
+  '未计烹饪损耗（加热、沥油、汤汁残留）。含估算项时数字只是参考，不是医学营养建议。';
 
 /** 全部营养行（一次性取进内存：表只有一百多行，逐菜查库反而更绕） */
 export function nutritionTable(db: Db): Map<string, IngredientNutrition> {
@@ -101,29 +135,8 @@ export function nutritionTable(db: Db): Map<string, IngredientNutrition> {
     .prepare(
       'SELECT ingredient_id, energy_kcal, protein_g, fat_g, carb_g, source, note FROM ingredient_nutrition',
     )
-    .all() as {
-    ingredient_id: string;
-    energy_kcal: number;
-    protein_g: number;
-    fat_g: number;
-    carb_g: number;
-    source: string;
-    note: string | null;
-  }[];
-  return new Map(
-    rows.map((row) => [
-      row.ingredient_id,
-      {
-        ingredientId: row.ingredient_id,
-        energyKcal: row.energy_kcal,
-        proteinG: row.protein_g,
-        fatG: row.fat_g,
-        carbG: row.carb_g,
-        source: row.source,
-        note: row.note,
-      },
-    ]),
-  );
+    .all() as NutritionTableRow[];
+  return new Map(rows.map((row) => [row.ingredient_id, ingredientNutritionRow(row)]));
 }
 
 /**
