@@ -285,6 +285,8 @@ test('已有成分表读数：给说明而不是一个按下去必报错的按�
   await expect(editor).toBeVisible();
   await expect(page.getByTestId('ingredient-nutrition-locked-edit-light_soy')).toBeVisible();
   await expect(page.getByTestId('ingredient-nutrition-suggest-edit-light_soy')).toHaveCount(0);
+  // 四项输入是**只读**的：服务端本就拒收这一路，可编的输入框只会让人改完撞一句无路可走的提示
+  await expect(page.getByTestId('ingredient-nutrition-edit-light_soy-energyKcal')).toHaveAttribute('readonly', '');
   // 只读态也说得清这是**成分表读数**而不是估算
   await page.getByTestId('ingredient-edit-cancel-light_soy').click();
   await expect(page.getByTestId('ingredient-nutrition-source-light_soy')).toContainText('成分表读数');
