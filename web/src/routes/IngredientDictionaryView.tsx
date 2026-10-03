@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
-import type { Ingredient, IngredientConflict, IngredientContainsSuggestionRequest, IngredientEditRecord, IngredientNutrition, IngredientRef, IngredientReferenceCount, IngredientReferenceKind } from '@dinnerorder/server/types';
+import type { Ingredient, IngredientConflict, IngredientContainsSuggestionRequest, IngredientEditRecord, IngredientNutrition, IngredientRef, IngredientReferenceCount, IngredientReferenceKind, NutritionEstimateResponse } from '@dinnerorder/server/types';
 import {
   IngredientWriteError,
   useAllIngredients,
@@ -454,12 +454,13 @@ function EditIngredientForm({
   const submit = async (): Promise<void> => {
     setError(null);
     setConflict(null);
-    // 与录入同一条口径：四项只填了一半就**当场拦下**（不静默丢）
-    if (nutritionInput(nutrition) === null) {
+    // 与录入同一条口径：真的变了却表达不了才**当场拦下**（不静默丢）
+    const state = nutritionDraftState(ingredient.nutrition, nutrition);
+    if (state.kind === 'incomplete') {
       setError(
-        nutrition.reference
+        state.reason === 'partial'
           ? '营养四项要么全填、要么全空——只填一部分保存不了。'
-          : '营养四项要先点一下「估算营养」拿到出处，或者全部清空（暂缺也能保存）。',
+          : '营养四项换了数字，得一起点一下「估算营养」拿到出处（出处必须是真的成分表条目）。',
       );
       return;
     }
@@ -471,10 +472,9 @@ function EditIngredientForm({
           aliases: parseAliases(aliasesText),
           seasonMonths: months,
           contains: contains.map((item) => item.id),
-          // 四项没动就不提交这一块（否则会多写一笔空台账）
-          ...(nutritionChanged(ingredient.nutrition, nutrition) && nutritionInput(nutrition)
-            ? { nutrition: nutritionInput(nutrition)! }
-            : {}),
+          // 四项没动就不提交这一块（否则会多写一笔空台账）；`unchanged` 里也含
+          // 「回填四项、出处留空、数字没变」这种形态——那是编辑表单的常态，不是改动
+          ...(state.kind === 'changed' ? { nutrition: state.input } : {}),
           ...(current ? { memberId: current.id } : {}),
         },
       });
@@ -608,6 +608,7 @@ function EditIngredientForm({
         onChange={setNutrition}
         testId={`edit-${ingredient.id}`}
         locked={ingredient.nutrition !== null && !ingredient.nutrition.estimated}
+        before={ingredient.nutrition}
       />
 
       {conflict ? (
@@ -710,7 +711,13 @@ function emptyNutritionDraft(): NutritionDraft {
   return { energyKcal: '', proteinG: '', fatG: '', carbG: '', reference: null, model: '' };
 }
 
-/** 从已落库的营养行回填草稿（改食材时用；`null` = 暂无营养） */
+/**
+ * 从已落库的营养行回填草稿（改食材时用；`null` = 暂无营养）。
+ *
+ * `reference` 刻意留空：库里那行存的是**出处文本**（source），不是「参照条目的 id」——
+ * 两者不是一回事，回填不出 `IngredientRef`。所以四项有数字、出处却为空是**回填的常态**，
+ * 由 `nutritionDraftState` 按「数字变没变」判它是不是一次改动，而不是当成「填了一半」。
+ */
 function draftFromNutrition(nutrition: IngredientNutrition | null): NutritionDraft {
   if (!nutrition) return emptyNutritionDraft();
   return {
@@ -718,35 +725,64 @@ function draftFromNutrition(nutrition: IngredientNutrition | null): NutritionDra
     proteinG: String(nutrition.proteinG),
     fatG: String(nutrition.fatG),
     carbG: String(nutrition.carbG),
-    // 已有行的出处文字不是「参照条目」的 id；界面不需要回填它（重估会重新带一个）
     reference: null,
     model: '',
   };
 }
 
+/** 草稿与库里那行的四项数字是否一致（不比参照条目——见 `nutritionDraftState`） */
+function sameMacros(before: IngredientNutrition, numbers: number[]): boolean {
+  return (
+    before.energyKcal === numbers[0] &&
+    before.proteinG === numbers[1] &&
+    before.fatG === numbers[2] &&
+    before.carbG === numbers[3]
+  );
+}
+
+/** 草稿相对「库里那一行」的处境（录入时 `before` 传 `null`）：三态，比 `null` 更好说 */
+type NutritionDraftState =
+  | { kind: 'unchanged' }
+  | { kind: 'incomplete'; reason: 'partial' | 'no-reference' }
+  | { kind: 'changed'; input: IngredientNutritionInput };
+
 /**
- * 草稿 → 提交形状。**四项要么全给、要么不给**（与路由层同一口径）：
- * 四项都空 = 不提交 `nutrition`（「暂缺」的合法表达）；任何一项有值就要求四项都有。
+ * 草稿相对库里那一行是**没变 / 变了但表达不了 / 可以提交**（录入与改食材共用同一判据）。
  *
- * 返回 `undefined` 表示「四项都没填」；返回 `null` 表示「填了但不完整」（调用方拦保存）。
+ * 为什么不能只看「四项填满没有」：改食材时表单把已有行的四项**回填**进输入框，而库里那行存的
+ * 是出处文本、不是参照条目的 id（见 `draftFromNutrition`），所以回填出来的四项**永远没有出处**。
+ * 若把这当成「填了一半」，**任何带营养行的食材都改不动**（改名/别名/时令/「含」全被挡）——
+ * 而那恰恰是「改食材」要支持的主路径。所以判据是「**数字有没有真的变**」，与 ADR-0013
+ * 实施注记 3 一致（那个注记说「四项原样提交不算一次改动，且只比四项数字、不比参照条目」）。
+ *
+ * 三态里的 `incomplete.reason` 分开，是因为两种情形该说的话不同：只填一半是「形状不全」，
+ * 换了数字却没出处是「出处必须是真读数」——后者不该被说成「你只填了一半」。
+ * 四项全空 = 暂缺（`unchanged`：不提交，也不清掉库里已有的行——清空这条路本仓没开）。
  */
-function nutritionInput(draft: NutritionDraft): IngredientNutritionInput | undefined | null {
+function nutritionDraftState(before: IngredientNutrition | null, draft: NutritionDraft): NutritionDraftState {
   const values = [draft.energyKcal, draft.proteinG, draft.fatG, draft.carbG];
   const filled = values.filter((value) => value.trim() !== '');
-  if (filled.length === 0) return undefined;
-  if (filled.length < values.length) return null;
+  if (filled.length === 0) return { kind: 'unchanged' };
+  if (filled.length < values.length) return { kind: 'incomplete', reason: 'partial' };
   const numbers = values.map((value) => Number(value.trim()));
-  if (numbers.some((value) => !Number.isFinite(value) || value < 0)) return null;
-  // 参照条目：AI 给的预填自带；人全手填时没有参照，就不能落库（出处必须是真读数）——
-  // 这时界面把「先点一下估算营养」说出来（服务端的 `unknown_nutrition_reference` 是第二道网）
-  if (!draft.reference) return null;
+  if (numbers.some((value) => !Number.isFinite(value) || value < 0)) {
+    return { kind: 'incomplete', reason: 'partial' };
+  }
+  // 数字与库里那行一致 → 没变（编辑表单回填的就是这个形状：数字回填、出处留空）
+  if (before && sameMacros(before, numbers)) return { kind: 'unchanged' };
+  // 参照条目：AI 给的预填自带；换了数字却没有参照就落不了库（出处必须是真读数）——
+  // 服务端的 `unknown_nutrition_reference` 是第二道网
+  if (!draft.reference) return { kind: 'incomplete', reason: 'no-reference' };
   return {
-    energyKcal: numbers[0]!,
-    proteinG: numbers[1]!,
-    fatG: numbers[2]!,
-    carbG: numbers[3]!,
-    reference: draft.reference.ingredientId,
-    ...(draft.model.trim() !== '' ? { model: draft.model.trim() } : {}),
+    kind: 'changed',
+    input: {
+      energyKcal: numbers[0]!,
+      proteinG: numbers[1]!,
+      fatG: numbers[2]!,
+      carbG: numbers[3]!,
+      reference: draft.reference.ingredientId,
+      ...(draft.model.trim() !== '' ? { model: draft.model.trim() } : {}),
+    },
   };
 }
 
@@ -769,6 +805,7 @@ function NutritionField({
   onChange,
   testId,
   locked,
+  before,
 }: {
   name: string;
   value: NutritionDraft;
@@ -776,11 +813,26 @@ function NutritionField({
   testId: string;
   /** 已有成分表读数：这一条不许被估算改写（界面把按钮换成说明，不给一个按下去必报错的按钮） */
   locked?: boolean;
+  /** 库里现有的营养行（改食材时传入）：用来判「回填的四项是否与原值一致」 */
+  before?: IngredientNutrition | null;
 }) {
   const suggestion = useNutritionSuggestion();
   const result = suggestion.data;
   const degraded = result?.degraded === true;
   const noEstimate = result !== undefined && !degraded && result.estimate === undefined;
+
+  /** 估算结果 → 草稿：只填四项 + 参照与模型（预填与「↺ 重新填入」共用，不许两处各写一份） */
+  const fillFromEstimate = (estimate: NutritionEstimateResponse['estimate'], model: string): void => {
+    if (!estimate) return;
+    onChange({
+      energyKcal: String(estimate.energyKcal),
+      proteinG: String(estimate.proteinG),
+      fatG: String(estimate.fatG),
+      carbG: String(estimate.carbG),
+      reference: estimate.reference,
+      model,
+    });
+  };
 
   /**
    * **预填**（AC 原文）：估算一回来就填进四项，不用再点一下。
@@ -796,33 +848,15 @@ function NutritionField({
     if (value.energyKcal.trim() !== '' || value.proteinG.trim() !== '' || value.fatG.trim() !== '' || value.carbG.trim() !== '') {
       return;
     }
-    onChange({
-      energyKcal: String(estimate.energyKcal),
-      proteinG: String(estimate.proteinG),
-      fatG: String(estimate.fatG),
-      carbG: String(estimate.carbG),
-      reference: estimate.reference,
-      model: result?.model ?? '',
-    });
+    fillFromEstimate(estimate, result?.model ?? '');
     // `value` / `onChange` 故意不进依赖：它们每次渲染都变，进了会变成死循环。
     // 本仓没有 react-hooks 插件（eslint.config.js 只上 typescript-eslint），所以不写 disable 注释
     // ——依赖数组只有 `result`，而它每次提问都是**新对象**，重新提问时新结果照样填得进去。
   }, [result]);
 
-  const adopt = (): void => {
-    const estimate = result?.estimate;
-    if (!estimate) return;
-    onChange({
-      energyKcal: String(estimate.energyKcal),
-      proteinG: String(estimate.proteinG),
-      fatG: String(estimate.fatG),
-      carbG: String(estimate.carbG),
-      reference: estimate.reference,
-      model: result?.model ?? '',
-    });
-  };
+  const adopt = (): void => fillFromEstimate(result?.estimate, result?.model ?? '');
 
-  const partial = nutritionInput(value) === null;
+  const state = nutritionDraftState(before ?? null, value);
   const ready = name.trim() !== '';
 
   return (
@@ -886,6 +920,10 @@ function NutritionField({
               placeholder="—"
               aria-label={field.label}
               data-testid={`ingredient-nutrition-${testId}-${field.key}`}
+              // 已有成分表读数的条目：四项只读（服务端的 `NutritionLockedError` 就是拒收这一路，
+              // 而这里没有「估算营养」按钮可取新出处——可编的输入框只会让人改完撞一句
+              // 「先点一下估算营养」，指着一个被藏起来的按钮）
+              readOnly={locked}
               onChange={(event) => onChange({ ...value, [field.key]: event.target.value })}
             />
           </label>
@@ -893,9 +931,13 @@ function NutritionField({
       </div>
 
       {/* 四项留空 = 暂缺（不拦保存）；只填了一部分时说清楚为什么保存不了 */}
-      {partial ? (
+      {state.kind === 'incomplete' ? (
         <div className={styles.error} data-testid={`ingredient-nutrition-partial-${testId}`}>
-          四项要么全填、要么全空（不半真半假地进合计）{value.reference ? '' : '；先点一下「估算营养」拿到出处'}。
+          {state.reason === 'partial'
+            ? '四项要么全填、要么全空（不半真半假地进合计）' +
+              (value.reference ? '' : '；先点一下「估算营养」拿到出处') +
+              '。'
+            : '换了数字要一起点一下「估算营养」拿到出处（出处必须是真的成分表条目）。'}
         </div>
       ) : null}
 
@@ -1035,9 +1077,10 @@ function CreateIngredientCard({
     setConflict(null);
     // 营养四项只填了一半（或填满了但没有参照出处）：**当场拦下**，不静默丢——
     // 静默丢会让掌勺者以为自己填的营养存上了（服务端的 400 是第二道网，但那时他已经离开表单）
-    if (nutritionInput(nutrition) === null) {
+    const state = nutritionDraftState(null, nutrition);
+    if (state.kind === 'incomplete') {
       setError(
-        nutrition.reference
+        state.reason === 'partial'
           ? '营养四项要么全填、要么全空——只填一部分保存不了。'
           : '营养四项要先点一下「估算营养」拿到出处，或者全部清空（暂缺也能保存）。',
       );
@@ -1049,7 +1092,7 @@ function CreateIngredientCard({
         aliases: parseAliases(aliasesText),
         seasonMonths: months,
         contains: contains.map((item) => item.id),
-        ...(nutritionInput(nutrition) ? { nutrition: nutritionInput(nutrition)! } : {}),
+        ...(state.kind === 'changed' ? { nutrition: state.input } : {}),
       });
       onCreated(created.id);
     } catch (err) {
@@ -1224,26 +1267,6 @@ function CreateIngredientCard({
 }
 
 const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-
-/**
- * 草稿里的营养与库里那一行是不是不一样（改食材时决定要不要提交这一块）。
- *
- * 两处刻意的宽松（都是为了不写空台账）：
- *   * 库里本来没有营养（`null`）而草稿也全空 → 没变；
- *   * 只比四项数字，不比参照条目（重估时参照可能换成另一条读数，而那不改变数字）。
- */
-function nutritionChanged(before: IngredientNutrition | null, draft: NutritionDraft): boolean {
-  const next = nutritionInput(draft);
-  if (next === undefined) return before !== null;
-  if (next === null) return false;
-  if (!before) return true;
-  return (
-    before.energyKcal !== next.energyKcal ||
-    before.proteinG !== next.proteinG ||
-    before.fatG !== next.fatG ||
-    before.carbG !== next.carbG
-  );
-}
 
 /**
  * 四项营养的只读展示（详情卡）：**三种情况分开说**——

@@ -920,8 +920,21 @@
     `MenuNutrition.partial` 语义扩写 + `nutritionSource` 两种措辞；
   * 界面：字典页录入/改表单的四项输入 + 「估算营养」按钮（`NutritionField`）、详情卡只读展示
     （估算值 vs 成分表读数）、`NutritionSheet` 的两句话（`nutrition-estimated` / `nutrition-missing`）；
-  * 测试：`api/ingredient-nutrition.test.ts`（18 条）+ `e2e/nutrition-estimate.spec.ts`（14 条，
+  * 测试：`api/ingredient-nutrition.test.ts`（18 条）+ `e2e/nutrition-estimate.spec.ts`（15 条，
     phone/tablet 两 project 都跑）。
+
+- ✅ **审查修掉一条真回归：「改食材」对所有带营养行的条目都保存不了**（来源：本票 code-review
+  双轴同时指出，2026-10-03 同票修）。**根因**：改食材表单把已有行的四项**回填**进输入框，
+  而库里那行存的是**出处文本**（source）、不是参照条目的 id（`draftFromNutrition` 只能 `reference: null`）；
+  提交前那句「四项填了一半就拦下」只看「四项填满没有」，于是**回填出来的四项永远算「不完整」**
+  ——改名/别名/时令/「含」全被挡，142 条成分表读数的条目更是「什么都不能改」，
+  且提示的「先点一下『估算营养』」指着一个在 `locked` 时被藏起来的按钮。
+  **修法**：判据换成 `nutritionDraftState(before, draft)` 三态——`unchanged`（数字与库里那行一致，
+  **不提交也不拦**）/ `incomplete`（真填了一半，或换了数字却没出处）/ `changed`（可提交）。
+  与 ADR-0013 实施注记 3 同一口径（「四项原样提交不算改动，只比数字不比参照」），
+  也把两处 `nutritionChanged` + `nutritionInput` 合并到一处。顺带：`locked` 的四项改只读
+  （服务端本就 `NutritionLockedError` 拒收，可编的输入框只会让人改完撞一句无路可走的提示）。
+  回归网：`e2e/nutrition-estimate.spec.ts` 的「已有营养行的食材：只改别名照样存得下去」。
 
 - **本票新增的三个口径已记进 ADR-0013 的「实施注记」**（数字由模型给但参照必须过池内校验、
   四项 all-or-nothing、改食材时四项原样提交不算改动）——它们超出 ADR 原文，后来者需要先读到。

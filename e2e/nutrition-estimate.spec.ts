@@ -131,6 +131,55 @@ test('估算营养 → 预填四项 → 人改一个数 → 保存：库里那�
 });
 
 /**
+ * 第一条之二（回归网）：**一条已经有营养行的食材，只改别名也要存得下去**。
+ *
+ * 这是「改食材」与「估算营养」交界处最容易做坏的一条：编辑表单把已有行的四项**回填**进输入框，
+ * 但那四项目测是「不完整」的（库里那行的出处文字不是「参照条目」的 id，回填不出 reference），
+ * 于是四项看着「填了却没有出处」——若把这种状态一律当成「四项填了一半」拦下，
+ * 那么**任何带营养行的食材都改不动了**（改名/别名/时令/「含」全被挡），
+ * 既有成分表读数的 142 条更是「什么都不能改」。
+ *
+ * 判据必须是「**草稿与库里那行相比有没有真的变**」：没变就整块不提交、不报错；
+ * 真改了却表达不了（只填一半、或换掉了数字却没有新出处）才当场说清。
+ */
+test('已有营养行的食材：只改别名照样存得下去（四项回填不该被当成「填了一半」）', async ({ page }) => {
+  await openDictionary(page);
+
+  const name = uniqueName('改别名');
+  await page.getByTestId('ingredient-create-open').click();
+  await page.getByTestId('ingredient-name-new').fill(name);
+  // 用估算这条路落一行营养（本用例要的正是「已有营养行」这个前置）
+  await page.getByTestId('ingredient-nutrition-suggest-new').click();
+  await expect(page.getByTestId('ingredient-nutrition-estimate-new')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('ingredient-save-new').click();
+
+  await expect.poll(async () => (await findIngredient(page, name))?.name, { timeout: 15_000 }).toBe(name);
+  const created = (await findIngredient(page, name))!;
+  expect(created.nutrition).not.toBeNull();
+  const id = created.id;
+
+  // 进编辑态：四项被**回填**（这是关键前置——不是空的）
+  await page.getByTestId(`ingredient-detail-${id}`).waitFor({ timeout: 15_000 });
+  await page.getByTestId(`ingredient-edit-open-${id}`).click();
+  const editor = page.getByTestId(`ingredient-editor-${id}`);
+  await expect(editor).toBeVisible();
+  await expect(page.getByTestId(`ingredient-nutrition-edit-${id}-energyKcal`)).not.toHaveValue('');
+
+  // 只改别名——**不该拦保存**，也不该报「四项要么全填」
+  await page.getByTestId(`ingredient-aliases-edit-${id}`).fill('38-改别名后');
+  await expect(page.getByTestId(`ingredient-nutrition-partial-edit-${id}`)).toHaveCount(0);
+  await page.getByTestId(`ingredient-save-edit-${id}`).click();
+
+  // 保存成功：别名落库、那一行营养**原样**（没被顺手清掉）
+  await expect(page.getByTestId(`ingredient-error-edit-${id}`)).toHaveCount(0);
+  await expect(page.getByTestId(`ingredient-detail-${id}`)).toBeVisible({ timeout: 15_000 });
+  await expect.poll(async () => (await findIngredient(page, name))?.name, { timeout: 15_000 }).toBe(name);
+  const after = (await findIngredient(page, name))!;
+  expect(after.nutrition).not.toBeNull();
+  expect(after.nutrition!.energyKcal).toBe(created.nutrition!.energyKcal);
+});
+
+/**
  * 第二条（AC：AI 不可用不拦保存）：LLM 故障实例上四项留空、界面说一句、**保存照旧成功**。
  *
  * 这是本票最容易被做坏的一条（顺手把「拿不到估算」当成保存失败）。
