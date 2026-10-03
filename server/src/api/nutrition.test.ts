@@ -214,6 +214,53 @@ describe('缺数据的食材', () => {
   });
 });
 
+/**
+ * 017（issue #39）补录的读数**真的进合计**——这是那条票的 AC 4。
+ *
+ * 为什么单独一组、而不是塞进上面的「缺数据」块：本迁移补的 11 条里**没有一条被种子菜谱引用**
+ * （它们全是导入进来的草稿在用），所以「补录后重算」只能靠**自建一道用它们的菜**来真走一遍
+ * 合计路径——否则这条 AC 就没有可验的对象。选的生蚝/油菜一个荤一个素，顺便覆盖两项相加。
+ *
+ * 断言的是**外部可见行为**（读数不再是 null、合计等于两项之和、缺口清单为空），
+ * 不是「表里有一行」——那样只能证明迁移跑过了，证明不了它进了数字。
+ */
+describe('017 补录的读数进合计（issue #39）', () => {
+  it('用过新补食材的菜不再被报成缺数据，且合计等于逐项之和', async () => {
+    harness = createTestHarness();
+    harness.db
+      .prepare(
+        `INSERT INTO recipes (id, name, kind, effort, status, source, steps)
+         VALUES ('probe_filled_gap', '探针补录菜', 'meat', 'quick', 'active', 'oral', '')`,
+      )
+      .run();
+    harness.db
+      .prepare(
+        `INSERT INTO recipe_ingredients (recipe_id, ingredient_id, position, adult_grams, scaling)
+         VALUES ('probe_filled_gap', 'oyster', 0, 100, 'linear')`,
+      )
+      .run();
+    harness.db
+      .prepare(
+        `INSERT INTO recipe_ingredients (recipe_id, ingredient_id, position, adult_grams, scaling)
+         VALUES ('probe_filled_gap', 'rape', 1, 200, 'linear')`,
+      )
+      .run();
+
+    await book('2025-06-01:dinner', { diners: ['mom'], dishes: [{ recipeId: 'probe_filled_gap' }] });
+    const result = (await nutrition('2025-06-01:dinner'))!;
+    const dish = dishOf(result, 'probe_filled_gap');
+
+    // 两项都有读数（不再是 null）——一个成人，克数不折算
+    const oyster = dish.ingredients.find((item) => item.ingredientId === 'oyster')!;
+    expect(oyster.per100g).not.toBeNull();
+    expect(oyster.energyKcal).toBeCloseTo((100 / 100) * 57.6, 1);
+    expect(dish.missing).toBe(false);
+    expect(result.missingIngredients).toEqual([]);
+    // 合计 = 生蚝 100 g × 57.6/100 + 油菜 200 g × 27.2/100
+    expect(result.energyKcal).toBeCloseTo(57.6 + 2 * 27.2, 1);
+  });
+});
+
 describe('每道菜的食谱', () => {
   it('返回做法步骤原文 + 食材清单（成人份基准，不随人数放大）', async () => {
     harness = createTestHarness();
