@@ -11,7 +11,7 @@ import {
   useIngredients,
   usePatchIngredient,
 } from '../api/ingredients';
-import { aliasesForDisplay } from '../components/ingredientVocabulary';
+import { aliasesForDisplay, parseAliases } from '../components/ingredientVocabulary';
 import { SectionedLayout } from '../components/SectionedLayout';
 import { useIdentity } from '../identity';
 import { useLayout } from '../layout';
@@ -863,14 +863,6 @@ function matchKeyword(ingredient: Ingredient, keyword: string): boolean {
 /** 时令月份的人话：空数组 = 四季有售（不写月份行） */
 function seasonLabel(months: number[]): string {
   return months.length > 0 ? `${months.join('、')} 月` : '四季有售';
-}
-
-/** 别名输入框：逗号 / 顿号 / 空白都当分隔符，trim 后去空 */
-function parseAliases(text: string): string[] {
-  return text
-    .split(/[,，、\s]+/)
-    .map((item) => item.trim())
-    .filter((item) => item !== '');
 }
 
 /** 引用类别的中文名（说清「被谁用着」，而不是只报一个英文表名）。

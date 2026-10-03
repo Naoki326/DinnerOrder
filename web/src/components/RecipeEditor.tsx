@@ -1,5 +1,13 @@
 import { useEffect, useState } from 'react';
-import type { Recipe, RecipeCuisine, RecipeEffort, RecipeIngredientInput, RecipeKind, TasteTag } from '@dinnerorder/server/types';
+import type {
+  IngredientConflict,
+  Recipe,
+  RecipeCuisine,
+  RecipeEffort,
+  RecipeIngredientInput,
+  RecipeKind,
+  TasteTag,
+} from '@dinnerorder/server/types';
 import {
   useCreateRecipe,
   useImportRecipe,
@@ -8,7 +16,8 @@ import {
   useRecipeStatusAction,
   type RecipeImportPreview,
 } from '../api/recipe-library';
-import { useIngredients } from '../api/ingredients';
+import { IngredientWriteError, useCreateIngredient, useIngredients } from '../api/ingredients';
+import { parseAliases } from './ingredientVocabulary';
 import {
   CUISINE_OPTIONS,
   EFFORT_OPTIONS,
@@ -538,11 +547,41 @@ function EditHistory({
   );
 }
 
-/** 加一项食材：按名字/别名搜字典，选中即加（克数留空等掌勺者填） */
+/**
+ * 往这道菜里加一项食材：按名字/别名搜字典，选中即加（克数留空等掌勺者填）。
+ *
+ * 搜不到时**不是死路**（issue #36；ADR-0012「决定一」）：那句「字典里没有对得上的食材」旁边
+ * 直接给一个**带着当前输入**的「新建『X』」，就地在菜谱草稿里把食材**录入**进字典，
+ * 成功后走同一条 `onAdd` 回调进食材行。
+ *
+ * 三条纪律：
+ *   * **不导航**：新建表单就地展开（不是路由/弹层），草稿里的菜名、步骤、其他食材都不受影响。
+ *   * **不复用字典页的表单组件**（spec 明写两处入口各自渲染表单）：这里只复用领域/接口层
+ *     （`useCreateIngredient` / `useIngredients`），换的是菜谱编辑器的卡点不被字典页的进度阻塞。
+ *   * **词汇照 `CONTEXT.md`**：新加的动作叫「新建 / 录入食材」；上面那个「加食材」标签是
+ *     菜谱行里的动作，保留。
+ */
 function AddIngredient({ onAdd }: { onAdd: (ingredient: { id: string; name: string }) => void }) {
   const [query, setQuery] = useState('');
+  /** 正在就地新建（null = 在搜索档）；字符串是预填的规范名（带上当前输入，不用重敲） */
+  const [creating, setCreating] = useState<string | null>(null);
   const results = useIngredients(query);
   const hit = results.data ?? [];
+
+  // 录入成功 / 撞名时「用它」走**同一条**加食材回调：进食材行只有一个入口
+  const add = (ingredient: { id: string; name: string }): void => {
+    onAdd(ingredient);
+    setCreating(null);
+    setQuery('');
+  };
+
+  if (creating !== null) {
+    return (
+      <div className={styles.add} data-testid="recipe-add-ingredient">
+        <NewIngredientForm initialName={creating} onAdd={add} onCancel={() => setCreating(null)} />
+      </div>
+    );
+  }
 
   return (
     <div className={styles.add} data-testid="recipe-add-ingredient">
@@ -559,7 +598,18 @@ function AddIngredient({ onAdd }: { onAdd: (ingredient: { id: string; name: stri
         />
       </div>
       {query.trim() !== '' && hit.length === 0 && !results.isPending ? (
-        <div className="sub">字典里没有对得上的食材。</div>
+        <div data-testid="recipe-ingredient-not-found">
+          <div className="sub">字典里没有对得上的食材。</div>
+          <button
+            type="button"
+            className="btn block"
+            style={{ marginTop: 8 }}
+            data-testid="recipe-ingredient-create-open"
+            onClick={() => setCreating(query.trim())}
+          >
+            ＋ 新建「{query.trim()}」
+          </button>
+        </div>
       ) : null}
       {hit.slice(0, 8).map((ingredient) => (
         <button
@@ -567,14 +617,217 @@ function AddIngredient({ onAdd }: { onAdd: (ingredient: { id: string; name: stri
           type="button"
           className={styles.addOption}
           data-testid={`recipe-add-${ingredient.id}`}
-          onClick={() => {
-            onAdd({ id: ingredient.id, name: ingredient.name });
-            setQuery('');
-          }}
+          onClick={() => add({ id: ingredient.id, name: ingredient.name })}
         >
           {ingredient.name}
         </button>
       ))}
+    </div>
+  );
+}
+
+/**
+ * 就地**录入食材**表单（issue #36）：只有一个必填项（规范名），别名 / 时令 / 「含」指针都可空——
+ * 与字典页的录入表单同一字段集（spec 明写两处**各自渲染**，接受少量重复），但**不离开菜谱草稿**。
+ *
+ * 撞名（规范名或已有别名）时服务端回 409（`IngredientWriteError.code === 'ingredient_conflict'`
+ * 且带 `conflict: {id, name}`）：把已有条目摆出来，给一个「用它」——它走**同一条** `onAdd`，
+ * 于是「我搜的其实是它另一个叫法」这一步不用回字典页。
+ */
+function NewIngredientForm({
+  initialName,
+  onAdd,
+  onCancel,
+}: {
+  initialName: string;
+  onAdd: (ingredient: { id: string; name: string }) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const [aliasesText, setAliasesText] = useState('');
+  const [months, setMonths] = useState<number[]>([]);
+  // 「含」目标只存 id + 规范名（预填建议是 #37 的活，这里只做手工挂）
+  const [contains, setContains] = useState<{ id: string; name: string }[]>([]);
+  const [containsQuery, setContainsQuery] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<IngredientConflict | null>(null);
+  const create = useCreateIngredient();
+
+  const candidates = (useIngredients(containsQuery).data ?? [])
+    .filter((option) => !contains.some((selected) => selected.id === option.id))
+    .slice(0, 6);
+
+  const submit = async (): Promise<void> => {
+    setError(null);
+    setConflict(null);
+    try {
+      const created = await create.mutateAsync({
+        name,
+        aliases: parseAliases(aliasesText),
+        seasonMonths: months,
+        contains: contains.map((item) => item.id),
+      });
+      onAdd({ id: created.id, name: created.name });
+    } catch (err) {
+      if (err instanceof IngredientWriteError && err.code === 'ingredient_conflict' && err.conflict) {
+        setConflict(err.conflict);
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError('录入没成功');
+      }
+    }
+  };
+
+  return (
+    <div className={styles.createForm} data-testid="recipe-new-ingredient-form">
+      <div className="spread">
+        <b>新建食材</b>
+        <span className="sub">录入后直接进上面的食材行</span>
+      </div>
+
+      <div className={styles.createField}>
+        <span className={styles.createLabel}>规范名（必填）</span>
+        <input
+          className={styles.input}
+          type="text"
+          value={name}
+          placeholder="如 莴笋"
+          aria-label="食材规范名"
+          data-testid="recipe-new-ingredient-name"
+          onChange={(event) => setName(event.target.value)}
+        />
+      </div>
+
+      <div className={styles.createField}>
+        <span className={styles.createLabel}>别名（可不填，用逗号或顿号分开）</span>
+        <input
+          className={styles.input}
+          type="text"
+          value={aliasesText}
+          placeholder="如 青笋、莴苣笋"
+          aria-label="食材别名"
+          data-testid="recipe-new-ingredient-aliases"
+          onChange={(event) => setAliasesText(event.target.value)}
+        />
+      </div>
+
+      <div className={styles.createField}>
+        <span className={styles.createLabel}>时令月份（可不填 = 四季有售）</span>
+        <div className={styles.months}>
+          {MONTHS.map((month) => {
+            const on = months.includes(month);
+            return (
+              <button
+                key={month}
+                type="button"
+                className={on ? `${styles.month} ${styles.monthOn}` : styles.month}
+                aria-pressed={on}
+                data-testid={`recipe-new-ingredient-month-${month}`}
+                onClick={() =>
+                  setMonths((current) =>
+                    current.includes(month)
+                      ? current.filter((item) => item !== month)
+                      : [...current, month].sort((a, b) => a - b),
+                  )
+                }
+              >
+                {month}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className={styles.createField}>
+        <span className={styles.createLabel}>隐性忌口「含」（可不填，只能挑字典里现有的）</span>
+        <input
+          className={styles.input}
+          type="text"
+          value={containsQuery}
+          placeholder="搜食材（如 贝类）"
+          aria-label="搜「含」的目标"
+          data-testid="recipe-new-ingredient-contains-search"
+          onChange={(event) => setContainsQuery(event.target.value)}
+        />
+        {containsQuery.trim() !== '' && candidates.length > 0 ? (
+          <div className={styles.suggestions}>
+            {candidates.map((candidate) => (
+              <button
+                key={candidate.id}
+                type="button"
+                className={styles.suggestion}
+                data-testid={`recipe-new-ingredient-contains-option-${candidate.id}`}
+                onClick={() => {
+                  setContains((current) => [...current, candidate]);
+                  setContainsQuery('');
+                }}
+              >
+                {candidate.name}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {contains.length > 0 ? (
+          <div className={styles.chips}>
+            {contains.map((target) => (
+              <button
+                key={target.id}
+                type="button"
+                className={styles.chip}
+                aria-label={`去掉 ${target.name}`}
+                data-testid={`recipe-new-ingredient-contains-chip-${target.id}`}
+                onClick={() => setContains((current) => current.filter((item) => item.id !== target.id))}
+              >
+                {target.name} ✕
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      {conflict ? (
+        <div className={styles.conflict} data-testid="recipe-new-ingredient-conflict">
+          「{conflict.name}」已经在字典里了——别建重复的，直接用那一条。
+          <div className={styles.actions}>
+            <button
+              type="button"
+              className="btn"
+              data-testid="recipe-new-ingredient-use"
+              onClick={() => onAdd({ id: conflict.id, name: conflict.name })}
+            >
+              用它
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className={styles.error} data-testid="recipe-new-ingredient-error">
+          {error}
+        </div>
+      ) : null}
+
+      <div className={styles.actions}>
+        <button
+          type="button"
+          className="btn"
+          data-testid="recipe-new-ingredient-save"
+          disabled={create.isPending || name.trim() === ''}
+          onClick={() => void submit()}
+        >
+          {create.isPending ? '录入中…' : '录入食材'}
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          data-testid="recipe-new-ingredient-cancel"
+          disabled={create.isPending}
+          onClick={onCancel}
+        >
+          返回搜索
+        </button>
+      </div>
     </div>
   );
 }

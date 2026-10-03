@@ -41,11 +41,16 @@ export default defineConfig({
     // `ingredients.spec.ts`（#34）**在白名单里**：它的每条用例都在 `afterEach` 里用删除功能
     // 清掉自己新建的条目（零引用，删得掉），两个 project 顺序跑不会互相干扰——而入口路径
     // 的两种版式正是本票 AC 点名的，需要真在平板上跑一次。
+    //
+    // `recipe-editor-create-ingredient.spec.ts`（#36）**也在白名单里**：它按 spec #33 的
+    // Testing Decisions「两版式：手机与平板各跑一次入口路径」而写，且**名字带 project 后缀**
+    // （`uniqueSuffix` 含 `test.info().project.name`）——不会有 `recipe-library.spec.ts` 那种
+    // 「固定名字跨 project 命中上一轮」的干扰。
     { name: 'phone', use: { ...devices['Desktop Chrome'], viewport: E2E.viewport } },
     {
       name: 'tablet',
       use: { ...devices['Desktop Chrome'], viewport: E2E.tabletViewport },
-      testMatch: /(tablet|views|smoke|review|ingredients)\.spec\.ts/,
+      testMatch: /(tablet|views|smoke|review|ingredients|recipe-editor-create-ingredient)\.spec\.ts/,
     },
   ],
   webServer: [

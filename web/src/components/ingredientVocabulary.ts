@@ -20,3 +20,17 @@ export function aliasesForDisplay(ingredient: { name: string; aliases: string[] 
 export function primaryAlias(ingredient: { name: string; aliases: string[] }): string | undefined {
   return aliasesForDisplay(ingredient)[0];
 }
+
+/**
+ * 别名输入框：逗号 / 顿号 / 空白都当分隔符，trim 后去空。
+ *
+ * 放在这里而不是两处各写一份：录入表单**两处各渲染**（字典页与菜谱编辑器就地新建，spec #33
+ * 有意认可那份**表单 JSX** 的重复），但这是**纯函数**，两处必须同一口径——重复一份就会默默漂移
+ * （重复的注释自己写着「与另一处同一口径」，却没有任何机制保证）。
+ */
+export function parseAliases(text: string): string[] {
+  return text
+    .split(/[,，、\s]+/)
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+}
