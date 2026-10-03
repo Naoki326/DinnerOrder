@@ -408,6 +408,15 @@ test('平板版逐页冒烟：六页打开得了、关键入口在、不横向�
   await expect(page.getByTestId('recipe-detail-empty')).toBeVisible();
   await expect(page.getByTestId('main-nav')).toHaveCount(0);
   await noOverflow('菜谱库');
+
+  // 食材字典（从属页：列表在左、详情在右；主导航不显示，issue #34）
+  await page.goto(`${ROOT_URL}/ingredients`);
+  await expect(page.getByTestId('ingredient-dictionary-view')).toBeVisible();
+  await expect(page.getByTestId('ingredient-dictionary-view')).toHaveAttribute('data-layout-view', 'wide');
+  await expect(page.getByTestId('ingredient-search-input')).toBeVisible();
+  await expect(page.getByTestId('ingredient-detail-empty')).toBeVisible();
+  await expect(page.getByTestId('main-nav')).toHaveCount(0);
+  await noOverflow('食材字典');
 });
 
 /** 故事 49 / 50：平板版下 A/B/C 三套视图都能用，且都走同一份数据 */

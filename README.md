@@ -131,6 +131,9 @@ docs/deploy/README.md   部署与运维手册（安装/卸载/备份恢复/导�
 | --- | --- |
 | `GET /api/health` | 冒烟：时钟/LLM/basePath 的注入证明 |
 | `GET /api/ingredients?q=` | 食材字典（规范名 + 别名；`q` 两者都匹配） |
+| `POST /api/ingredients` | **录入食材**（#34、[ADR-0012](docs/adr/0012-ingredient-dictionary-gets-a-write-path.md)）：只要求 `name`；可选 `aliases` / `seasonMonths` / `contains`（目标 id 数组，字典外 → 400，**不静默丢弃**）。id 由服务端按名称派生（客户端送来的 `id` 忽略）；撞规范名或别名 → 409 且带冲突对象的 `id`/`name` |
+| `DELETE /api/ingredients/:id` | **删食材**（#34）：零引用才成功；有引用 → 409 且 `references[]` 报出是哪一类（6 处 `NO ACTION`）、几条；不存在 → 404 |
+| `GET /api/ingredients/:id/references` | 这条食材被谁用着、各几条（与 `DELETE` 同一份判定；界面据此决定给按钮还是给说明） |
 | `GET /api/members` · `GET /api/members/:id` | 家人画像（大人/小孩、性别、出生年月、忌口、爱吃）。**已删的家人不出现**（软删除，`GET /members/:id` 也一样 404） |
 | `POST /api/members` | 新增家人：`name` / `emoji` / `kind` / `gender` 必填，小孩另需 `birthMonth`（201 + 落库后的画像） |
 | `PATCH /api/members/:id` | 改画像：`birthMonth` / `avoid[]` / `loves[]`，传了的块整体替换 |

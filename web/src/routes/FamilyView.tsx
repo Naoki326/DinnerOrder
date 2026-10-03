@@ -13,6 +13,8 @@ import {
 import { useIdentity } from '../identity';
 import { useLayout } from '../layout';
 import { ageInYears, memberSubtitle } from '../components/memberLabel';
+// 同名别名不重复显示（「黄芪（黄芪）」的渲染毛病，issue #34）
+import { primaryAlias } from '../components/ingredientVocabulary';
 import styles from './FamilyView.module.css';
 
 /**
@@ -560,18 +562,22 @@ function IngredientPicker({
 
       {query.trim() !== '' && visible.length > 0 ? (
         <div className={styles.suggestions}>
-          {visible.map((ingredient) => (
-            <button
-              key={ingredient.id}
-              type="button"
-              className={styles.suggestion}
-              data-testid={`${testIdPrefix}-suggestion-${ingredient.id}`}
-              onClick={() => add(ingredient)}
-            >
-              {ingredient.name}
-              {ingredient.aliases.length > 0 ? `（${ingredient.aliases[0]}）` : ''}
-            </button>
-          ))}
+          {visible.map((ingredient) => {
+            // 同名别名不重复显示（否则会出现「黄芪（黄芪）」，issue #34）
+            const alias = primaryAlias(ingredient);
+            return (
+              <button
+                key={ingredient.id}
+                type="button"
+                className={styles.suggestion}
+                data-testid={`${testIdPrefix}-suggestion-${ingredient.id}`}
+                onClick={() => add(ingredient)}
+              >
+                {ingredient.name}
+                {alias ? `（${alias}）` : ''}
+              </button>
+            );
+          })}
         </div>
       ) : null}
     </>
@@ -612,7 +618,7 @@ function LovesPicker({
         id: item.id,
         name: item.name,
         kind: 'ingredient' as const,
-        note: item.aliases[0],
+        note: primaryAlias(item),
       })),
     ...recipes.map((recipe: Recipe) => ({
       key: `recipe:${recipe.id}`,

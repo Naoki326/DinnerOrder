@@ -141,6 +141,73 @@ export interface Ingredient {
   contains: IngredientRef[];
 }
 
+// ---------------------------------------------------------------- 食材字典维护（issue #34；ADR-0012）
+
+/**
+ * `POST /api/ingredients` 的入参：掌勺者**录入食材**（CONTEXT「食材字典维护」）。
+ *
+ * **只有一个必填项：规范名**。别名、时令月份、「含」指针都是事后按需补的增量——
+ * 不录时令仍是既定的「四季有售」（不是缺录）。id **不在**这里：由服务端按名称派生，
+ * 客户端送来的 `id` 一律忽略。
+ */
+export interface IngredientCreate {
+  /** 规范名（trim 后非空）；全库唯一（`ingredients.name` 是 UNIQUE） */
+  name: string;
+  /** 别名（全局唯一：撞已有规范名或已有别名都是 409）；缺省空数组 */
+  aliases?: string[];
+  /** 时令月份 1–12；缺省空数组 = 四季有售（一条月份行也不写） */
+  seasonMonths?: number[];
+  /**
+   * 隐性忌口「含」指针目标（**食材 id 数组**，不是名字）：目标必须在字典里，
+   * 出现字典外的 id → 400（**不静默丢弃**）。缺省空数组。
+   */
+  contains?: string[];
+}
+
+/** 冲突对象的指认：id + 规范名（界面据此给出「用这条」） */
+export interface IngredientConflict {
+  id: string;
+  name: string;
+}
+
+/** 食材被谁引用（删食材前那 6 处完整性检查的类别；`NO ACTION` 外键的执行者） */
+export type IngredientReferenceKind =
+  | 'recipe_ingredients'
+  | 'member_avoid'
+  | 'member_loves'
+  | 'exchange_items'
+  | 'grocery_items'
+  | 'ingredient_contains';
+
+/** 一类引用 + 几条（`DELETE /api/ingredients/:id` 在 409 里报出来，界面据此说「只能改名」） */
+export interface IngredientReferenceCount {
+  kind: IngredientReferenceKind;
+  count: number;
+}
+
+/** `POST /api/ingredients` 的响应（201）：落库后的完整食材，与列表接口同一形状 */
+export interface IngredientCreateResponse {
+  ingredient: Ingredient;
+}
+
+/** `DELETE /api/ingredients/:id` 的响应：物理删除生效后返回被删的那条（界面可展示「已删掉『X』」） */
+export interface IngredientDeleteResponse {
+  ok: boolean;
+  ingredient: Ingredient;
+}
+
+/**
+ * `GET /api/ingredients/:id/references` 的响应：这条食材被哪些地方引用、各几条。
+ *
+ * 与 `DELETE` 同一份判定（领域层 `ingredientReferences`）：界面据此在**按删除之前**就知道
+ * 该给按钮还是给说明（有引用时按下去必报 409，那就不要给按钮）。
+ */
+export interface IngredientReferencesResponse {
+  id: string;
+  /** 只列非零的类别（空数组 = 零引用，可删） */
+  references: IngredientReferenceCount[];
+}
+
 /** 菜谱荤素类型：荤 / 素 / 汤（汤分荤素，总纲 §2.8） */
 export type RecipeKind = 'meat' | 'veg' | 'soup_meat' | 'soup_veg';
 

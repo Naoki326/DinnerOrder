@@ -7,6 +7,7 @@ import { LayoutProvider } from './layout';
 import { ViewModeProvider } from './viewMode';
 import { FamilyView } from './routes/FamilyView';
 import { GroceryView } from './routes/GroceryView';
+import { IngredientDictionaryView } from './routes/IngredientDictionaryView';
 import { LayoutRoute } from './routes/LayoutRoute';
 import { NotFoundView } from './routes/Placeholders';
 import { RecipeLibraryView } from './routes/RecipeLibraryView';
@@ -70,6 +71,16 @@ const router = createBrowserRouter(
       element: (
         <AppShell hideNav>
           <RecipeLibraryView />
+        </AppShell>
+      ),
+    },
+    {
+      // 食材字典（issue #34）：与菜谱库同级的**从属页面**，同样不占主导航（`hideNav`）。
+      // 录食材 / 删食材的入口在设置里，不在底部那四项。
+      path: '/ingredients',
+      element: (
+        <AppShell hideNav>
+          <IngredientDictionaryView />
         </AppShell>
       ),
     },

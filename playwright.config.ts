@@ -37,11 +37,15 @@ export default defineConfig({
     // 上一个 project 留下的那道（`recipe-form-<新 id>` 于是永远不出现）——是**跨 project 的
     // 测试干扰**，不是版式问题。菜谱库的宽版摆法由 `tablet.spec.ts` 的两条直接覆盖
     // （「菜谱库在平板版下不显示主导航」+「逐页冒烟」里的双列与搜索入口），更对口。
+    //
+    // `ingredients.spec.ts`（#34）**在白名单里**：它的每条用例都在 `afterEach` 里用删除功能
+    // 清掉自己新建的条目（零引用，删得掉），两个 project 顺序跑不会互相干扰——而入口路径
+    // 的两种版式正是本票 AC 点名的，需要真在平板上跑一次。
     { name: 'phone', use: { ...devices['Desktop Chrome'], viewport: E2E.viewport } },
     {
       name: 'tablet',
       use: { ...devices['Desktop Chrome'], viewport: E2E.tabletViewport },
-      testMatch: /(tablet|views|smoke|review)\.spec\.ts/,
+      testMatch: /(tablet|views|smoke|review|ingredients)\.spec\.ts/,
     },
   ],
   webServer: [

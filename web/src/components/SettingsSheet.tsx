@@ -138,7 +138,7 @@ export function SettingsSheet() {
               不占用底部导航、不影响今天/买菜/回顾/家人这四页——它就是「你翻设置时能发现它」的那个位置。
               形态与上面「视图模式」三选项一致（同一个 `option` 样式）。
             */}
-            <div className={`sub ${styles.section}`}>菜谱</div>
+            <div className={`sub ${styles.section}`}>菜谱与食材</div>
             <button
               type="button"
               className={styles.option}
@@ -151,6 +151,26 @@ export function SettingsSheet() {
               <span className={styles.who}>
                 <span className={styles.name}>菜谱库</span>
                 <div className="sub">录入新菜、改做法、退役不做的菜</div>
+              </span>
+              <span className="badge">进入</span>
+            </button>
+
+            {/*
+              食材字典（issue #34）：与菜谱库同级的从属页面入口（`/ingredients`）。
+              录一条字典里没有的食材、把录错的零引用条目删掉——它同样不占主导航那四项。
+            */}
+            <button
+              type="button"
+              className={styles.option}
+              data-testid="settings-ingredients-entry"
+              onClick={() => {
+                setOpen(false);
+                navigate('/ingredients');
+              }}
+            >
+              <span className={styles.who}>
+                <span className={styles.name}>食材字典</span>
+                <div className="sub">录入新食材、把没用的错条目删掉</div>
               </span>
               <span className="badge">进入</span>
             </button>
